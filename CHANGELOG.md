@@ -11,12 +11,25 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   manage an event loop.
 - `pensum validate` CLI subcommand for schema-level checks with no network
   calls.
+- `pensum/py.typed` PEP 561 marker, shipped via
+  `[tool.setuptools.package-data]`. Type checkers now honor the inline
+  annotations against the installed package.
 
 ### Changed
 - CLI ported from `argparse` to [Cyclopts](https://cyclopts.readthedocs.io)
   for type-hint-driven parsing and Rich-rendered help. Subcommand names,
   flag names, and exit codes are unchanged. `--merge a b c` still accepts
   space-separated revisions.
+- Repositioned 0.1 targets: **Jira Cloud (CMP + TMP) is primary**; **Jira
+  DC is fast-follow**. The dialect code is unchanged and both still ship,
+  but live-tenant validation will land on Cloud before DC. README and
+  plan reflect the new ordering.
+
+### Removed
+- `[project.optional-dependencies].dev` block from `pyproject.toml`. It
+  duplicated `[dependency-groups].dev` with stale lower bounds and leaked
+  test/lint tooling into `pip install pensum[dev]`. `uv sync --dev` only
+  read the dependency group anyway.
 
 ## [0.1.0a0]
 

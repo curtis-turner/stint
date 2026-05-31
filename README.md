@@ -11,8 +11,18 @@ pensum is two tools in one, the same way SQLAlchemy + Alembic is.
 2. **ORM.** Insert and query issues through the same model classes.
    `session.add(Bug(...))`, `session.scalars(select(Bug).where(...))`.
 
-Status: alpha (`0.1.0a0`). Both planes work end to end against Jira Data
-Center and Jira Cloud. API may shift before `0.1.0` final.
+Status: alpha (`0.1.0a0`). API may shift before `0.1.0` final.
+
+**Primary target: Jira Cloud**, covering both company-managed and
+team-managed projects. Live-instance validation against a real Cloud
+tenant is the gating work for `0.1.0` final.
+
+**Jira Data Center is fast-follow.** The DC dialect is in the tree and
+exercised by the same test suite, but has not yet been smoke-tested
+against a live DC instance. Treat 0.1 DC support as best-effort until
+that validation lands. Plenty of teams will sit on DC for years, and the
+architecture accommodates them. The validation gap is the only thing
+holding DC back from parity.
 
 ## Install
 
@@ -167,8 +177,10 @@ plus `await` on the I/O methods.
 
 ## What ships in 0.1
 
-- Jira DC (`9.12` LTS and newer) and Jira Cloud, both as first-class
-  dialects.
+- **Jira Cloud (primary)**: company-managed and team-managed projects.
+  Live-tenant smoke is the gating work for `0.1.0` final.
+- **Jira Data Center (`9.12` LTS and newer, fast-follow)**: same code
+  paths via the shared dialect base; awaits live-instance smoke testing.
 - Schema plane: custom fields, screens, screen schemes, issue type
   screen schemes, field configurations, field configuration schemes,
   issue types, projects.
