@@ -33,17 +33,25 @@ async def upgrade(
         AuthMode | None,
         Parameter(help="Auth scheme. Read from env config if omitted."),
     ] = None,
-    token_env: Annotated[str, Parameter()] = "PENSUM_TOKEN",
-    user_env: Annotated[str, Parameter()] = "PENSUM_USER",
+    token_env: Annotated[
+        str | None,
+        Parameter(help="Env var holding the secret. Read from env config if omitted."),
+    ] = None,
+    user_env: Annotated[
+        str | None,
+        Parameter(help="Env var holding the username/email. Read from env config if omitted."),
+    ] = None,
     no_verify_ssl: Annotated[bool, Parameter(negative=())] = False,
     to: Annotated[str | None, Parameter(help="Stop at a specific revision (default: head).")] = None,
 ) -> int:
     """Run pending migrations against an env."""
-    url, auth, dialect, no_verify_ssl = _resolve_connection(
+    url, auth, dialect, token_env, user_env, no_verify_ssl = _resolve_connection(
         env=env,
         url=url,
         auth=auth,
         dialect=dialect,
+        token_env=token_env,
+        user_env=user_env,
         no_verify_ssl=no_verify_ssl,
     )
     _require_resolved_connection(env=env, url=url, auth=auth)
@@ -80,16 +88,24 @@ async def downgrade(
     url: Annotated[str | None, Parameter()] = None,
     dialect: Annotated[DialectName | None, Parameter()] = None,
     auth: Annotated[AuthMode | None, Parameter()] = None,
-    token_env: Annotated[str, Parameter()] = "PENSUM_TOKEN",
-    user_env: Annotated[str, Parameter()] = "PENSUM_USER",
+    token_env: Annotated[
+        str | None,
+        Parameter(help="Env var holding the secret. Read from env config if omitted."),
+    ] = None,
+    user_env: Annotated[
+        str | None,
+        Parameter(help="Env var holding the username/email. Read from env config if omitted."),
+    ] = None,
     no_verify_ssl: Annotated[bool, Parameter(negative=())] = False,
 ) -> int:
     """Roll back to a prior revision."""
-    url, auth, dialect, no_verify_ssl = _resolve_connection(
+    url, auth, dialect, token_env, user_env, no_verify_ssl = _resolve_connection(
         env=env,
         url=url,
         auth=auth,
         dialect=dialect,
+        token_env=token_env,
+        user_env=user_env,
         no_verify_ssl=no_verify_ssl,
     )
     _require_resolved_connection(env=env, url=url, auth=auth)
@@ -148,21 +164,32 @@ def _resolve_connection(
     url: str | None,
     auth: str | None,
     dialect: str | None,
+    token_env: str | None,
+    user_env: str | None,
     no_verify_ssl: bool,
-) -> tuple[str | None, str | None, str | None, bool]:
-    """Merge env-config values for any connection params the caller did not set."""
+) -> tuple[str | None, str | None, str | None, str, str, bool]:
+    """Merge env-config values for any connection params the caller did not set.
+
+    ``token_env`` / ``user_env`` are returned as concrete strings (never None):
+    the YAML value wins over the default when no CLI flag is set, but
+    something has to be returned for the env-var lookup.
+    """
     cfg = load_env_config(env)
     if not cfg:
-        return url, auth, dialect, no_verify_ssl
+        return url, auth, dialect, token_env or "PENSUM_TOKEN", user_env or "PENSUM_USER", no_verify_ssl
     if not url:
         url = cfg.get("url")
     if not auth:
         auth = cfg.get("auth")
     if not dialect:
         dialect = cfg.get("dialect")
+    if token_env is None:
+        token_env = cfg.get("token_env") or "PENSUM_TOKEN"
+    if user_env is None:
+        user_env = cfg.get("user_env") or "PENSUM_USER"
     if "verify_ssl" in cfg and not cfg["verify_ssl"] and not no_verify_ssl:
         no_verify_ssl = True
-    return url, auth, dialect, no_verify_ssl
+    return url, auth, dialect, token_env, user_env, no_verify_ssl
 
 
 def _require_resolved_connection(*, env: str, url: str | None, auth: str | None) -> None:
