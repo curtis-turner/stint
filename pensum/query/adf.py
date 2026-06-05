@@ -19,8 +19,10 @@ def wrap_plain_text(text: str) -> dict:
         chunk = chunk.strip()
         if not chunk:
             continue
-        paragraphs.append({
-            "type": "paragraph",
-            "content": [{"type": "text", "text": chunk}],
-        })
+        paragraphs.append(
+            {
+                "type": "paragraph",
+                "content": [{"type": "text", "text": chunk}],
+            }
+        )
     return {"type": "doc", "version": 1, "content": paragraphs}

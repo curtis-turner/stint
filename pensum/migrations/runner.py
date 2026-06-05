@@ -43,7 +43,11 @@ async def upgrade(
     applied: list[Migration] = []
     for migration in pending:
         await _run_one(
-            engine, state, migration, direction="upgrade", state_path=state_path,
+            engine,
+            state,
+            migration,
+            direction="upgrade",
+            state_path=state_path,
         )
         state.revision = migration.revision
         state.last_applied = _now_iso()
@@ -58,10 +62,7 @@ def _truncate_to_target(chain: list[Migration], target: str) -> list[Migration]:
         out.append(m)
         if m.revision == target:
             return out
-    raise ValueError(
-        f"target revision {target!r} is not in the pending chain "
-        f"({[m.revision for m in chain]})"
-    )
+    raise ValueError(f"target revision {target!r} is not in the pending chain ({[m.revision for m in chain]})")
 
 
 async def downgrade(
@@ -89,7 +90,11 @@ async def downgrade(
     reversed_migrations: list[Migration] = []
     for migration in chain:
         await _run_one(
-            engine, state, migration, direction="downgrade", state_path=state_path,
+            engine,
+            state,
+            migration,
+            direction="downgrade",
+            state_path=state_path,
         )
         # For merge migrations (tuple parents), pick the first parent. The
         # other branch's migrations remain in Jira but are unreachable from
@@ -107,16 +112,16 @@ def _first_parent(migration: Migration) -> str | None:
 
 
 def _build_downgrade_chain(
-    graph: RevisionGraph, current: str, target: str | None,
+    graph: RevisionGraph,
+    current: str,
+    target: str | None,
 ) -> list[Migration]:
     """Walk from current back toward target, returning migrations in
     head→base order. Each one's downgrade() will be called in turn."""
     if current not in graph.by_revision:
         from pensum.migrations.exceptions import MigrationGraphError
 
-        raise MigrationGraphError(
-            f"current revision {current!r} is not in the migration graph"
-        )
+        raise MigrationGraphError(f"current revision {current!r} is not in the migration graph")
     chain: list[Migration] = []
     m: Migration | None = graph.by_revision[current]
     while m is not None:
@@ -129,8 +134,7 @@ def _build_downgrade_chain(
                 from pensum.migrations.exceptions import MigrationGraphError
 
                 raise MigrationGraphError(
-                    f"target revision {target!r} is not an ancestor of current "
-                    f"revision {current!r}"
+                    f"target revision {target!r} is not an ancestor of current revision {current!r}"
                 )
             return chain
         m = graph.by_revision.get(parent)
@@ -146,7 +150,9 @@ async def _run_one(
     state_path: str | Path | None = None,
 ) -> None:
     ctx = MigrationContext(
-        engine=engine, state=state, direction=direction,  # type: ignore[arg-type]
+        engine=engine,
+        state=state,
+        direction=direction,  # type: ignore[arg-type]
         state_path=state_path,
     )
     token = set_context(ctx)

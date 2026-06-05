@@ -52,7 +52,7 @@ class RevisionGraph:
     by_revision: dict[str, Migration]
 
     @classmethod
-    def from_migrations(cls, migrations: list[Migration]) -> "RevisionGraph":
+    def from_migrations(cls, migrations: list[Migration]) -> RevisionGraph:
         by_revision: dict[str, Migration] = {}
         for m in migrations:
             if m.revision in by_revision:
@@ -96,8 +96,7 @@ class RevisionGraph:
         if len(heads) > 1:
             head_revs = sorted(h.revision for h in heads)
             raise MigrationGraphError(
-                f"multiple heads exist: {head_revs}. "
-                f"Run 'pensum revision --merge <head1> <head2> -m ...' to merge."
+                f"multiple heads exist: {head_revs}. Run 'pensum revision --merge <head1> <head2> -m ...' to merge."
             )
         if current is not None and current not in self.by_revision:
             raise MigrationGraphError(
@@ -112,15 +111,11 @@ class RevisionGraph:
         chain: list[Migration] = []
         remaining = {r: m for r, m in self.by_revision.items() if r not in applied}
         while remaining:
-            ready = [
-                m for m in remaining.values()
-                if all(p in applied for p in m.parents())
-            ]
+            ready = [m for m in remaining.values() if all(p in applied for p in m.parents())]
             if not ready:
                 # Should be unreachable given the head-count check above.
                 raise MigrationGraphError(
-                    f"deadlock walking migration graph from {current!r}; "
-                    f"remaining={sorted(remaining)}"
+                    f"deadlock walking migration graph from {current!r}; remaining={sorted(remaining)}"
                 )
             # If multiple are ready, both branches of a fork are unblocked.
             # That's expected when a merge migration sits ahead — heads()==1

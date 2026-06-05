@@ -498,9 +498,9 @@ def test_resolve_connection_reads_token_and_user_env_from_yaml(tmp_path, monkeyp
         "user_env: PENSUM_CLOUD_EMAIL\n"
     )
     monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
-    from pensum.cli.cmd_upgrade import _resolve_connection
+    from pensum.cli.env_config import resolve_connection
 
-    url, auth, dialect, token_env, user_env, no_verify_ssl = _resolve_connection(
+    url, auth, dialect, token_env, user_env, no_verify_ssl = resolve_connection(
         env="cloud",
         url=None,
         auth=None,
@@ -523,9 +523,9 @@ def test_resolve_connection_explicit_cli_overrides_yaml(tmp_path, monkeypatch):
         "url: https://x.atlassian.net\nauth: api-token\ntoken_env: FROM_YAML_T\nuser_env: FROM_YAML_U\n"
     )
     monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
-    from pensum.cli.cmd_upgrade import _resolve_connection
+    from pensum.cli.env_config import resolve_connection
 
-    _, _, _, token_env, user_env, _ = _resolve_connection(
+    _, _, _, token_env, user_env, _ = resolve_connection(
         env="cloud",
         url=None,
         auth=None,
@@ -544,9 +544,9 @@ def test_resolve_connection_falls_back_to_defaults_when_unset(tmp_path, monkeypa
     cfg_dir.mkdir()
     (cfg_dir / "cloud.yaml").write_text("url: https://x.atlassian.net\nauth: api-token\n")
     monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
-    from pensum.cli.cmd_upgrade import _resolve_connection
+    from pensum.cli.env_config import resolve_connection
 
-    _, _, _, token_env, user_env, _ = _resolve_connection(
+    _, _, _, token_env, user_env, _ = resolve_connection(
         env="cloud",
         url=None,
         auth=None,
@@ -563,9 +563,9 @@ def test_resolve_connection_defaults_when_no_yaml_at_all(tmp_path, monkeypatch):
     """Missing YAML file → CLI defaults still flow through as concrete strings."""
     monkeypatch.setenv("PENSUM_CONFIG_DIR", str(tmp_path))  # empty dir
     # Use a unique env name so the user's ~/.pensum/envs/ fallback doesn't match.
-    from pensum.cli.cmd_upgrade import _resolve_connection
+    from pensum.cli.env_config import resolve_connection
 
-    url, auth, dialect, token_env, user_env, _ = _resolve_connection(
+    url, auth, dialect, token_env, user_env, _ = resolve_connection(
         env="pytest-no-such-env",
         url=None,
         auth=None,
@@ -597,6 +597,224 @@ def test_cli_upgrade_errors_when_url_and_auth_missing(tmp_path, monkeypatch):
                 str(mig_dir),
                 "--state",
                 str(state_path),
+                "--env",
+                "dev",
+            ]
+        )
+    assert "url" in str(e.value)
+    assert "auth" in str(e.value)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# CLI: reflect / stamp / revision honor --env (issue #1)
+# ──────────────────────────────────────────────────────────────────────
+def test_cli_reflect_reads_connection_from_env_config(tmp_path, monkeypatch, capsys):
+    """`pensum reflect --env cloud` resolves url/auth/dialect from YAML and runs."""
+    import httpx
+    import respx
+    import yaml as _yaml
+
+    from pensum.cli.main import main
+
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    (cfg_dir / "dev.yaml").write_text(
+        "url: jira_dc+https://jira.example.com\nauth: pat\ndialect: jira_dc\ntoken_env: PENSUM_DEV_TOKEN\n"
+    )
+    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setenv("PENSUM_DEV_TOKEN", "test-pat-from-env-config")
+
+    base = "https://jira.example.com"
+    dc_root = f"{base}/rest/api/2"
+
+    def _paginated(values: list) -> dict:
+        return {"values": values, "isLast": True, "startAt": 0, "maxResults": len(values)}
+
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get(f"{dc_root}/serverInfo").mock(
+            return_value=httpx.Response(
+                200,
+                json={"baseUrl": base, "version": "9.12.4", "deploymentType": "Server"},
+            )
+        )
+        for path in (f"{dc_root}/field", f"{dc_root}/issuetype"):
+            mock.get(path).mock(return_value=httpx.Response(200, json=[]))
+        for path in (
+            f"{dc_root}/project/search",
+            f"{dc_root}/screens",
+            f"{dc_root}/screenscheme",
+            f"{dc_root}/issuetypescheme",
+            f"{dc_root}/issuetypescheme/mapping",
+            f"{dc_root}/issuetypescheme/project",
+            f"{dc_root}/issuetypescreenscheme",
+            f"{dc_root}/issuetypescreenscheme/project",
+            f"{dc_root}/fieldconfiguration",
+            f"{dc_root}/fieldconfigurationscheme",
+            f"{dc_root}/fieldconfigurationscheme/project",
+        ):
+            mock.get(path).mock(return_value=httpx.Response(200, json=_paginated([])))
+
+        rc = main(["reflect", "--env", "dev"])
+
+    assert rc == 0
+    parsed = _yaml.safe_load(capsys.readouterr().out)
+    assert parsed["server_info"]["version"] == "9.12.4"
+
+
+def test_cli_reflect_errors_with_missing_connection_and_no_env(tmp_path, monkeypatch):
+    """No --env, no --url, no --auth → SystemExit listing both missing keys."""
+    from pensum.cli.main import main
+
+    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(tmp_path / "nonexistent"))
+    with pytest.raises(SystemExit) as e:
+        main(["reflect"])
+    assert "url" in str(e.value)
+    assert "auth" in str(e.value)
+
+
+def test_cli_stamp_reads_connection_from_env_config(tmp_path, monkeypatch):
+    """`pensum stamp --env dev` resolves url/auth/dialect from YAML."""
+    import httpx
+    import respx
+
+    from pensum.cli.main import main
+
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    (cfg_dir / "dev.yaml").write_text("url: jira_dc+https://jira.example.com\nauth: pat\ndialect: jira_dc\n")
+    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setenv("PENSUM_TOKEN", "test-pat")
+
+    schema_path = tmp_path / "schema.py"
+    schema_path.write_text("# empty schema\n")
+
+    base = "https://jira.example.com"
+    dc_root = f"{base}/rest/api/2"
+
+    def _paginated(values: list) -> dict:
+        return {"values": values, "isLast": True, "startAt": 0, "maxResults": len(values)}
+
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get(f"{dc_root}/serverInfo").mock(
+            return_value=httpx.Response(200, json={"baseUrl": base, "version": "9.12.4", "deploymentType": "Server"})
+        )
+        for path in (f"{dc_root}/field", f"{dc_root}/issuetype"):
+            mock.get(path).mock(return_value=httpx.Response(200, json=[]))
+        for path in (
+            f"{dc_root}/project/search",
+            f"{dc_root}/screens",
+            f"{dc_root}/screenscheme",
+            f"{dc_root}/issuetypescheme",
+            f"{dc_root}/issuetypescheme/mapping",
+            f"{dc_root}/issuetypescheme/project",
+            f"{dc_root}/issuetypescreenscheme",
+            f"{dc_root}/issuetypescreenscheme/project",
+            f"{dc_root}/fieldconfiguration",
+            f"{dc_root}/fieldconfigurationscheme",
+            f"{dc_root}/fieldconfigurationscheme/project",
+        ):
+            mock.get(path).mock(return_value=httpx.Response(200, json=_paginated([])))
+
+        rc = main(
+            [
+                "stamp",
+                "--schema",
+                str(schema_path),
+                "--state",
+                str(tmp_path / "state.yaml"),
+                "--env",
+                "dev",
+            ]
+        )
+
+    assert rc == 0
+    assert (tmp_path / "state.yaml").exists()
+
+
+def test_cli_revision_autogenerate_reads_connection_from_env_config(tmp_path, monkeypatch, capsys):
+    """`pensum revision --autogenerate --env dev` no longer requires --url/--auth on the CLI."""
+    import httpx
+    import respx
+
+    from pensum.cli.main import main
+
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    (cfg_dir / "dev.yaml").write_text("url: jira_dc+https://jira.example.com\nauth: pat\ndialect: jira_dc\n")
+    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setenv("PENSUM_TOKEN", "test-pat")
+
+    schema_path = tmp_path / "schema.py"
+    schema_path.write_text("# empty schema\n")
+
+    base = "https://jira.example.com"
+    dc_root = f"{base}/rest/api/2"
+
+    def _paginated(values: list) -> dict:
+        return {"values": values, "isLast": True, "startAt": 0, "maxResults": len(values)}
+
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get(f"{dc_root}/serverInfo").mock(
+            return_value=httpx.Response(200, json={"baseUrl": base, "version": "9.12.4", "deploymentType": "Server"})
+        )
+        for path in (f"{dc_root}/field", f"{dc_root}/issuetype"):
+            mock.get(path).mock(return_value=httpx.Response(200, json=[]))
+        for path in (
+            f"{dc_root}/project/search",
+            f"{dc_root}/screens",
+            f"{dc_root}/screenscheme",
+            f"{dc_root}/issuetypescheme",
+            f"{dc_root}/issuetypescheme/mapping",
+            f"{dc_root}/issuetypescheme/project",
+            f"{dc_root}/issuetypescreenscheme",
+            f"{dc_root}/issuetypescreenscheme/project",
+            f"{dc_root}/fieldconfiguration",
+            f"{dc_root}/fieldconfigurationscheme",
+            f"{dc_root}/fieldconfigurationscheme/project",
+        ):
+            mock.get(path).mock(return_value=httpx.Response(200, json=_paginated([])))
+
+        rc = main(
+            [
+                "revision",
+                "--migrations-dir",
+                str(tmp_path / "migrations"),
+                "--message",
+                "test",
+                "--autogenerate",
+                "--schema",
+                str(schema_path),
+                "--state",
+                str(tmp_path / "state.yaml"),
+                "--env",
+                "dev",
+            ]
+        )
+
+    assert rc == 0
+    assert "no changes detected" in capsys.readouterr().out
+
+
+def test_cli_revision_autogenerate_errors_with_missing_connection(tmp_path, monkeypatch):
+    """Autogen with --env but no YAML and no --url/--auth → SystemExit."""
+    from pensum.cli.main import main
+
+    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(tmp_path / "nonexistent"))
+    schema_path = tmp_path / "schema.py"
+    schema_path.write_text("# empty\n")
+    with pytest.raises(SystemExit) as e:
+        main(
+            [
+                "revision",
+                "--migrations-dir",
+                str(tmp_path / "migrations"),
+                "--message",
+                "test",
+                "--autogenerate",
+                "--schema",
+                str(schema_path),
+                "--state",
+                str(tmp_path / "state.yaml"),
                 "--env",
                 "dev",
             ]

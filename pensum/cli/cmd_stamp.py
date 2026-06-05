@@ -15,6 +15,7 @@ from pensum.autogen.loader import load_schema_module
 from pensum.autogen.stamp import stamp as run_stamp_alg
 from pensum.cli.app import app
 from pensum.cli.cmd_reflect import _build_auth
+from pensum.cli.env_config import require_resolved_connection, resolve_connection
 from pensum.engine import create_engine
 from pensum.state.file import StateFile
 
@@ -28,11 +29,23 @@ async def stamp(
     schema: Annotated[str, Parameter(help="Schema module to import (dotted or file).")],
     state: Annotated[str, Parameter(help="State file to populate (created if absent).")],
     env: Annotated[str, Parameter(help="Logical env name; recorded in state.")],
-    url: Annotated[str, Parameter(help="Jira URL (with dialect prefix accepted).")],
-    auth: Annotated[AuthMode, Parameter()],
+    url: Annotated[
+        str | None,
+        Parameter(help="Jira URL (with dialect prefix accepted). Read from env config if omitted."),
+    ] = None,
+    auth: Annotated[
+        AuthMode | None,
+        Parameter(help="Auth scheme. Read from env config if omitted."),
+    ] = None,
     dialect: Annotated[DialectName | None, Parameter()] = None,
-    token_env: Annotated[str, Parameter()] = "PENSUM_TOKEN",
-    user_env: Annotated[str, Parameter()] = "PENSUM_USER",
+    token_env: Annotated[
+        str | None,
+        Parameter(help="Env var holding the secret. Read from env config if omitted."),
+    ] = None,
+    user_env: Annotated[
+        str | None,
+        Parameter(help="Env var holding the username/email. Read from env config if omitted."),
+    ] = None,
     no_verify_ssl: Annotated[bool, Parameter(negative=())] = False,
     revision: Annotated[
         str | None,
@@ -40,6 +53,16 @@ async def stamp(
     ] = None,
 ) -> int:
     """Brownfield: populate state by matching schema declarations to existing Jira objects."""
+    url, auth, dialect, token_env, user_env, no_verify_ssl = resolve_connection(
+        env=env,
+        url=url,
+        auth=auth,
+        dialect=dialect,
+        token_env=token_env,
+        user_env=user_env,
+        no_verify_ssl=no_verify_ssl,
+    )
+    require_resolved_connection(env=env, url=url, auth=auth)
     load_schema_module(schema)
     state_path = Path(state)
     state_file = StateFile.load(state_path) if state_path.exists() else StateFile(env=env, jira_url=url)

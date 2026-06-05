@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from pensum.autogen.desired import DesiredSnapshot, build_desired_snapshot
+from pensum.autogen.desired import build_desired_snapshot
 from pensum.state.file import (
     CustomFieldMapping,
     ProjectMapping,
@@ -40,18 +40,18 @@ if TYPE_CHECKING:
 @dataclass
 class StampReport:
     matched: list[tuple[str, str, str]] = field(default_factory=list)
-        # (object_type, alias, jira_id)
+    # (object_type, alias, jira_id)
     unmatched: list[tuple[str, str]] = field(default_factory=list)
-        # (object_type, alias)
+    # (object_type, alias)
     skipped: list[tuple[str, str, str]] = field(default_factory=list)
-        # (object_type, alias, reason) — already in state with different id, etc.
+    # (object_type, alias, reason) — already in state with different id, etc.
 
 
 def stamp(
-    state: "StateFile",
-    snapshot: "Snapshot",
+    state: StateFile,
+    snapshot: Snapshot,
     *,
-    registry: "Registry" | None = None,
+    registry: Registry | None = None,
 ) -> StampReport:
     """Mutate `state` in place to absorb existing Jira objects that match
     aliases declared in the registry. Returns a report of what happened.
@@ -81,10 +81,13 @@ def _stamp_custom_fields(state, snapshot, desired, report) -> None:
         if alias in state.custom_fields:
             existing = state.custom_fields[alias]
             if existing.id != match.id:
-                report.skipped.append((
-                    "custom_field", alias,
-                    f"state already maps to {existing.id!r}, Jira has {match.id!r}",
-                ))
+                report.skipped.append(
+                    (
+                        "custom_field",
+                        alias,
+                        f"state already maps to {existing.id!r}, Jira has {match.id!r}",
+                    )
+                )
             continue
         options = dict(match.options)
         state.custom_fields[alias] = CustomFieldMapping(id=match.id, options=options)
@@ -102,10 +105,13 @@ def _stamp_issuetypes(state, snapshot, desired, report) -> None:
         if alias in state.issuetypes:
             existing = state.issuetypes[alias]
             if existing.id != match.id:
-                report.skipped.append((
-                    "issuetype", alias,
-                    f"state already maps to {existing.id!r}, Jira has {match.id!r}",
-                ))
+                report.skipped.append(
+                    (
+                        "issuetype",
+                        alias,
+                        f"state already maps to {existing.id!r}, Jira has {match.id!r}",
+                    )
+                )
             continue
         state.issuetypes[alias] = SimpleMapping(id=match.id)
         report.matched.append(("issuetype", alias, match.id))
@@ -122,10 +128,13 @@ def _stamp_screens(state, snapshot, desired, report) -> None:
         if alias in state.screens:
             existing = state.screens[alias]
             if existing.id != match.id:
-                report.skipped.append((
-                    "screen", alias,
-                    f"state already maps to {existing.id!r}, Jira has {match.id!r}",
-                ))
+                report.skipped.append(
+                    (
+                        "screen",
+                        alias,
+                        f"state already maps to {existing.id!r}, Jira has {match.id!r}",
+                    )
+                )
             continue
         tab_ids = {tab.name: tab.id for tab in match.tabs}
         state.screens[alias] = ScreenMapping(id=match.id, tab_ids=tab_ids)
@@ -143,10 +152,13 @@ def _stamp_screen_schemes(state, snapshot, desired, report) -> None:
         if alias in state.screen_schemes:
             existing = state.screen_schemes[alias]
             if existing.id != match.id:
-                report.skipped.append((
-                    "screen_scheme", alias,
-                    f"state already maps to {existing.id!r}, Jira has {match.id!r}",
-                ))
+                report.skipped.append(
+                    (
+                        "screen_scheme",
+                        alias,
+                        f"state already maps to {existing.id!r}, Jira has {match.id!r}",
+                    )
+                )
             continue
         state.screen_schemes[alias] = SimpleMapping(id=match.id)
         report.matched.append(("screen_scheme", alias, match.id))
@@ -163,10 +175,13 @@ def _stamp_field_configurations(state, snapshot, desired, report) -> None:
         if alias in state.field_configurations:
             existing = state.field_configurations[alias]
             if existing.id != match.id:
-                report.skipped.append((
-                    "field_configuration", alias,
-                    f"state already maps to {existing.id!r}, Jira has {match.id!r}",
-                ))
+                report.skipped.append(
+                    (
+                        "field_configuration",
+                        alias,
+                        f"state already maps to {existing.id!r}, Jira has {match.id!r}",
+                    )
+                )
             continue
         state.field_configurations[alias] = SimpleMapping(id=match.id)
         report.matched.append(("field_configuration", alias, match.id))
@@ -183,10 +198,13 @@ def _stamp_itss(state, snapshot, desired, report) -> None:
         if alias in state.issuetype_screen_schemes:
             existing = state.issuetype_screen_schemes[alias]
             if existing.id != match.id:
-                report.skipped.append((
-                    "issuetype_screen_scheme", alias,
-                    f"state already maps to {existing.id!r}, Jira has {match.id!r}",
-                ))
+                report.skipped.append(
+                    (
+                        "issuetype_screen_scheme",
+                        alias,
+                        f"state already maps to {existing.id!r}, Jira has {match.id!r}",
+                    )
+                )
             continue
         state.issuetype_screen_schemes[alias] = SimpleMapping(id=match.id)
         report.matched.append(("issuetype_screen_scheme", alias, match.id))
@@ -203,10 +221,13 @@ def _stamp_fcs(state, snapshot, desired, report) -> None:
         if alias in state.field_configuration_schemes:
             existing = state.field_configuration_schemes[alias]
             if existing.id != match.id:
-                report.skipped.append((
-                    "field_configuration_scheme", alias,
-                    f"state already maps to {existing.id!r}, Jira has {match.id!r}",
-                ))
+                report.skipped.append(
+                    (
+                        "field_configuration_scheme",
+                        alias,
+                        f"state already maps to {existing.id!r}, Jira has {match.id!r}",
+                    )
+                )
             continue
         state.field_configuration_schemes[alias] = SimpleMapping(id=match.id)
         report.matched.append(("field_configuration_scheme", alias, match.id))
@@ -226,19 +247,26 @@ def _stamp_projects(state, snapshot, desired, report) -> None:
         if alias in state.projects:
             existing = state.projects[alias]
             if existing.id != match.id:
-                report.skipped.append((
-                    "project", alias,
-                    f"state already maps to {existing.id!r}, Jira has {match.id!r}",
-                ))
+                report.skipped.append(
+                    (
+                        "project",
+                        alias,
+                        f"state already maps to {existing.id!r}, Jira has {match.id!r}",
+                    )
+                )
                 continue
             # Same id — backfill style/key if missing or wrong. Pre-M7 state
             # files default style to "company-managed" without observing Jira.
             if existing.style != style or existing.key != match.key:
                 state.projects[alias] = ProjectMapping(
-                    id=existing.id, style=style, key=match.key,
+                    id=existing.id,
+                    style=style,
+                    key=match.key,
                 )
             continue
         state.projects[alias] = ProjectMapping(
-            id=match.id, style=style, key=match.key,
+            id=match.id,
+            style=style,
+            key=match.key,
         )
         report.matched.append(("project", alias, match.id))

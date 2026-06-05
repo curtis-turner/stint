@@ -50,8 +50,8 @@ _CLOUD_ADF_SYSTEM_FIELDS = {"description"}
 
 
 def build_fields_payload(
-    instance: "BaseModel",
-    state: "StateFile",
+    instance: BaseModel,
+    state: StateFile,
     *,
     is_cloud: bool,
     only: set[str] | None = None,
@@ -88,8 +88,8 @@ def build_fields_payload(
 
 
 def build_insert_payload(
-    instance: "BaseModel",
-    state: "StateFile",
+    instance: BaseModel,
+    state: StateFile,
     *,
     is_cloud: bool,
     project_key: str,
@@ -108,35 +108,37 @@ def build_insert_payload(
 
     issuetype_alias = getattr(model, "__alias__", None)
     if not issuetype_alias:
-        raise ConfigurationError(
-            f"build_insert_payload: model {model.__name__!r} has no __alias__"
-        )
+        raise ConfigurationError(f"build_insert_payload: model {model.__name__!r} has no __alias__")
     it_mapping = state.issuetypes.get(issuetype_alias)
     if it_mapping is None:
-        raise ConfigurationError(
-            f"build_insert_payload: issuetype {issuetype_alias!r} is not in state."
-        )
+        raise ConfigurationError(f"build_insert_payload: issuetype {issuetype_alias!r} is not in state.")
     fields["issuetype"] = {"id": it_mapping.id}
 
     return {"fields": fields}
 
 
 def build_update_payload(
-    instance: "BaseModel",
-    state: "StateFile",
+    instance: BaseModel,
+    state: StateFile,
     *,
     is_cloud: bool,
     dirty: set[str],
 ) -> dict[str, Any]:
     """Build a PUT /issue/{key} body with only the dirty fields."""
-    return {"fields": build_fields_payload(
-        instance, state, is_cloud=is_cloud, only=dirty,
-    )}
+    return {
+        "fields": build_fields_payload(
+            instance,
+            state,
+            is_cloud=is_cloud,
+            only=dirty,
+        )
+    }
 
 
 # ── Internal: per-type emission ──────────────────────────────────────
-def _custom_field_meta(field_info: Any) -> "CustomField | None":
+def _custom_field_meta(field_info: Any) -> CustomField | None:
     from pensum.fields import CustomField
+
     return next(
         (m for m in field_info.metadata if isinstance(m, CustomField)),
         None,
@@ -144,7 +146,10 @@ def _custom_field_meta(field_info: Any) -> "CustomField | None":
 
 
 def _emit_custom_field(
-    field_type: type[_FieldType], value: Any, *, is_cloud: bool,
+    field_type: type[_FieldType],
+    value: Any,
+    *,
+    is_cloud: bool,
 ) -> Any:
     if field_type is SelectField:
         return {"value": str(value)}
@@ -173,7 +178,10 @@ def _emit_custom_field(
 
 
 def _emit_system_field(
-    attr_name: str, value: Any, *, is_cloud: bool,
+    attr_name: str,
+    value: Any,
+    *,
+    is_cloud: bool,
 ) -> tuple[str, Any]:
     """System field translation. Returns (Jira-field-name, JSON-shaped value).
 

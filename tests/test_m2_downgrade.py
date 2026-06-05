@@ -36,9 +36,7 @@ def _engine():
 async def test_downgrade_one_step_calls_downgrade_and_updates_revision(tmp_path):
     """Currently at def789… (head). Downgrade -> abc123… runs the second
     migration's downgrade body (delete_custom_field) and bumps revision back."""
-    respx.delete(f"{DC_ROOT}/field/customfield_10043").mock(
-        return_value=httpx.Response(204)
-    )
+    respx.delete(f"{DC_ROOT}/field/customfield_10043").mock(return_value=httpx.Response(204))
 
     state = StateFile(env="dev", jira_url=BASE, revision="def789ghi012")
     state.custom_fields["bug_severity"] = CustomFieldMapping(id="customfield_10042")
@@ -49,7 +47,11 @@ async def test_downgrade_one_step_calls_downgrade_and_updates_revision(tmp_path)
     engine = _engine()
     try:
         reversed_migrations = await run_downgrade(
-            engine, state, graph, state_path, target="abc123def456",
+            engine,
+            state,
+            graph,
+            state_path,
+            target="abc123def456",
         )
     finally:
         await engine.close()
@@ -64,9 +66,7 @@ async def test_downgrade_one_step_calls_downgrade_and_updates_revision(tmp_path)
 @pytest.mark.asyncio
 @respx.mock
 async def test_downgrade_persists_state_after_each_step(tmp_path):
-    respx.delete(f"{DC_ROOT}/field/customfield_10043").mock(
-        return_value=httpx.Response(204)
-    )
+    respx.delete(f"{DC_ROOT}/field/customfield_10043").mock(return_value=httpx.Response(204))
 
     state = StateFile(env="dev", jira_url=BASE, revision="def789ghi012")
     state.custom_fields["bug_severity"] = CustomFieldMapping(id="customfield_10042")
@@ -92,9 +92,7 @@ async def test_downgrade_to_base_aborts_when_unsupported(tmp_path):
     """Going all the way to base hits the initial migration whose downgrade
     calls op.unsupported. The runner must abort with UnsupportedDowngradeError.
     The first downgrade step (def789…→abc123…) still succeeded and persists."""
-    respx.delete(f"{DC_ROOT}/field/customfield_10043").mock(
-        return_value=httpx.Response(204)
-    )
+    respx.delete(f"{DC_ROOT}/field/customfield_10043").mock(return_value=httpx.Response(204))
 
     state = StateFile(env="dev", jira_url=BASE, revision="def789ghi012")
     state.custom_fields["bug_severity"] = CustomFieldMapping(id="customfield_10042")
@@ -125,7 +123,11 @@ async def test_downgrade_at_base_is_noop(tmp_path):
     engine = _engine()
     try:
         reversed_migrations = await run_downgrade(
-            engine, state, graph, state_path, target=None,
+            engine,
+            state,
+            graph,
+            state_path,
+            target=None,
         )
     finally:
         await engine.close()
@@ -140,7 +142,11 @@ async def test_downgrade_target_equals_current_is_noop(tmp_path):
     engine = _engine()
     try:
         reversed_migrations = await run_downgrade(
-            engine, state, graph, state_path, target="abc123def456",
+            engine,
+            state,
+            graph,
+            state_path,
+            target="abc123def456",
         )
     finally:
         await engine.close()
@@ -158,7 +164,11 @@ async def test_downgrade_target_not_an_ancestor_raises(tmp_path):
     try:
         with pytest.raises(MigrationGraphError):
             await run_downgrade(
-                engine, state, graph, state_path, target="unknown_rev",
+                engine,
+                state,
+                graph,
+                state_path,
+                target="unknown_rev",
             )
     finally:
         await engine.close()
@@ -167,9 +177,7 @@ async def test_downgrade_target_not_an_ancestor_raises(tmp_path):
 # ── CLI smoke ─────────────────────────────────────────────────────────
 @respx.mock
 def test_cli_downgrade_one_step(tmp_path, monkeypatch, capsys):
-    respx.delete(f"{DC_ROOT}/field/customfield_10043").mock(
-        return_value=httpx.Response(204)
-    )
+    respx.delete(f"{DC_ROOT}/field/customfield_10043").mock(return_value=httpx.Response(204))
 
     state = StateFile(env="dev", jira_url=BASE, revision="def789ghi012")
     state.custom_fields["bug_severity"] = CustomFieldMapping(id="customfield_10042")
@@ -178,15 +186,23 @@ def test_cli_downgrade_one_step(tmp_path, monkeypatch, capsys):
     state.save(state_path)
 
     monkeypatch.setenv("PENSUM_TOKEN", "tok")
-    rc = main([
-        "downgrade",
-        "--migrations-dir", str(FIXTURES_DIR),
-        "--state", str(state_path),
-        "--env", "dev",
-        "--url", f"jira_dc+{BASE}",
-        "--auth", "pat",
-        "-r", "abc123def456",
-    ])
+    rc = main(
+        [
+            "downgrade",
+            "--migrations-dir",
+            str(FIXTURES_DIR),
+            "--state",
+            str(state_path),
+            "--env",
+            "dev",
+            "--url",
+            f"jira_dc+{BASE}",
+            "--auth",
+            "pat",
+            "-r",
+            "abc123def456",
+        ]
+    )
     assert rc == 0
     out = capsys.readouterr().out
     assert "reversed def789gh" in out
@@ -202,14 +218,22 @@ def test_cli_downgrade_noop_when_at_target(tmp_path, monkeypatch, capsys):
     state.save(state_path)
 
     monkeypatch.setenv("PENSUM_TOKEN", "tok")
-    rc = main([
-        "downgrade",
-        "--migrations-dir", str(FIXTURES_DIR),
-        "--state", str(state_path),
-        "--env", "dev",
-        "--url", f"jira_dc+{BASE}",
-        "--auth", "pat",
-        "-r", "abc123def456",
-    ])
+    rc = main(
+        [
+            "downgrade",
+            "--migrations-dir",
+            str(FIXTURES_DIR),
+            "--state",
+            str(state_path),
+            "--env",
+            "dev",
+            "--url",
+            f"jira_dc+{BASE}",
+            "--auth",
+            "pat",
+            "-r",
+            "abc123def456",
+        ]
+    )
     assert rc == 0
     assert "nothing to do" in capsys.readouterr().out

@@ -17,15 +17,15 @@ if TYPE_CHECKING:
     from pensum.state.file import StateFile
 
 
-_context: contextvars.ContextVar["MigrationContext"] = contextvars.ContextVar(
+_context: contextvars.ContextVar[MigrationContext] = contextvars.ContextVar(
     "pensum_migration_context",
 )
 
 
 @dataclass
 class MigrationContext:
-    engine: "Engine"
-    state: "StateFile"
+    engine: Engine
+    state: StateFile
     direction: Literal["upgrade", "downgrade"]
     state_path: str | Path | None = None
 
@@ -41,10 +41,7 @@ def get_context() -> MigrationContext:
     try:
         return _context.get()
     except LookupError as e:
-        raise LookupError(
-            "op functions must be called from within a migration's "
-            "upgrade() or downgrade() body."
-        ) from e
+        raise LookupError("op functions must be called from within a migration's upgrade() or downgrade() body.") from e
 
 
 def set_context(ctx: MigrationContext) -> contextvars.Token:

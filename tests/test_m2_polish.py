@@ -39,7 +39,10 @@ async def _run_in_ctx(
     state_path: Path | None = None,
 ) -> None:
     ctx = MigrationContext(
-        engine=engine, state=state, direction="upgrade", state_path=state_path,
+        engine=engine,
+        state=state,
+        direction="upgrade",
+        state_path=state_path,
     )
     token = set_context(ctx)
     try:
@@ -53,9 +56,7 @@ async def _run_in_ctx(
 @respx.mock
 async def test_create_custom_field_persists_parent_before_options(tmp_path):
     """Option 3 of 4 fails. Disk state shows field + options 1, 2 — NOT all-or-nothing."""
-    respx.post(f"{DC_ROOT}/field").mock(
-        return_value=httpx.Response(201, json={"id": "customfield_10042"})
-    )
+    respx.post(f"{DC_ROOT}/field").mock(return_value=httpx.Response(201, json={"id": "customfield_10042"}))
     respx.post(f"{DC_ROOT}/field/customfield_10042/option", json__eq={"value": "S1"}).mock(
         return_value=httpx.Response(201, json={"id": "100"})
     )
@@ -72,9 +73,12 @@ async def test_create_custom_field_persists_parent_before_options(tmp_path):
     try:
         with pytest.raises(TransportError):
             await _run_in_ctx(
-                engine, state,
+                engine,
+                state,
                 lambda: op.create_custom_field(
-                    alias="bug_severity", name="Severity", type=SelectField,
+                    alias="bug_severity",
+                    name="Severity",
+                    type=SelectField,
                     options=["S1", "S2", "S3", "S4"],
                 ),
                 state_path=state_path,
@@ -92,9 +96,7 @@ async def test_create_custom_field_persists_parent_before_options(tmp_path):
 async def test_create_fcs_persists_id_before_mappings_put(tmp_path):
     """If POST FCS succeeds but PUT mappings fails, disk state must show the
     FCS id so a re-run won't duplicate it."""
-    respx.post(f"{DC_ROOT}/fieldconfigurationscheme").mock(
-        return_value=httpx.Response(201, json={"id": "fcs-1"})
-    )
+    respx.post(f"{DC_ROOT}/fieldconfigurationscheme").mock(return_value=httpx.Response(201, json={"id": "fcs-1"}))
     respx.put(f"{DC_ROOT}/fieldconfigurationscheme/fcs-1/mapping").mock(
         return_value=httpx.Response(500, json={"errorMessages": ["boom"]})
     )
@@ -106,9 +108,11 @@ async def test_create_fcs_persists_id_before_mappings_put(tmp_path):
     try:
         with pytest.raises(TransportError):
             await _run_in_ctx(
-                engine, state,
+                engine,
+                state,
                 lambda: op.create_field_configuration_scheme(
-                    alias="bug_fcs", name="Bug FCS",
+                    alias="bug_fcs",
+                    name="Bug FCS",
                     mappings={"default": "default_fc"},
                 ),
                 state_path=state_path,
@@ -133,9 +137,14 @@ async def test_persist_is_noop_without_state_path():
             router.post(
                 f"{DC_ROOT}/field/customfield_10042/option",
             ).mock(return_value=httpx.Response(201, json={"id": "200"}))
-            await _run_in_ctx(engine, state, lambda: op.add_custom_field_option(
-                field_alias="bug_severity", value="S5",
-            ))
+            await _run_in_ctx(
+                engine,
+                state,
+                lambda: op.add_custom_field_option(
+                    field_alias="bug_severity",
+                    value="S5",
+                ),
+            )
     finally:
         await engine.close()
     assert state.custom_fields["bug_severity"].options == {"S5": "200"}
@@ -145,17 +154,25 @@ async def test_persist_is_noop_without_state_path():
 @pytest.mark.asyncio
 @respx.mock
 async def test_update_custom_field_sends_only_provided_fields():
-    respx.put(f"{DC_ROOT}/field/customfield_10042", json__eq={
-        "name": "Bug Severity (renamed)",
-    }).mock(return_value=httpx.Response(204))
+    respx.put(
+        f"{DC_ROOT}/field/customfield_10042",
+        json__eq={
+            "name": "Bug Severity (renamed)",
+        },
+    ).mock(return_value=httpx.Response(204))
 
     state = StateFile(env="dev", jira_url=BASE)
     state.custom_fields["bug_severity"] = CustomFieldMapping(id="customfield_10042")
     engine = _dc_engine()
     try:
-        await _run_in_ctx(engine, state, lambda: op.update_custom_field(
-            alias="bug_severity", name="Bug Severity (renamed)",
-        ))
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.update_custom_field(
+                alias="bug_severity",
+                name="Bug Severity (renamed)",
+            ),
+        )
     finally:
         await engine.close()
 
@@ -168,9 +185,13 @@ async def test_update_custom_field_with_no_changes_is_noop():
     state.custom_fields["bug_severity"] = CustomFieldMapping(id="customfield_10042")
     engine = _dc_engine()
     try:
-        await _run_in_ctx(engine, state, lambda: op.update_custom_field(
-            alias="bug_severity",
-        ))
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.update_custom_field(
+                alias="bug_severity",
+            ),
+        )
     finally:
         await engine.close()
     assert not respx.routes
@@ -181,18 +202,25 @@ async def test_update_custom_field_with_no_changes_is_noop():
 @respx.mock
 async def test_add_custom_field_option_appends_to_state():
     respx.post(
-        f"{DC_ROOT}/field/customfield_10042/option", json__eq={"value": "S5"},
+        f"{DC_ROOT}/field/customfield_10042/option",
+        json__eq={"value": "S5"},
     ).mock(return_value=httpx.Response(201, json={"id": "200"}))
 
     state = StateFile(env="dev", jira_url=BASE)
     state.custom_fields["bug_severity"] = CustomFieldMapping(
-        id="customfield_10042", options={"S1": "100"},
+        id="customfield_10042",
+        options={"S1": "100"},
     )
     engine = _dc_engine()
     try:
-        await _run_in_ctx(engine, state, lambda: op.add_custom_field_option(
-            field_alias="bug_severity", value="S5",
-        ))
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.add_custom_field_option(
+                field_alias="bug_severity",
+                value="S5",
+            ),
+        )
     finally:
         await engine.close()
     assert state.custom_fields["bug_severity"].options == {"S1": "100", "S5": "200"}
@@ -202,14 +230,20 @@ async def test_add_custom_field_option_appends_to_state():
 async def test_add_custom_field_option_rejects_duplicate_value():
     state = StateFile(env="dev", jira_url=BASE)
     state.custom_fields["bug_severity"] = CustomFieldMapping(
-        id="customfield_10042", options={"S1": "100"},
+        id="customfield_10042",
+        options={"S1": "100"},
     )
     engine = _dc_engine()
     try:
         with pytest.raises(ConfigurationError) as e:
-            await _run_in_ctx(engine, state, lambda: op.add_custom_field_option(
-                field_alias="bug_severity", value="S1",
-            ))
+            await _run_in_ctx(
+                engine,
+                state,
+                lambda: op.add_custom_field_option(
+                    field_alias="bug_severity",
+                    value="S1",
+                ),
+            )
         assert "already has option" in str(e.value)
     finally:
         await engine.close()
@@ -218,19 +252,23 @@ async def test_add_custom_field_option_rejects_duplicate_value():
 @pytest.mark.asyncio
 @respx.mock
 async def test_remove_custom_field_option_dc_path():
-    respx.delete(f"{DC_ROOT}/field/customfield_10042/option/100").mock(
-        return_value=httpx.Response(204)
-    )
+    respx.delete(f"{DC_ROOT}/field/customfield_10042/option/100").mock(return_value=httpx.Response(204))
 
     state = StateFile(env="dev", jira_url=BASE)
     state.custom_fields["bug_severity"] = CustomFieldMapping(
-        id="customfield_10042", options={"S1": "100", "S2": "101"},
+        id="customfield_10042",
+        options={"S1": "100", "S2": "101"},
     )
     engine = _dc_engine()
     try:
-        await _run_in_ctx(engine, state, lambda: op.remove_custom_field_option(
-            field_alias="bug_severity", value="S1",
-        ))
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.remove_custom_field_option(
+                field_alias="bug_severity",
+                value="S1",
+            ),
+        )
     finally:
         await engine.close()
     assert state.custom_fields["bug_severity"].options == {"S2": "101"}
@@ -240,29 +278,45 @@ async def test_remove_custom_field_option_dc_path():
 @respx.mock
 async def test_remove_custom_field_option_cloud_goes_through_context():
     respx.get(f"{CLOUD_ROOT}/serverInfo").mock(
-        return_value=httpx.Response(200, json={
-            "baseUrl": BASE, "version": "1001", "deploymentType": "Cloud",
-        })
+        return_value=httpx.Response(
+            200,
+            json={
+                "baseUrl": BASE,
+                "version": "1001",
+                "deploymentType": "Cloud",
+            },
+        )
     )
     respx.get(f"{CLOUD_ROOT}/field/customfield_10042/context").mock(
-        return_value=httpx.Response(200, json={
-            "values": [{"id": "ctx-1"}], "isLast": True,
-            "startAt": 0, "maxResults": 1,
-        })
+        return_value=httpx.Response(
+            200,
+            json={
+                "values": [{"id": "ctx-1"}],
+                "isLast": True,
+                "startAt": 0,
+                "maxResults": 1,
+            },
+        )
     )
-    respx.delete(
-        f"{CLOUD_ROOT}/field/customfield_10042/context/ctx-1/option/100"
-    ).mock(return_value=httpx.Response(204))
+    respx.delete(f"{CLOUD_ROOT}/field/customfield_10042/context/ctx-1/option/100").mock(
+        return_value=httpx.Response(204)
+    )
 
     state = StateFile(env="dev", jira_url=BASE)
     state.custom_fields["bug_severity"] = CustomFieldMapping(
-        id="customfield_10042", options={"S1": "100"},
+        id="customfield_10042",
+        options={"S1": "100"},
     )
     engine = _cloud_engine()
     try:
-        await _run_in_ctx(engine, state, lambda: op.remove_custom_field_option(
-            field_alias="bug_severity", value="S1",
-        ))
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.remove_custom_field_option(
+                field_alias="bug_severity",
+                value="S1",
+            ),
+        )
     finally:
         await engine.close()
 
@@ -271,14 +325,20 @@ async def test_remove_custom_field_option_cloud_goes_through_context():
 async def test_remove_custom_field_option_missing_value_raises():
     state = StateFile(env="dev", jira_url=BASE)
     state.custom_fields["bug_severity"] = CustomFieldMapping(
-        id="customfield_10042", options={"S1": "100"},
+        id="customfield_10042",
+        options={"S1": "100"},
     )
     engine = _dc_engine()
     try:
         with pytest.raises(ConfigurationError) as e:
-            await _run_in_ctx(engine, state, lambda: op.remove_custom_field_option(
-                field_alias="bug_severity", value="S9",
-            ))
+            await _run_in_ctx(
+                engine,
+                state,
+                lambda: op.remove_custom_field_option(
+                    field_alias="bug_severity",
+                    value="S9",
+                ),
+            )
         assert "no option named" in str(e.value)
     finally:
         await engine.close()
@@ -288,17 +348,25 @@ async def test_remove_custom_field_option_missing_value_raises():
 @pytest.mark.asyncio
 @respx.mock
 async def test_update_screen_rename():
-    respx.put(f"{DC_ROOT}/screens/scr-1", json__eq={
-        "name": "Bug Screen v2",
-    }).mock(return_value=httpx.Response(204))
+    respx.put(
+        f"{DC_ROOT}/screens/scr-1",
+        json__eq={
+            "name": "Bug Screen v2",
+        },
+    ).mock(return_value=httpx.Response(204))
 
     state = StateFile(env="dev", jira_url=BASE)
     state.screens["bug_screen"] = ScreenMapping(id="scr-1")
     engine = _dc_engine()
     try:
-        await _run_in_ctx(engine, state, lambda: op.update_screen(
-            alias="bug_screen", name="Bug Screen v2",
-        ))
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.update_screen(
+                alias="bug_screen",
+                name="Bug Screen v2",
+            ),
+        )
     finally:
         await engine.close()
 
@@ -307,9 +375,12 @@ async def test_update_screen_rename():
 @pytest.mark.asyncio
 @respx.mock
 async def test_update_screen_scheme_replaces_screens_dict():
-    respx.put(f"{DC_ROOT}/screenscheme/ss-1", json__eq={
-        "screens": {"default": "scr-2", "create": "scr-1"},
-    }).mock(return_value=httpx.Response(204))
+    respx.put(
+        f"{DC_ROOT}/screenscheme/ss-1",
+        json__eq={
+            "screens": {"default": "scr-2", "create": "scr-1"},
+        },
+    ).mock(return_value=httpx.Response(204))
 
     state = StateFile(env="dev", jira_url=BASE)
     state.screens["screen_a"] = ScreenMapping(id="scr-1")
@@ -317,10 +388,14 @@ async def test_update_screen_scheme_replaces_screens_dict():
     state.screen_schemes["bug_ss"] = SimpleMapping(id="ss-1")
     engine = _dc_engine()
     try:
-        await _run_in_ctx(engine, state, lambda: op.update_screen_scheme(
-            alias="bug_ss",
-            screens={"default": "screen_b", "create": "screen_a"},
-        ))
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.update_screen_scheme(
+                alias="bug_ss",
+                screens={"default": "screen_b", "create": "screen_a"},
+            ),
+        )
     finally:
         await engine.close()
 
@@ -333,9 +408,14 @@ async def test_update_screen_scheme_requires_default_when_screens_given():
     engine = _dc_engine()
     try:
         with pytest.raises(ConfigurationError):
-            await _run_in_ctx(engine, state, lambda: op.update_screen_scheme(
-                alias="bug_ss", screens={"create": "screen_a"},
-            ))
+            await _run_in_ctx(
+                engine,
+                state,
+                lambda: op.update_screen_scheme(
+                    alias="bug_ss",
+                    screens={"create": "screen_a"},
+                ),
+            )
     finally:
         await engine.close()
 
@@ -346,10 +426,12 @@ async def test_update_screen_scheme_requires_default_when_screens_given():
 async def test_update_issuetype_screen_scheme_replaces_mappings():
     respx.put(
         f"{DC_ROOT}/issuetypescreenscheme/itss-1/mapping",
-        json__eq={"issueTypeMappings": [
-            {"issueTypeId": "default", "screenSchemeId": "ss-1"},
-            {"issueTypeId": "10010", "screenSchemeId": "ss-2"},
-        ]},
+        json__eq={
+            "issueTypeMappings": [
+                {"issueTypeId": "default", "screenSchemeId": "ss-1"},
+                {"issueTypeId": "10010", "screenSchemeId": "ss-2"},
+            ]
+        },
     ).mock(return_value=httpx.Response(204))
 
     state = StateFile(env="dev", jira_url=BASE)
@@ -359,10 +441,14 @@ async def test_update_issuetype_screen_scheme_replaces_mappings():
     state.issuetype_screen_schemes["bug_itss"] = SimpleMapping(id="itss-1")
     engine = _dc_engine()
     try:
-        await _run_in_ctx(engine, state, lambda: op.update_issuetype_screen_scheme(
-            alias="bug_itss",
-            mappings={"default": "default_ss", "bug": "bug_ss"},
-        ))
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.update_issuetype_screen_scheme(
+                alias="bug_itss",
+                mappings={"default": "default_ss", "bug": "bug_ss"},
+            ),
+        )
     finally:
         await engine.close()
 
@@ -370,17 +456,25 @@ async def test_update_issuetype_screen_scheme_replaces_mappings():
 @pytest.mark.asyncio
 @respx.mock
 async def test_update_issuetype_screen_scheme_rename_only_skips_mappings_put():
-    respx.put(f"{DC_ROOT}/issuetypescreenscheme/itss-1", json__eq={
-        "name": "Renamed ITSS",
-    }).mock(return_value=httpx.Response(204))
+    respx.put(
+        f"{DC_ROOT}/issuetypescreenscheme/itss-1",
+        json__eq={
+            "name": "Renamed ITSS",
+        },
+    ).mock(return_value=httpx.Response(204))
 
     state = StateFile(env="dev", jira_url=BASE)
     state.issuetype_screen_schemes["bug_itss"] = SimpleMapping(id="itss-1")
     engine = _dc_engine()
     try:
-        await _run_in_ctx(engine, state, lambda: op.update_issuetype_screen_scheme(
-            alias="bug_itss", name="Renamed ITSS",
-        ))
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.update_issuetype_screen_scheme(
+                alias="bug_itss",
+                name="Renamed ITSS",
+            ),
+        )
     finally:
         await engine.close()
 
@@ -391,9 +485,11 @@ async def test_update_issuetype_screen_scheme_rename_only_skips_mappings_put():
 async def test_update_field_configuration_scheme_replaces_mappings():
     respx.put(
         f"{DC_ROOT}/fieldconfigurationscheme/fcs-1/mapping",
-        json__eq={"mappings": [
-            {"issueTypeId": "default", "fieldConfigurationId": "fc-1"},
-        ]},
+        json__eq={
+            "mappings": [
+                {"issueTypeId": "default", "fieldConfigurationId": "fc-1"},
+            ]
+        },
     ).mock(return_value=httpx.Response(204))
 
     state = StateFile(env="dev", jira_url=BASE)
@@ -401,10 +497,14 @@ async def test_update_field_configuration_scheme_replaces_mappings():
     state.field_configuration_schemes["bug_fcs"] = SimpleMapping(id="fcs-1")
     engine = _dc_engine()
     try:
-        await _run_in_ctx(engine, state, lambda: op.update_field_configuration_scheme(
-            alias="bug_fcs",
-            mappings={"default": "default_fc"},
-        ))
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.update_field_configuration_scheme(
+                alias="bug_fcs",
+                mappings={"default": "default_fc"},
+            ),
+        )
     finally:
         await engine.close()
 
@@ -413,16 +513,26 @@ async def test_update_field_configuration_scheme_replaces_mappings():
 @pytest.mark.asyncio
 @respx.mock
 async def test_update_issuetype_rename_and_description():
-    respx.put(f"{DC_ROOT}/issuetype/10010", json__eq={
-        "name": "Defect", "description": "production defect",
-    }).mock(return_value=httpx.Response(204))
+    respx.put(
+        f"{DC_ROOT}/issuetype/10010",
+        json__eq={
+            "name": "Defect",
+            "description": "production defect",
+        },
+    ).mock(return_value=httpx.Response(204))
 
     state = StateFile(env="dev", jira_url=BASE)
     state.issuetypes["bug"] = SimpleMapping(id="10010")
     engine = _dc_engine()
     try:
-        await _run_in_ctx(engine, state, lambda: op.update_issuetype(
-            alias="bug", name="Defect", description="production defect",
-        ))
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.update_issuetype(
+                alias="bug",
+                name="Defect",
+                description="production defect",
+            ),
+        )
     finally:
         await engine.close()

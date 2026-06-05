@@ -73,13 +73,10 @@ class CustomField:
             raise ValueError("CustomField requires a non-empty name")
         if self.options and self.type not in _SELECT_TYPES:
             raise ValueError(
-                f"CustomField {self.alias!r}: options only valid for select-style "
-                f"types, got {self.type.__name__}"
+                f"CustomField {self.alias!r}: options only valid for select-style types, got {self.type.__name__}"
             )
         if self.type in _SELECT_TYPES and not self.options:
-            raise ValueError(
-                f"CustomField {self.alias!r}: select-style fields require options"
-            )
+            raise ValueError(f"CustomField {self.alias!r}: select-style fields require options")
         # Lazy import to avoid cycles at module-load time.
         from pensum.registry import registry
 

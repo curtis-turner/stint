@@ -38,6 +38,7 @@ class IssueTypeMeta(PensumMeta):
         # field references (e.g. ``Bug.c.severity == "S1"``). Imported lazily
         # to avoid a cycle (query/ depends on schema/).
         from pensum.query.columns import Columns
+
         cls.c = Columns(cls)
         registry.register_issuetype(cls)
         return cls
@@ -112,7 +113,7 @@ def _validate_select_annotation(
         raise ConfigurationError(
             f"{class_name}.{attr_name}: Pydantic Literal values do not match "
             f"CustomField {cf.alias!r} options. " + "; ".join(detail) + ". "
-            f"Keep them in sync or remove one source of truth."
+            "Keep them in sync or remove one source of truth."
         )
 
 

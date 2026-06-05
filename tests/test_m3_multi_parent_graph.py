@@ -10,22 +10,13 @@ from pensum.migrations.exceptions import MigrationGraphError
 def test_loader_accepts_tuple_down_revision(tmp_path):
     """A merge migration's tuple down_revision loads and validates."""
     (tmp_path / "a.py").write_text(
-        "revision = 'a'\n"
-        "down_revision = None\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'a'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     (tmp_path / "b.py").write_text(
-        "revision = 'b'\n"
-        "down_revision = None\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'b'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     (tmp_path / "m.py").write_text(
-        "revision = 'm'\n"
-        "down_revision = ('a', 'b')\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'm'\ndown_revision = ('a', 'b')\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     graph = load_migrations(tmp_path)
     assert graph.by_revision["m"].down_revision == ("a", "b")
@@ -34,10 +25,7 @@ def test_loader_accepts_tuple_down_revision(tmp_path):
 
 def test_loader_rejects_bogus_down_revision_type(tmp_path):
     (tmp_path / "a.py").write_text(
-        "revision = 'a'\n"
-        "down_revision = 42\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'a'\ndown_revision = 42\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     with pytest.raises(Exception, match="down_revision must be"):
         load_migrations(tmp_path)
@@ -47,28 +35,16 @@ def test_loader_rejects_bogus_down_revision_type(tmp_path):
 def test_chain_from_includes_both_branches_before_merge(tmp_path):
     """With base→a, base→b, merge(a,b)→m: from base, chain is [a, b, m] (or [b, a, m])."""
     (tmp_path / "base.py").write_text(
-        "revision = 'base'\n"
-        "down_revision = None\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'base'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     (tmp_path / "a.py").write_text(
-        "revision = 'a'\n"
-        "down_revision = 'base'\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'a'\ndown_revision = 'base'\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     (tmp_path / "b.py").write_text(
-        "revision = 'b'\n"
-        "down_revision = 'base'\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'b'\ndown_revision = 'base'\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     (tmp_path / "m.py").write_text(
-        "revision = 'm'\n"
-        "down_revision = ('a', 'b')\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'm'\ndown_revision = ('a', 'b')\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     graph = load_migrations(tmp_path)
     # Single head after merge:
@@ -88,28 +64,16 @@ def test_chain_from_intermediate_branch_includes_other_branch_and_merge(tmp_path
     """If we're at `a`, the remaining chain is [b, m] — we still need b's work
     applied before the merge can run."""
     (tmp_path / "base.py").write_text(
-        "revision = 'base'\n"
-        "down_revision = None\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'base'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     (tmp_path / "a.py").write_text(
-        "revision = 'a'\n"
-        "down_revision = 'base'\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'a'\ndown_revision = 'base'\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     (tmp_path / "b.py").write_text(
-        "revision = 'b'\n"
-        "down_revision = 'base'\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'b'\ndown_revision = 'base'\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     (tmp_path / "m.py").write_text(
-        "revision = 'm'\n"
-        "down_revision = ('a', 'b')\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'm'\ndown_revision = ('a', 'b')\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     graph = load_migrations(tmp_path)
     chain = graph.chain_from("a")
@@ -120,10 +84,7 @@ def test_chain_from_intermediate_branch_includes_other_branch_and_merge(tmp_path
 
 def test_graph_with_orphan_parent_in_tuple_rejected(tmp_path):
     (tmp_path / "m.py").write_text(
-        "revision = 'm'\n"
-        "down_revision = ('a', 'b')\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'm'\ndown_revision = ('a', 'b')\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     with pytest.raises(MigrationGraphError):
         load_migrations(tmp_path)

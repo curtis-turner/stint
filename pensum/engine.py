@@ -38,7 +38,7 @@ class Engine:
     async def close(self) -> None:
         await self.client.close()
 
-    async def __aenter__(self) -> "Engine":
+    async def __aenter__(self) -> Engine:
         return self
 
     async def __aexit__(self, *_: object) -> None:
@@ -71,13 +71,10 @@ def create_engine(
     chosen = dialect or prefix_dialect
     if not chosen:
         raise ConfigurationError(
-            "create_engine requires a dialect. Use a URL prefix like "
-            "'jira_dc+https://...' or pass dialect='jira_dc'."
+            "create_engine requires a dialect. Use a URL prefix like 'jira_dc+https://...' or pass dialect='jira_dc'."
         )
     if chosen not in _DIALECT_REGISTRY:
-        raise ConfigurationError(
-            f"Unknown dialect {chosen!r}. Known: {sorted(_DIALECT_REGISTRY)}"
-        )
+        raise ConfigurationError(f"Unknown dialect {chosen!r}. Known: {sorted(_DIALECT_REGISTRY)}")
     client = JiraHTTPClient(base_url, auth=auth, verify_ssl=verify_ssl, timeout=timeout)
     dialect_obj = _DIALECT_REGISTRY[chosen](client)
     return Engine(base_url=base_url, dialect=dialect_obj, client=client)

@@ -1,7 +1,5 @@
 """`pensum revision` CLI: empty stub + merge stub."""
 
-import pytest
-
 from pensum import load_migrations
 from pensum.cli.main import main
 
@@ -10,10 +8,7 @@ def _write_initial(mig_dir, rev: str = "initial1234") -> None:
     """Seed a migration dir with one base migration."""
     mig_dir.mkdir(parents=True, exist_ok=True)
     (mig_dir / f"2026_05_20_1200_{rev}.py").write_text(
-        f"revision = {rev!r}\n"
-        f"down_revision = None\n"
-        f"async def upgrade(): pass\n"
-        f"async def downgrade(): pass\n"
+        f"revision = {rev!r}\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
 
 
@@ -21,9 +16,15 @@ def _write_initial(mig_dir, rev: str = "initial1234") -> None:
 def test_revision_writes_skeleton_with_current_head_as_parent(tmp_path, capsys):
     mig_dir = tmp_path / "migrations"
     _write_initial(mig_dir, "initial1234")
-    rc = main([
-        "revision", "--migrations-dir", str(mig_dir), "-m", "add bug severity",
-    ])
+    rc = main(
+        [
+            "revision",
+            "--migrations-dir",
+            str(mig_dir),
+            "-m",
+            "add bug severity",
+        ]
+    )
     assert rc == 0
     out = capsys.readouterr().out
     assert "wrote " in out
@@ -38,9 +39,15 @@ def test_revision_writes_skeleton_with_current_head_as_parent(tmp_path, capsys):
 
 def test_revision_writes_skeleton_with_no_parent_when_empty_dir(tmp_path):
     mig_dir = tmp_path / "migrations"
-    rc = main([
-        "revision", "--migrations-dir", str(mig_dir), "-m", "initial schema",
-    ])
+    rc = main(
+        [
+            "revision",
+            "--migrations-dir",
+            str(mig_dir),
+            "-m",
+            "initial schema",
+        ]
+    )
     assert rc == 0
     graph = load_migrations(mig_dir)
     new = next(iter(graph.by_revision.values()))
@@ -49,10 +56,15 @@ def test_revision_writes_skeleton_with_no_parent_when_empty_dir(tmp_path):
 
 def test_revision_message_becomes_filename_slug(tmp_path):
     mig_dir = tmp_path / "migrations"
-    rc = main([
-        "revision", "--migrations-dir", str(mig_dir),
-        "-m", "Add bug-severity, with options!",
-    ])
+    rc = main(
+        [
+            "revision",
+            "--migrations-dir",
+            str(mig_dir),
+            "-m",
+            "Add bug-severity, with options!",
+        ]
+    )
     assert rc == 0
     files = list(mig_dir.glob("*.py"))
     assert len(files) == 1
@@ -65,22 +77,23 @@ def test_revision_merge_writes_tuple_down_revision(tmp_path, capsys):
     mig_dir = tmp_path / "migrations"
     mig_dir.mkdir()
     (mig_dir / "a.py").write_text(
-        "revision = 'a_rev'\n"
-        "down_revision = None\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'a_rev'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     (mig_dir / "b.py").write_text(
-        "revision = 'b_rev'\n"
-        "down_revision = None\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'b_rev'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
-    rc = main([
-        "revision", "--migrations-dir", str(mig_dir),
-        "--merge", "a_rev", "b_rev",
-        "-m", "merge two branches",
-    ])
+    rc = main(
+        [
+            "revision",
+            "--migrations-dir",
+            str(mig_dir),
+            "--merge",
+            "a_rev",
+            "b_rev",
+            "-m",
+            "merge two branches",
+        ]
+    )
     assert rc == 0
     graph = load_migrations(mig_dir)
     merge = next(m for m in graph.by_revision.values() if m.down_revision and isinstance(m.down_revision, tuple))
@@ -92,28 +105,26 @@ def test_revision_merge_rejects_non_head(tmp_path, capsys):
     mig_dir = tmp_path / "migrations"
     mig_dir.mkdir()
     (mig_dir / "a.py").write_text(
-        "revision = 'a_rev'\n"
-        "down_revision = None\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'a_rev'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     (mig_dir / "child.py").write_text(
-        "revision = 'child'\n"
-        "down_revision = 'a_rev'\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'child'\ndown_revision = 'a_rev'\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     (mig_dir / "b.py").write_text(
-        "revision = 'b_rev'\n"
-        "down_revision = None\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'b_rev'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
-    rc = main([
-        "revision", "--migrations-dir", str(mig_dir),
-        "--merge", "a_rev", "b_rev",   # a_rev has a child, not a head
-        "-m", "merge",
-    ])
+    rc = main(
+        [
+            "revision",
+            "--migrations-dir",
+            str(mig_dir),
+            "--merge",
+            "a_rev",
+            "b_rev",  # a_rev has a child, not a head
+            "-m",
+            "merge",
+        ]
+    )
     out = capsys.readouterr().out
     assert rc == 2
     assert "not current heads" in out
@@ -122,11 +133,18 @@ def test_revision_merge_rejects_non_head(tmp_path, capsys):
 def test_revision_rejects_autogenerate_with_merge(tmp_path, capsys):
     mig_dir = tmp_path / "migrations"
     _write_initial(mig_dir)
-    rc = main([
-        "revision", "--migrations-dir", str(mig_dir),
-        "--merge", "x", "y",
-        "--autogenerate",
-        "-m", "x",
-    ])
+    rc = main(
+        [
+            "revision",
+            "--migrations-dir",
+            str(mig_dir),
+            "--merge",
+            "x",
+            "y",
+            "--autogenerate",
+            "-m",
+            "x",
+        ]
+    )
     assert rc == 2
     assert "mutually exclusive" in capsys.readouterr().out

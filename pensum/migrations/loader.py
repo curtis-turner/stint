@@ -12,7 +12,6 @@ from pathlib import Path
 from pensum.migrations.base import Migration, RevisionGraph
 from pensum.migrations.exceptions import MigrationError
 
-
 REQUIRED_GLOBALS = ("revision", "down_revision", "upgrade", "downgrade")
 
 
@@ -37,23 +36,20 @@ def _load_migration_file(path: Path) -> Migration:
     spec.loader.exec_module(module)
     for name in REQUIRED_GLOBALS:
         if not hasattr(module, name):
-            raise MigrationError(
-                f"migration {path} is missing required global {name!r}"
-            )
+            raise MigrationError(f"migration {path} is missing required global {name!r}")
     description = getattr(module, "description", "") or _extract_description(path)
-    dr = getattr(module, "down_revision")
+    dr = module.down_revision
     if dr is not None and not isinstance(dr, (str, tuple)):
         raise MigrationError(
-            f"migration {path}: down_revision must be None, str, or tuple of "
-            f"str (got {type(dr).__name__})"
+            f"migration {path}: down_revision must be None, str, or tuple of str (got {type(dr).__name__})"
         )
     return Migration(
-        revision=getattr(module, "revision"),
+        revision=module.revision,
         down_revision=dr,
         description=description,
         source_path=str(path),
-        upgrade=getattr(module, "upgrade"),
-        downgrade=getattr(module, "downgrade"),
+        upgrade=module.upgrade,
+        downgrade=module.downgrade,
     )
 
 

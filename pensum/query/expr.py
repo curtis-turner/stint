@@ -47,7 +47,7 @@ class Column:
     attr_name: str
     cf_alias: str | None = None  # None → Jira system field name
 
-    def resolve_jql_field(self, state: "StateFile") -> str:
+    def resolve_jql_field(self, state: StateFile) -> str:
         if self.cf_alias is None:
             return self.attr_name
         mapping = state.custom_fields.get(self.cf_alias)
@@ -60,43 +60,43 @@ class Column:
         # JQL accepts both forms; the ``cf[N]`` notation is more portable
         # across Jira versions.
         if mapping.id.startswith("customfield_"):
-            num = mapping.id[len("customfield_"):]
+            num = mapping.id[len("customfield_") :]
             return f"cf[{num}]"
         return mapping.id
 
     # Comparison operators produce Expression nodes
-    def __eq__(self, other: Any) -> "Expression":   # type: ignore[override]
+    def __eq__(self, other: Any) -> Expression:  # type: ignore[override]
         return _Cmp(self, "=", other)
 
-    def __ne__(self, other: Any) -> "Expression":   # type: ignore[override]
+    def __ne__(self, other: Any) -> Expression:  # type: ignore[override]
         return _Cmp(self, "!=", other)
 
-    def __lt__(self, other: Any) -> "Expression":
+    def __lt__(self, other: Any) -> Expression:
         return _Cmp(self, "<", other)
 
-    def __le__(self, other: Any) -> "Expression":
+    def __le__(self, other: Any) -> Expression:
         return _Cmp(self, "<=", other)
 
-    def __gt__(self, other: Any) -> "Expression":
+    def __gt__(self, other: Any) -> Expression:
         return _Cmp(self, ">", other)
 
-    def __ge__(self, other: Any) -> "Expression":
+    def __ge__(self, other: Any) -> Expression:
         return _Cmp(self, ">=", other)
 
-    def in_(self, values: list[Any]) -> "Expression":
+    def in_(self, values: list[Any]) -> Expression:
         return _In(self, list(values))
 
-    def not_in(self, values: list[Any]) -> "Expression":
+    def not_in(self, values: list[Any]) -> Expression:
         return _NotIn(self, list(values))
 
-    def contains(self, substring: str) -> "Expression":
+    def contains(self, substring: str) -> Expression:
         """JQL `~` operator: full-text contains. Only valid on text fields."""
         return _Cmp(self, "~", substring)
 
-    def is_null(self) -> "Expression":
+    def is_null(self) -> Expression:
         return _Cmp(self, "is", None)
 
-    def is_not_null(self) -> "Expression":
+    def is_not_null(self) -> Expression:
         return _Cmp(self, "is not", None)
 
     def __hash__(self) -> int:
@@ -107,16 +107,16 @@ class Column:
 class Expression:
     """Base. Subclasses implement compile()."""
 
-    def compile(self, state: "StateFile") -> str:
+    def compile(self, state: StateFile) -> str:
         raise NotImplementedError
 
-    def __and__(self, other: "Expression") -> "Expression":
+    def __and__(self, other: Expression) -> Expression:
         return _And([self, other])
 
-    def __or__(self, other: "Expression") -> "Expression":
+    def __or__(self, other: Expression) -> Expression:
         return _Or([self, other])
 
-    def __invert__(self) -> "Expression":
+    def __invert__(self) -> Expression:
         return _Not(self)
 
 
@@ -126,7 +126,7 @@ class _Cmp(Expression):
     op: str
     value: Any
 
-    def compile(self, state: "StateFile") -> str:
+    def compile(self, state: StateFile) -> str:
         field = self.column.resolve_jql_field(state)
         if self.op in ("is", "is not"):
             return f"{field} {self.op} EMPTY"
@@ -138,7 +138,7 @@ class _In(Expression):
     column: Column
     values: list[Any]
 
-    def compile(self, state: "StateFile") -> str:
+    def compile(self, state: StateFile) -> str:
         field = self.column.resolve_jql_field(state)
         return f"{field} in {_quote_list(self.values)}"
 
@@ -148,7 +148,7 @@ class _NotIn(Expression):
     column: Column
     values: list[Any]
 
-    def compile(self, state: "StateFile") -> str:
+    def compile(self, state: StateFile) -> str:
         field = self.column.resolve_jql_field(state)
         return f"{field} not in {_quote_list(self.values)}"
 
@@ -157,7 +157,7 @@ class _NotIn(Expression):
 class _And(Expression):
     parts: list[Expression]
 
-    def compile(self, state: "StateFile") -> str:
+    def compile(self, state: StateFile) -> str:
         return "(" + " AND ".join(p.compile(state) for p in self.parts) + ")"
 
 
@@ -165,7 +165,7 @@ class _And(Expression):
 class _Or(Expression):
     parts: list[Expression]
 
-    def compile(self, state: "StateFile") -> str:
+    def compile(self, state: StateFile) -> str:
         return "(" + " OR ".join(p.compile(state) for p in self.parts) + ")"
 
 
@@ -173,7 +173,7 @@ class _Or(Expression):
 class _Not(Expression):
     inner: Expression
 
-    def compile(self, state: "StateFile") -> str:
+    def compile(self, state: StateFile) -> str:
         return f"NOT ({self.inner.compile(state)})"
 
 

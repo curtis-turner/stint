@@ -59,16 +59,16 @@ class CommitResult:
 class AsyncSession:
     """Read + write session."""
 
-    def __init__(self, engine: "Engine", state: "StateFile") -> None:
+    def __init__(self, engine: Engine, state: StateFile) -> None:
         self.engine = engine
         self.state = state
         self._identity: dict[tuple[type, str], BaseModel] = {}
         self._originals: dict[tuple[type, str], dict[str, Any]] = {}
         self._pending_inserts: list[tuple[BaseModel, str]] = []
-            # (instance, project_key) — project resolved at add time
+        # (instance, project_key) — project resolved at add time
         self._pending_deletes: list[BaseModel] = []
 
-    async def __aenter__(self) -> "AsyncSession":
+    async def __aenter__(self) -> AsyncSession:
         return self
 
     async def __aexit__(self, *_: object) -> None:
@@ -76,12 +76,13 @@ class AsyncSession:
         return None
 
     # ── Reads ────────────────────────────────────────────────────────
-    async def scalars(self, stmt: "Select") -> list["BaseModel"]:
+    async def scalars(self, stmt: Select) -> list[BaseModel]:
         jql = stmt.compile(self.state)
         fields = field_keys_for_model(stmt.model, self.state)
         results: list[BaseModel] = []
         async for issue in self.engine.dialect.search(
-            jql=jql, fields=fields,
+            jql=jql,
+            fields=fields,
             page_size=stmt.limit_n or 50,
         ):
             results.append(self._hydrate_with_identity(stmt.model, issue))
@@ -90,8 +91,10 @@ class AsyncSession:
         return results
 
     async def get(
-        self, model: type["BaseModel"], key: str,
-    ) -> "BaseModel | None":
+        self,
+        model: type[BaseModel],
+        key: str,
+    ) -> BaseModel | None:
         cached = self._identity.get((model, key))
         if cached is not None:
             return cached
@@ -105,7 +108,7 @@ class AsyncSession:
         return self._hydrate_with_identity(model, issue)
 
     # ── Writes ───────────────────────────────────────────────────────
-    def add(self, instance: "BaseModel", *, project: str | None = None) -> None:
+    def add(self, instance: BaseModel, *, project: str | None = None) -> None:
         """Stage `instance` for insertion on the next commit.
 
         ``project`` is the Jira project key. If omitted, inferred from
@@ -121,12 +124,10 @@ class AsyncSession:
         project_key = project or _infer_project(instance)
         self._pending_inserts.append((instance, project_key))
 
-    def delete(self, instance: "BaseModel") -> None:
+    def delete(self, instance: BaseModel) -> None:
         """Stage `instance` for deletion on commit. Requires `instance.key`."""
         if not getattr(instance, "key", None):
-            raise ConfigurationError(
-                f"delete: instance has no `key`; cannot delete an unsaved issue."
-            )
+            raise ConfigurationError("delete: instance has no `key`; cannot delete an unsaved issue.")
         self._pending_deletes.append(instance)
 
     async def commit(self) -> list[CommitResult]:
@@ -142,7 +143,9 @@ class AsyncSession:
         for instance, project_key in self._pending_inserts:
             try:
                 body = build_insert_payload(
-                    instance, self.state, is_cloud=is_cloud,
+                    instance,
+                    self.state,
+                    is_cloud=is_cloud,
                     project_key=project_key,
                 )
                 response = await self.engine.dialect.create_issue(body)
@@ -151,13 +154,22 @@ class AsyncSession:
                     instance.key = new_key
                     self._identity[(type(instance), new_key)] = instance
                     self._originals[(type(instance), new_key)] = instance.model_dump()
-                results.append(CommitResult(
-                    instance=instance, operation="insert", success=True,
-                ))
+                results.append(
+                    CommitResult(
+                        instance=instance,
+                        operation="insert",
+                        success=True,
+                    )
+                )
             except Exception as e:
-                results.append(CommitResult(
-                    instance=instance, operation="insert", success=False, error=e,
-                ))
+                results.append(
+                    CommitResult(
+                        instance=instance,
+                        operation="insert",
+                        success=False,
+                        error=e,
+                    )
+                )
         self._pending_inserts.clear()
 
         # 2. Updates (dirty-tracked instances)
@@ -167,17 +179,29 @@ class AsyncSession:
                 continue
             try:
                 body = build_update_payload(
-                    instance, self.state, is_cloud=is_cloud, dirty=dirty,
+                    instance,
+                    self.state,
+                    is_cloud=is_cloud,
+                    dirty=dirty,
                 )
                 await self.engine.dialect.update_issue(instance.key, body)
                 self._originals[key_tuple] = instance.model_dump()
-                results.append(CommitResult(
-                    instance=instance, operation="update", success=True,
-                ))
+                results.append(
+                    CommitResult(
+                        instance=instance,
+                        operation="update",
+                        success=True,
+                    )
+                )
             except Exception as e:
-                results.append(CommitResult(
-                    instance=instance, operation="update", success=False, error=e,
-                ))
+                results.append(
+                    CommitResult(
+                        instance=instance,
+                        operation="update",
+                        success=False,
+                        error=e,
+                    )
+                )
 
         # 3. Deletes
         for instance in self._pending_deletes:
@@ -186,13 +210,22 @@ class AsyncSession:
                 key_tuple = (type(instance), instance.key)
                 self._identity.pop(key_tuple, None)
                 self._originals.pop(key_tuple, None)
-                results.append(CommitResult(
-                    instance=instance, operation="delete", success=True,
-                ))
+                results.append(
+                    CommitResult(
+                        instance=instance,
+                        operation="delete",
+                        success=True,
+                    )
+                )
             except Exception as e:
-                results.append(CommitResult(
-                    instance=instance, operation="delete", success=False, error=e,
-                ))
+                results.append(
+                    CommitResult(
+                        instance=instance,
+                        operation="delete",
+                        success=False,
+                        error=e,
+                    )
+                )
         self._pending_deletes.clear()
 
         if any(not r.success for r in results):
@@ -201,8 +234,10 @@ class AsyncSession:
 
     # ── Helpers ──────────────────────────────────────────────────────
     def _hydrate_with_identity(
-        self, model: type["BaseModel"], issue: dict[str, Any],
-    ) -> "BaseModel":
+        self,
+        model: type[BaseModel],
+        issue: dict[str, Any],
+    ) -> BaseModel:
         key = issue.get("key")
         if key is not None:
             cached = self._identity.get((model, key))
@@ -215,22 +250,21 @@ class AsyncSession:
         return instance
 
     def _dirty_fields(
-        self, instance: "BaseModel", key_tuple: tuple[type, str],
+        self,
+        instance: BaseModel,
+        key_tuple: tuple[type, str],
     ) -> set[str]:
         baseline = self._originals.get(key_tuple)
         if baseline is None:
             return set()
         current = instance.model_dump()
-        return {
-            attr for attr, value in current.items()
-            if baseline.get(attr) != value and attr != "key"
-        }
+        return {attr for attr, value in current.items() if baseline.get(attr) != value and attr != "key"}
 
     def _is_cloud(self) -> bool:
         return self.engine.dialect.name == "jira_cloud"
 
 
-def _infer_project(instance: "BaseModel") -> str:
+def _infer_project(instance: BaseModel) -> str:
     """Look up `instance.__class__.__projects__` set by ProjectMeta."""
     model = type(instance)
     projects = getattr(model, "__projects__", ())
@@ -238,11 +272,11 @@ def _infer_project(instance: "BaseModel") -> str:
         raise ConfigurationError(
             f"add: cannot infer project for {model.__name__!r}. No declared "
             f"Project includes this issuetype in __issuetypes__. Pass "
-            f"`project=\"<KEY>\"` explicitly."
+            f'`project="<KEY>"` explicitly.'
         )
     if len(projects) > 1:
         raise ConfigurationError(
             f"add: {model.__name__!r} is declared in multiple projects "
-            f"({list(projects)}). Pass `project=\"<KEY>\"` explicitly."
+            f'({list(projects)}). Pass `project="<KEY>"` explicitly.'
         )
     return projects[0]

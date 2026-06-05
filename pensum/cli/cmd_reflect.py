@@ -18,6 +18,7 @@ import yaml
 from cyclopts import Parameter
 
 from pensum.cli.app import app
+from pensum.cli.env_config import require_resolved_connection, resolve_connection
 from pensum.client.auth import APITokenAuth, BasicAuth, PATAuth
 from pensum.engine import create_engine
 
@@ -27,31 +28,36 @@ DialectName = Literal["jira_dc", "jira_cloud"]
 
 @app.command
 async def reflect(
+    *,
+    env: Annotated[
+        str | None,
+        Parameter(help="Env config name; reads connection params from ~/.pensum/envs/<env>.yaml."),
+    ] = None,
     url: Annotated[
-        str,
-        Parameter(help="Base URL, optionally with dialect prefix (e.g. jira_dc+https://jira.example.com)."),
-    ],
+        str | None,
+        Parameter(help="Base URL. Read from env config if omitted."),
+    ] = None,
     auth: Annotated[
-        AuthMode,
+        AuthMode | None,
         Parameter(
             help=(
-                "Auth mode. pat=Personal Access Token (DC), basic=username+password, api-token=email+API token (Cloud)."
+                "Auth mode. pat=Personal Access Token (DC), basic=username+password, "
+                "api-token=email+API token (Cloud). Read from env config if omitted."
             ),
         ),
-    ],
-    *,
+    ] = None,
     dialect: Annotated[
         DialectName | None,
         Parameter(help="Dialect to use. Overrides any prefix in --url. Required if --url has no prefix."),
     ] = None,
     token_env: Annotated[
-        str,
-        Parameter(help="Environment variable holding the secret (for pat / api-token)."),
-    ] = "PENSUM_TOKEN",
+        str | None,
+        Parameter(help="Env var holding the secret. Read from env config if omitted."),
+    ] = None,
     user_env: Annotated[
-        str,
-        Parameter(help="Environment variable holding the username/email (for basic / api-token)."),
-    ] = "PENSUM_USER",
+        str | None,
+        Parameter(help="Env var holding the username/email. Read from env config if omitted."),
+    ] = None,
     format: Annotated[Literal["yaml", "json"], Parameter(help="Output format.")] = "yaml",
     no_verify_ssl: Annotated[
         bool,
@@ -62,6 +68,16 @@ async def reflect(
     ] = False,
 ) -> int:
     """Reflect a Jira instance into a snapshot and print it."""
+    url, auth, dialect, token_env, user_env, no_verify_ssl = resolve_connection(
+        env=env,
+        url=url,
+        auth=auth,
+        dialect=dialect,
+        token_env=token_env,
+        user_env=user_env,
+        no_verify_ssl=no_verify_ssl,
+    )
+    require_resolved_connection(env=env, url=url, auth=auth)
     auth_obj = _build_auth(auth, token_env, user_env)
     eng = create_engine(url, auth=auth_obj, dialect=dialect, verify_ssl=not no_verify_ssl)
     try:

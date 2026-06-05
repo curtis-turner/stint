@@ -33,9 +33,7 @@ class StateLock:
 
     def __init__(self, state_path: str | Path) -> None:
         self.state_path = Path(state_path)
-        self.lock_path = self.state_path.with_suffix(
-            self.state_path.suffix + ".lock"
-        )
+        self.lock_path = self.state_path.with_suffix(self.state_path.suffix + ".lock")
         self._fd: int | None = None
 
     def acquire(self) -> None:
@@ -51,10 +49,7 @@ class StateLock:
                 f"state file {self.state_path!s} is locked by {holder}. "
                 f"If the holder is gone, delete {self.lock_path!s} manually."
             ) from None
-        body = (
-            f"pid={os.getpid()}\n"
-            f"acquired_at={datetime.now(timezone.utc).isoformat(timespec='seconds')}\n"
-        ).encode()
+        body = (f"pid={os.getpid()}\nacquired_at={datetime.now(timezone.utc).isoformat(timespec='seconds')}\n").encode()
         try:
             os.write(self._fd, body)
         finally:
@@ -67,7 +62,7 @@ class StateLock:
         except FileNotFoundError:
             pass
 
-    def __enter__(self) -> "StateLock":
+    def __enter__(self) -> StateLock:
         self.acquire()
         return self
 

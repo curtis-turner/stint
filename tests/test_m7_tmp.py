@@ -28,7 +28,7 @@ from pensum.engine import Engine
 from pensum.exceptions import ConfigurationError, UnsupportedTMPOpError
 from pensum.migrations.context import MigrationContext, reset_context, set_context
 from pensum.registry import registry
-from pensum.state.file import ProjectMapping, SimpleMapping, StateFile as StateFileType
+from pensum.state.file import ProjectMapping, SimpleMapping
 from pensum.state.snapshot import (
     ProjectSnapshot,
     ServerInfoSnapshot,
@@ -58,7 +58,9 @@ def _cloud_engine() -> Engine:
 
 
 async def _run_in_ctx(
-    engine: Engine, state: StateFile, body: Callable[[], Awaitable[None]],
+    engine: Engine,
+    state: StateFile,
+    body: Callable[[], Awaitable[None]],
 ) -> None:
     ctx = MigrationContext(engine=engine, state=state, direction="upgrade")
     token = set_context(ctx)
@@ -69,9 +71,13 @@ async def _run_in_ctx(
 
 
 def _empty_snapshot() -> Snapshot:
-    return Snapshot(server_info=ServerInfoSnapshot(
-        deployment_type="Server", version="9", base_url="x",
-    ))
+    return Snapshot(
+        server_info=ServerInfoSnapshot(
+            deployment_type="Server",
+            version="9",
+            base_url="x",
+        )
+    )
 
 
 # ── ProjectMapping YAML round-trip ───────────────────────────────────
@@ -121,10 +127,17 @@ async def test_create_project_records_default_style():
     state = StateFile(env="dev", jira_url=BASE)
     engine = _dc_engine()
     try:
-        await _run_in_ctx(engine, state, lambda: op.create_project(
-            alias="bug_tracker", key="BUG", name="Bug Tracker",
-            project_type_key="software", lead="jdoe",
-        ))
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.create_project(
+                alias="bug_tracker",
+                key="BUG",
+                name="Bug Tracker",
+                project_type_key="software",
+                lead="jdoe",
+            ),
+        )
     finally:
         await engine.close()
     assert state.projects["bug_tracker"].style == "company-managed"
@@ -137,9 +150,14 @@ async def test_create_project_team_managed_defaults_template():
     """TMP creates need a projectTemplateKey; create_project picks the
     next-gen Kanban template when the caller omits it."""
     respx.get(f"{CLOUD_ROOT}/serverInfo").mock(
-        return_value=httpx.Response(200, json={
-            "baseUrl": BASE, "version": "1001", "deploymentType": "Cloud",
-        })
+        return_value=httpx.Response(
+            200,
+            json={
+                "baseUrl": BASE,
+                "version": "1001",
+                "deploymentType": "Cloud",
+            },
+        )
     )
     route = respx.post(f"{CLOUD_ROOT}/project").mock(
         return_value=httpx.Response(201, json={"id": "p-1"}),
@@ -147,11 +165,18 @@ async def test_create_project_team_managed_defaults_template():
     state = StateFile(env="dev", jira_url=BASE)
     engine = _cloud_engine()
     try:
-        await _run_in_ctx(engine, state, lambda: op.create_project(
-            alias="growth", key="GRW", name="Growth",
-            project_type_key="software", lead="acc-1",
-            style="team-managed",
-        ))
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.create_project(
+                alias="growth",
+                key="GRW",
+                name="Growth",
+                project_type_key="software",
+                lead="acc-1",
+                style="team-managed",
+            ),
+        )
     finally:
         await engine.close()
     body = route.calls.last.request.read().decode()
@@ -165,11 +190,18 @@ async def test_create_project_rejects_unknown_style():
     engine = _dc_engine()
     try:
         with pytest.raises(ConfigurationError, match="unknown style"):
-            await _run_in_ctx(engine, state, lambda: op.create_project(
-                alias="x", key="X", name="X",
-                project_type_key="software", lead="jdoe",
-                style="next-gen",   # snapshot vocabulary, not pensum's
-            ))
+            await _run_in_ctx(
+                engine,
+                state,
+                lambda: op.create_project(
+                    alias="x",
+                    key="X",
+                    name="X",
+                    project_type_key="software",
+                    lead="jdoe",
+                    style="next-gen",  # snapshot vocabulary, not pensum's
+                ),
+            )
     finally:
         await engine.close()
 
@@ -179,15 +211,20 @@ async def test_create_project_rejects_unknown_style():
 async def test_set_project_issuetype_screen_scheme_refuses_tmp():
     state = StateFile(env="dev", jira_url=BASE)
     state.projects["growth"] = ProjectMapping(
-        id="p-1", style="team-managed", key="GRW",
+        id="p-1",
+        style="team-managed",
+        key="GRW",
     )
     state.issuetype_screen_schemes["grw_itss"] = SimpleMapping(id="itss-1")
     engine = _dc_engine()
     try:
         with pytest.raises(UnsupportedTMPOpError) as excinfo:
             await _run_in_ctx(
-                engine, state, lambda: op.set_project_issuetype_screen_scheme(
-                    project_alias="growth", scheme_alias="grw_itss",
+                engine,
+                state,
+                lambda: op.set_project_issuetype_screen_scheme(
+                    project_alias="growth",
+                    scheme_alias="grw_itss",
                 ),
             )
     finally:
@@ -201,15 +238,20 @@ async def test_set_project_issuetype_screen_scheme_refuses_tmp():
 async def test_set_project_field_configuration_scheme_refuses_tmp():
     state = StateFile(env="dev", jira_url=BASE)
     state.projects["growth"] = ProjectMapping(
-        id="p-1", style="team-managed", key="GRW",
+        id="p-1",
+        style="team-managed",
+        key="GRW",
     )
     state.field_configuration_schemes["grw_fcs"] = SimpleMapping(id="fcs-1")
     engine = _dc_engine()
     try:
         with pytest.raises(UnsupportedTMPOpError) as excinfo:
             await _run_in_ctx(
-                engine, state, lambda: op.set_project_field_configuration_scheme(
-                    project_alias="growth", scheme_alias="grw_fcs",
+                engine,
+                state,
+                lambda: op.set_project_field_configuration_scheme(
+                    project_alias="growth",
+                    scheme_alias="grw_fcs",
                 ),
             )
     finally:
@@ -230,8 +272,11 @@ async def test_set_project_issuetype_screen_scheme_allowed_on_cmp():
     engine = _dc_engine()
     try:
         await _run_in_ctx(
-            engine, state, lambda: op.set_project_issuetype_screen_scheme(
-                project_alias="plat", scheme_alias="plat_itss",
+            engine,
+            state,
+            lambda: op.set_project_issuetype_screen_scheme(
+                project_alias="plat",
+                scheme_alias="plat_itss",
             ),
         )
     finally:
@@ -254,7 +299,10 @@ def test_stamp_classifies_next_gen_as_team_managed():
     state = StateFile(env="dev", jira_url=BASE)
     snap = _empty_snapshot()
     snap.projects["GRW"] = ProjectSnapshot(
-        id="p-1", key="GRW", name="Growth", style="next-gen",
+        id="p-1",
+        key="GRW",
+        name="Growth",
+        style="next-gen",
     )
     stamp(state, snap)
     assert state.projects["GRW"].style == "team-managed"
@@ -275,7 +323,10 @@ def test_stamp_classifies_classic_as_company_managed():
     state = StateFile(env="dev", jira_url=BASE)
     snap = _empty_snapshot()
     snap.projects["PLAT"] = ProjectSnapshot(
-        id="p-1", key="PLAT", name="Platform", style="classic",
+        id="p-1",
+        key="PLAT",
+        name="Platform",
+        style="classic",
     )
     stamp(state, snap)
     assert state.projects["PLAT"].style == "company-managed"
@@ -296,10 +347,13 @@ def test_stamp_backfills_style_on_pre_m7_state():
         __issuetypes__ = [_Task]
 
     state = StateFile(env="dev", jira_url=BASE)
-    state.projects["GRW"] = ProjectMapping(id="p-1")   # no style, no key
+    state.projects["GRW"] = ProjectMapping(id="p-1")  # no style, no key
     snap = _empty_snapshot()
     snap.projects["GRW"] = ProjectSnapshot(
-        id="p-1", key="GRW", name="Growth", style="next-gen",
+        id="p-1",
+        key="GRW",
+        name="Growth",
+        style="next-gen",
     )
     stamp(state, snap)
     assert state.projects["GRW"].style == "team-managed"
@@ -319,11 +373,16 @@ def test_stamp_skips_id_divergence_without_overwriting_style():
 
     state = StateFile(env="dev", jira_url=BASE)
     state.projects["PLAT"] = ProjectMapping(
-        id="p-OLD", style="team-managed", key="PLAT",
+        id="p-OLD",
+        style="team-managed",
+        key="PLAT",
     )
     snap = _empty_snapshot()
     snap.projects["PLAT"] = ProjectSnapshot(
-        id="p-NEW", key="PLAT", name="Platform", style="classic",
+        id="p-NEW",
+        key="PLAT",
+        name="Platform",
+        style="classic",
     )
     report = stamp(state, snap)
     assert state.projects["PLAT"].id == "p-OLD"
@@ -341,23 +400,25 @@ def test_diff_warns_on_style_mismatch():
 
     class _Plat(Project):
         __key__ = "PLAT"
-        __style__ = "team-managed"   # schema says TMP …
+        __style__ = "team-managed"  # schema says TMP …
         __issuetypes__ = [_Bug]
 
     desired = build_desired_snapshot()
     state = StateFile(env="dev", jira_url=BASE)
     state.projects["PLAT"] = ProjectMapping(
-        id="p-1", style="company-managed", key="PLAT",  # … but state has CMP
+        id="p-1",
+        style="company-managed",
+        key="PLAT",  # … but state has CMP
     )
     snap = _empty_snapshot()
     snap.projects["PLAT"] = ProjectSnapshot(
-        id="p-1", key="PLAT", name="_Plat", style="classic",
+        id="p-1",
+        key="PLAT",
+        name="_Plat",
+        style="classic",
     )
     result = diff(desired=desired, snapshot=snap, state=state, allow_delete=False)
-    assert any(
-        "team-managed" in w and "company-managed" in w and "PLAT" in w
-        for w in result.warnings
-    )
+    assert any("team-managed" in w and "company-managed" in w and "PLAT" in w for w in result.warnings)
     # Style alone produces no UpdateProject change — Jira has no REST conversion.
     updates = [c for c in result.changes if isinstance(c, UpdateProject)]
     assert updates == []
@@ -377,11 +438,16 @@ def test_diff_quiet_when_styles_match():
     desired = build_desired_snapshot()
     state = StateFile(env="dev", jira_url=BASE)
     state.projects["PLAT"] = ProjectMapping(
-        id="p-1", style="company-managed", key="PLAT",
+        id="p-1",
+        style="company-managed",
+        key="PLAT",
     )
     snap = _empty_snapshot()
     snap.projects["PLAT"] = ProjectSnapshot(
-        id="p-1", key="PLAT", name="_Plat", style="classic",
+        id="p-1",
+        key="PLAT",
+        name="_Plat",
+        style="classic",
     )
     result = diff(desired=desired, snapshot=snap, state=state, allow_delete=False)
     assert not any("style" in w for w in result.warnings)
@@ -412,6 +478,7 @@ def test_project_metaclass_rejects_unknown_style():
         summary: str
 
     with pytest.raises(ConfigurationError, match="invalid __style__"):
+
         class _Bad(Project):
             __key__ = "BAD"
             __style__ = "hybrid"
@@ -430,6 +497,7 @@ def test_project_metaclass_rejects_tmp_with_screen_scheme():
         summary: str
 
     with pytest.raises(ConfigurationError, match="team-managed.*ScreenScheme"):
+
         class _Bad(Project):
             __key__ = "BAD"
             __style__ = "team-managed"
@@ -447,6 +515,7 @@ def test_project_metaclass_rejects_tmp_with_field_configuration():
         summary: str
 
     with pytest.raises(ConfigurationError, match="team-managed.*FieldConfiguration"):
+
         class _Bad(Project):
             __key__ = "BAD"
             __style__ = "team-managed"

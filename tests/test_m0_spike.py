@@ -23,11 +23,9 @@ from pydantic import ValidationError
 # globals when it later resolves them; classes defined inside test functions
 # would have unresolvable ForwardRefs because function-local CustomField
 # objects are out of scope. Eager annotation evaluation sidesteps that.
-
 from pensum import (
     ConfigurationError,
     CustomField,
-    FieldConfiguration,
     IssueType,
     MultiSelectField,
     Project,
@@ -94,9 +92,9 @@ def test_issuetype_pydantic_rejects_missing_required():
 def test_dual_role_same_class_used_for_both():
     """The Bug class is both registered as a schema object and instantiable as data."""
     mod = _load_example()
-    assert mod.Bug in mod.Platform.__issuetypes__              # schema role
+    assert mod.Bug in mod.Platform.__issuetypes__  # schema role
     instance = mod.Bug(summary="y", reporter="cturner", severity="S3")
-    assert isinstance(instance, mod.Bug)                       # data role
+    assert isinstance(instance, mod.Bug)  # data role
     assert instance.severity == "S3"
 
 

@@ -32,9 +32,7 @@ def load_schema_module(target: str) -> ModuleType:
     try:
         return importlib.import_module(target)
     except ImportError as e:
-        raise ConfigurationError(
-            f"cannot import schema module {target!r}: {e}"
-        ) from e
+        raise ConfigurationError(f"cannot import schema module {target!r}: {e}") from e
 
 
 def _import_file(path: Path) -> ModuleType:

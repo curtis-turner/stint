@@ -58,16 +58,10 @@ def test_loader_unknown_current_raises(tmp_path):
 def test_loader_duplicate_revision_raises(tmp_path):
     """Two files with the same `revision` global cannot coexist."""
     (tmp_path / "a.py").write_text(
-        "revision = 'dup'\n"
-        "down_revision = None\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'dup'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     (tmp_path / "b.py").write_text(
-        "revision = 'dup'\n"
-        "down_revision = None\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'dup'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     with pytest.raises(MigrationConflictError):
         load_migrations(tmp_path)
@@ -87,22 +81,13 @@ def test_loader_orphan_down_revision_raises(tmp_path):
 def test_multiple_heads_blocks_chain(tmp_path):
     """Two migrations off the same parent must be merged explicitly."""
     (tmp_path / "a.py").write_text(
-        "revision = 'base'\n"
-        "down_revision = None\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'base'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     (tmp_path / "b.py").write_text(
-        "revision = 'left'\n"
-        "down_revision = 'base'\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'left'\ndown_revision = 'base'\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     (tmp_path / "c.py").write_text(
-        "revision = 'right'\n"
-        "down_revision = 'base'\n"
-        "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "revision = 'right'\ndown_revision = 'base'\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
     )
     graph = load_migrations(tmp_path)
     with pytest.raises(MigrationGraphError) as e:
@@ -146,7 +131,10 @@ async def test_upgrade_runs_initial_migration_and_records_revision(tmp_path):
     assert state.revision == "def789ghi012"
     assert state.custom_fields["bug_severity"].id == "customfield_10042"
     assert state.custom_fields["bug_severity"].options == {
-        "S1": "100", "S2": "101", "S3": "102", "S4": "103",
+        "S1": "100",
+        "S2": "101",
+        "S3": "102",
+        "S4": "103",
     }
 
 
@@ -192,12 +180,14 @@ async def test_upgrade_at_head_is_noop(tmp_path):
 async def test_state_file_persisted_after_each_migration(tmp_path):
     """Even if a later migration would fail, the state at the last good revision
     is on disk."""
-    respx.post(f"{DC_ROOT}/field").mock(side_effect=[
-        # first migration's POST succeeds
-        httpx.Response(201, json={"id": "customfield_10042", "name": "Severity"}),
-        # second migration's POST fails with 500
-        httpx.Response(500, json={"errorMessages": ["server boom"]}),
-    ])
+    respx.post(f"{DC_ROOT}/field").mock(
+        side_effect=[
+            # first migration's POST succeeds
+            httpx.Response(201, json={"id": "customfield_10042", "name": "Severity"}),
+            # second migration's POST fails with 500
+            httpx.Response(500, json={"errorMessages": ["server boom"]}),
+        ]
+    )
     for opt, opt_id in [("S1", "100"), ("S2", "101"), ("S3", "102"), ("S4", "103")]:
         respx.post(
             f"{DC_ROOT}/field/customfield_10042/option",
@@ -210,6 +200,7 @@ async def test_state_file_persisted_after_each_migration(tmp_path):
     engine = _engine()
     try:
         from pensum.exceptions import TransportError
+
         with pytest.raises(TransportError):
             await run_upgrade(engine, state, graph, state_path)
     finally:
@@ -258,9 +249,7 @@ async def test_create_custom_field_is_idempotent_when_alias_in_state(tmp_path):
         options={"S1": "100", "S2": "101", "S3": "102", "S4": "103"},
     )
     # The second migration creates bug_root_cause, which we DO need to allow.
-    respx.post(f"{DC_ROOT}/field").mock(
-        return_value=httpx.Response(201, json={"id": "customfield_10043"})
-    )
+    respx.post(f"{DC_ROOT}/field").mock(return_value=httpx.Response(201, json={"id": "customfield_10043"}))
 
     state_path = tmp_path / "state.yaml"
     graph = load_migrations(FIXTURES_DIR)

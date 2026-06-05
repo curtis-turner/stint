@@ -17,6 +17,7 @@ from cyclopts import Parameter
 from pensum.autogen.emit import new_filename, new_revision_id, render_empty, render_merge
 from pensum.cli.app import app
 from pensum.cli.cmd_reflect import _build_auth
+from pensum.cli.env_config import require_resolved_connection, resolve_connection
 from pensum.migrations.exceptions import MigrationGraphError
 from pensum.migrations.loader import load_migrations
 
@@ -46,13 +47,30 @@ def revision(
         Parameter(help="Python module path to load schema from (autogen)."),
     ] = None,
     state: Annotated[str | None, Parameter(help="State file path (autogen).")] = None,
-    url: Annotated[str | None, Parameter(help="Jira URL (autogen).")] = None,
+    url: Annotated[
+        str | None,
+        Parameter(help="Jira URL (autogen). Read from env config if omitted."),
+    ] = None,
     dialect: Annotated[DialectName | None, Parameter()] = None,
-    auth: Annotated[AuthMode | None, Parameter()] = None,
-    token_env: Annotated[str, Parameter()] = "PENSUM_TOKEN",
-    user_env: Annotated[str, Parameter()] = "PENSUM_USER",
+    auth: Annotated[
+        AuthMode | None,
+        Parameter(help="Auth scheme. Read from env config if omitted."),
+    ] = None,
+    token_env: Annotated[
+        str | None,
+        Parameter(help="Env var holding the secret. Read from env config if omitted."),
+    ] = None,
+    user_env: Annotated[
+        str | None,
+        Parameter(help="Env var holding the username/email. Read from env config if omitted."),
+    ] = None,
     no_verify_ssl: Annotated[bool, Parameter(negative=())] = False,
-    env: Annotated[str | None, Parameter(help="Env name recorded in the state file (autogen).")] = None,
+    env: Annotated[
+        str | None,
+        Parameter(
+            help="Env name (autogen). Recorded in the state file; reads connection params from env config if set."
+        ),
+    ] = None,
     allow_delete: Annotated[
         bool,
         Parameter(
@@ -122,8 +140,8 @@ def _run_autogenerate(
     url: str | None,
     dialect: str | None,
     auth: str | None,
-    token_env: str,
-    user_env: str,
+    token_env: str | None,
+    user_env: str | None,
     no_verify_ssl: bool,
     env: str | None,
     allow_delete: bool,
@@ -135,11 +153,21 @@ def _run_autogenerate(
     from pensum.engine import create_engine
     from pensum.state.file import StateFile
 
-    required = {"schema": schema, "state": state, "url": url, "auth": auth, "env": env}
+    required = {"schema": schema, "state": state, "env": env}
     for name, value in required.items():
         if not value:
             print(f"ERROR: --autogenerate requires --{name}")
             return 2
+    url, auth, dialect, token_env, user_env, no_verify_ssl = resolve_connection(
+        env=env,
+        url=url,
+        auth=auth,
+        dialect=dialect,
+        token_env=token_env,
+        user_env=user_env,
+        no_verify_ssl=no_verify_ssl,
+    )
+    require_resolved_connection(env=env, url=url, auth=auth)
 
     mig_dir = Path(migrations_dir)
     state_path = Path(state)  # checked above

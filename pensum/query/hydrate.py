@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from pensum.state.file import StateFile
 
 
-def field_keys_for_model(model: type["BaseModel"], state: "StateFile") -> list[str]:
+def field_keys_for_model(model: type[BaseModel], state: StateFile) -> list[str]:
     """Compute the Jira field keys to request when fetching this model.
 
     For each Pydantic attribute, returns either the Jira system field name
@@ -58,10 +58,10 @@ def field_keys_for_model(model: type["BaseModel"], state: "StateFile") -> list[s
 
 
 def hydrate(
-    model: type["BaseModel"],
+    model: type[BaseModel],
     issue: dict[str, Any],
-    state: "StateFile",
-) -> "BaseModel":
+    state: StateFile,
+) -> BaseModel:
     """Construct a model instance from a Jira issue payload.
 
     Unknown fields and missing-in-payload fields fall back to the Pydantic
@@ -78,7 +78,7 @@ def hydrate(
         if cf is None:
             raw = fields_data.get(attr_name)
             if raw is None and field_info.is_required():
-                continue   # let Pydantic raise if truly required
+                continue  # let Pydantic raise if truly required
             kwargs[attr_name] = _coerce_system_field(attr_name, raw)
             continue
 
@@ -92,7 +92,7 @@ def hydrate(
     return model(**kwargs)
 
 
-def _custom_field_meta(field_info: Any) -> "CustomField | None":
+def _custom_field_meta(field_info: Any) -> CustomField | None:
     from pensum.fields import CustomField
 
     return next(
@@ -124,10 +124,10 @@ def _coerce_system_field(attr_name: str, raw: Any) -> Any:
 
 def _coerce_custom_field(field_type: type[_FieldType], raw: Any) -> Any:
     """Custom-field shapes:
-      - SelectField:      {"value": "S1", "id": "100"}
-      - MultiSelectField: [{"value": "S1"}, {"value": "S2"}]
-      - UserField:        {"name": "..."} or {"accountId": "..."}
-      - others (text, number, date, datetime): bare scalar
+    - SelectField:      {"value": "S1", "id": "100"}
+    - MultiSelectField: [{"value": "S1"}, {"value": "S2"}]
+    - UserField:        {"name": "..."} or {"accountId": "..."}
+    - others (text, number, date, datetime): bare scalar
     """
     if raw is None:
         return None

@@ -9,7 +9,7 @@ from cyclopts import Parameter
 
 from pensum.cli.app import app
 from pensum.cli.cmd_reflect import _build_auth
-from pensum.cli.env_config import load_env_config
+from pensum.cli.env_config import require_resolved_connection, resolve_connection
 from pensum.engine import create_engine
 from pensum.migrations.loader import load_migrations
 from pensum.migrations.runner import downgrade as run_downgrade
@@ -45,7 +45,7 @@ async def upgrade(
     to: Annotated[str | None, Parameter(help="Stop at a specific revision (default: head).")] = None,
 ) -> int:
     """Run pending migrations against an env."""
-    url, auth, dialect, token_env, user_env, no_verify_ssl = _resolve_connection(
+    url, auth, dialect, token_env, user_env, no_verify_ssl = resolve_connection(
         env=env,
         url=url,
         auth=auth,
@@ -54,7 +54,7 @@ async def upgrade(
         user_env=user_env,
         no_verify_ssl=no_verify_ssl,
     )
-    _require_resolved_connection(env=env, url=url, auth=auth)
+    require_resolved_connection(env=env, url=url, auth=auth)
     graph = load_migrations(migrations_dir)
     state_file = _load_or_init_state(state, env=env, jira_url=url)
     auth_obj = _build_auth(auth, token_env, user_env)
@@ -99,7 +99,7 @@ async def downgrade(
     no_verify_ssl: Annotated[bool, Parameter(negative=())] = False,
 ) -> int:
     """Roll back to a prior revision."""
-    url, auth, dialect, token_env, user_env, no_verify_ssl = _resolve_connection(
+    url, auth, dialect, token_env, user_env, no_verify_ssl = resolve_connection(
         env=env,
         url=url,
         auth=auth,
@@ -108,7 +108,7 @@ async def downgrade(
         user_env=user_env,
         no_verify_ssl=no_verify_ssl,
     )
-    _require_resolved_connection(env=env, url=url, auth=auth)
+    require_resolved_connection(env=env, url=url, auth=auth)
     graph = load_migrations(migrations_dir)
     state_file = _load_or_init_state(state, env=env, jira_url=url)
     auth_obj = _build_auth(auth, token_env, user_env)
@@ -156,50 +156,6 @@ def history(*, migrations_dir: Annotated[str, Parameter(help="Path to the migrat
         parent = m.down_revision[:8] if m.down_revision else "(base)"
         print(f"{m.revision[:8]}  parent={parent}  {m.description}")
     return 0
-
-
-def _resolve_connection(
-    *,
-    env: str,
-    url: str | None,
-    auth: str | None,
-    dialect: str | None,
-    token_env: str | None,
-    user_env: str | None,
-    no_verify_ssl: bool,
-) -> tuple[str | None, str | None, str | None, str, str, bool]:
-    """Merge env-config values for any connection params the caller did not set.
-
-    ``token_env`` / ``user_env`` are returned as concrete strings (never None):
-    the YAML value wins over the default when no CLI flag is set, but
-    something has to be returned for the env-var lookup.
-    """
-    cfg = load_env_config(env)
-    if not cfg:
-        return url, auth, dialect, token_env or "PENSUM_TOKEN", user_env or "PENSUM_USER", no_verify_ssl
-    if not url:
-        url = cfg.get("url")
-    if not auth:
-        auth = cfg.get("auth")
-    if not dialect:
-        dialect = cfg.get("dialect")
-    if token_env is None:
-        token_env = cfg.get("token_env") or "PENSUM_TOKEN"
-    if user_env is None:
-        user_env = cfg.get("user_env") or "PENSUM_USER"
-    if "verify_ssl" in cfg and not cfg["verify_ssl"] and not no_verify_ssl:
-        no_verify_ssl = True
-    return url, auth, dialect, token_env, user_env, no_verify_ssl
-
-
-def _require_resolved_connection(*, env: str, url: str | None, auth: str | None) -> None:
-    missing = [k for k, v in (("url", url), ("auth", auth)) if not v]
-    if missing:
-        raise SystemExit(
-            f"missing required connection params: {missing}. "
-            f"Provide via --{'/--'.join(missing)} or place a config at "
-            f"./.pensum/{env}.yaml or ~/.pensum/envs/{env}.yaml."
-        )
 
 
 def _load_or_init_state(path: str, *, env: str, jira_url: str) -> StateFile:

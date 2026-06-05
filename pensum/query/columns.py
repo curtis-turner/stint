@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 class Columns:
     """Namespace exposing each Pydantic field of an IssueType as a Column."""
 
-    def __init__(self, model: type["BaseModel"]) -> None:
+    def __init__(self, model: type[BaseModel]) -> None:
         self._model = model
         self._cf_aliases: dict[str, str] = {}
         for attr_name, field_info in model.model_fields.items():
@@ -36,10 +36,7 @@ class Columns:
             raise AttributeError(name)
         if name not in self._model.model_fields:
             known = sorted(self._model.model_fields)
-            raise AttributeError(
-                f"{self._model.__name__} has no attribute {name!r}. "
-                f"Known fields: {known}"
-            )
+            raise AttributeError(f"{self._model.__name__} has no attribute {name!r}. Known fields: {known}")
         return Column(
             model=self._model,
             attr_name=name,

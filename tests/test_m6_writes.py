@@ -68,7 +68,8 @@ def _platform_state() -> StateFile:
 def test_wrap_plain_text_minimal():
     doc = wrap_plain_text("hello world")
     assert doc == {
-        "type": "doc", "version": 1,
+        "type": "doc",
+        "version": 1,
         "content": [
             {"type": "paragraph", "content": [{"type": "text", "text": "hello world"}]},
         ],
@@ -89,9 +90,12 @@ def test_wrap_plain_text_empty():
 # ── Payload construction ─────────────────────────────────────────────
 def test_payload_select_field_emitted_as_value_object():
     import examples.platform as p
+
     state = _platform_state()
     bug = p.Bug(
-        summary="boom", reporter="alice", severity="S2",
+        summary="boom",
+        reporter="alice",
+        severity="S2",
     )
     fields = build_fields_payload(bug, state, is_cloud=False)
     assert fields["customfield_10042"] == {"value": "S2"}
@@ -101,6 +105,7 @@ def test_payload_select_field_emitted_as_value_object():
 
 def test_payload_reporter_dc_vs_cloud():
     import examples.platform as p
+
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="acc-123", severity="S1")
     dc = build_fields_payload(bug, state, is_cloud=False)
@@ -111,22 +116,26 @@ def test_payload_reporter_dc_vs_cloud():
 
 def test_payload_description_wrapped_in_adf_on_cloud():
     import examples.platform as p
+
     state = _platform_state()
     bug = p.Bug(
-        summary="x", reporter="alice", severity="S1",
+        summary="x",
+        reporter="alice",
+        severity="S1",
         description="multi-line\n\nbody",
     )
     dc = build_fields_payload(bug, state, is_cloud=False)
     cloud = build_fields_payload(bug, state, is_cloud=True)
-    assert dc["description"] == "multi-line\n\nbody"   # raw string
+    assert dc["description"] == "multi-line\n\nbody"  # raw string
     assert cloud["description"]["type"] == "doc"
-    assert len(cloud["description"]["content"]) == 2   # two paragraphs
+    assert len(cloud["description"]["content"]) == 2  # two paragraphs
 
 
 def test_payload_omits_unset_optionals():
     """assignee is Optional[str] = None; description default None. Skipped
     so a PUT doesn't accidentally clear existing Jira data."""
     import examples.platform as p
+
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="alice", severity="S1")
     fields = build_fields_payload(bug, state, is_cloud=False)
@@ -136,17 +145,22 @@ def test_payload_omits_unset_optionals():
 
 def test_payload_only_filter_for_update():
     import examples.platform as p
+
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="alice", severity="S1")
     fields = build_fields_payload(
-        bug, state, is_cloud=False, only={"severity"},
+        bug,
+        state,
+        is_cloud=False,
+        only={"severity"},
     )
     assert set(fields) == {"customfield_10042"}
 
 
 def test_payload_unmapped_custom_field_raises():
     import examples.platform as p
-    state = StateFile(env="dev", jira_url=BASE)   # empty state
+
+    state = StateFile(env="dev", jira_url=BASE)  # empty state
     state.issuetypes["bug"] = SimpleMapping(id="10010")
     bug = p.Bug(summary="x", reporter="alice", severity="S1")
     with pytest.raises(ConfigurationError) as e:
@@ -156,6 +170,7 @@ def test_payload_unmapped_custom_field_raises():
 
 def test_insert_payload_includes_project_and_issuetype():
     import examples.platform as p
+
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="alice", severity="S1")
     body = build_insert_payload(bug, state, is_cloud=False, project_key="PLAT")
@@ -165,6 +180,7 @@ def test_insert_payload_includes_project_and_issuetype():
 
 def test_update_payload_only_dirty_fields():
     import examples.platform as p
+
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="alice", severity="S2")
     body = build_update_payload(bug, state, is_cloud=False, dirty={"severity"})
@@ -174,12 +190,14 @@ def test_update_payload_only_dirty_fields():
 # ── Project inference / __projects__ linkage ─────────────────────────
 def test_project_meta_sets_projects_on_issuetype():
     import examples.platform as p
+
     assert "PLAT" in p.Bug.__projects__
 
 
 # ── add / delete plumbing (no commit) ────────────────────────────────
 def test_add_rejects_instance_with_existing_key():
     import examples.platform as p
+
     engine = _dc_engine()
     session = AsyncSession(engine, _platform_state())
     bug = p.Bug(key="PLAT-1", summary="x", reporter="a", severity="S1")
@@ -190,6 +208,7 @@ def test_add_rejects_instance_with_existing_key():
 
 def test_add_with_explicit_project_overrides_inferred():
     import examples.platform as p
+
     engine = _dc_engine()
     session = AsyncSession(engine, _platform_state())
     bug = p.Bug(summary="x", reporter="a", severity="S1")
@@ -200,6 +219,7 @@ def test_add_with_explicit_project_overrides_inferred():
 
 def test_delete_requires_key():
     import examples.platform as p
+
     engine = _dc_engine()
     session = AsyncSession(engine, _platform_state())
     bug = p.Bug(summary="x", reporter="a", severity="S1")
@@ -213,9 +233,12 @@ def test_delete_requires_key():
 async def test_commit_insert_dc_posts_issue_and_sets_key():
     import examples.platform as p
 
-    respx.post(f"{DC_ROOT}/issue").mock(return_value=httpx.Response(
-        201, json={"id": "issue-1", "key": "PLAT-7"},
-    ))
+    respx.post(f"{DC_ROOT}/issue").mock(
+        return_value=httpx.Response(
+            201,
+            json={"id": "issue-1", "key": "PLAT-7"},
+        )
+    )
 
     engine = _dc_engine()
     state = _platform_state()
@@ -229,7 +252,7 @@ async def test_commit_insert_dc_posts_issue_and_sets_key():
 
     assert results[0].operation == "insert"
     assert results[0].success
-    assert bug.key == "PLAT-7"   # mutated in place
+    assert bug.key == "PLAT-7"  # mutated in place
     # The instance is now identity-cached:
     assert session._identity[(p.Bug, "PLAT-7")] is bug
 
@@ -243,6 +266,7 @@ async def test_commit_insert_cloud_uses_adf_description():
 
     def _record(request):
         import json
+
         captured.append(json.loads(request.content))
         return httpx.Response(201, json={"id": "i", "key": "PLAT-1"})
 
@@ -251,7 +275,9 @@ async def test_commit_insert_cloud_uses_adf_description():
     engine = _cloud_engine()
     state = _platform_state()
     bug = p.Bug(
-        summary="x", reporter="acc-1", severity="S1",
+        summary="x",
+        reporter="acc-1",
+        severity="S1",
         description="hello world",
     )
     async with AsyncSession(engine, state) as session:
@@ -270,15 +296,23 @@ async def test_commit_insert_cloud_uses_adf_description():
 @respx.mock
 async def test_dirty_tracking_emits_minimal_put():
     """Hydrate via get(), mutate one field, commit → PUT with only that field."""
-    import examples.platform as p
     import json
 
-    respx.get(f"{DC_ROOT}/issue/PLAT-1").mock(return_value=httpx.Response(
-        200, json={"key": "PLAT-1", "fields": {
-            "summary": "old", "reporter": {"name": "alice"},
-            "customfield_10042": {"value": "S1"},
-        }},
-    ))
+    import examples.platform as p
+
+    respx.get(f"{DC_ROOT}/issue/PLAT-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "key": "PLAT-1",
+                "fields": {
+                    "summary": "old",
+                    "reporter": {"name": "alice"},
+                    "customfield_10042": {"value": "S1"},
+                },
+            },
+        )
+    )
 
     captured_body: list[dict] = []
 
@@ -306,12 +340,20 @@ async def test_dirty_tracking_emits_minimal_put():
 @respx.mock
 async def test_no_dirty_changes_means_no_put():
     import examples.platform as p
-    respx.get(f"{DC_ROOT}/issue/PLAT-1").mock(return_value=httpx.Response(
-        200, json={"key": "PLAT-1", "fields": {
-            "summary": "x", "reporter": {"name": "alice"},
-            "customfield_10042": {"value": "S1"},
-        }},
-    ))
+
+    respx.get(f"{DC_ROOT}/issue/PLAT-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "key": "PLAT-1",
+                "fields": {
+                    "summary": "x",
+                    "reporter": {"name": "alice"},
+                    "customfield_10042": {"value": "S1"},
+                },
+            },
+        )
+    )
     # No PUT mock — if commit fires one, respx raises.
 
     engine = _dc_engine()
@@ -331,12 +373,20 @@ async def test_no_dirty_changes_means_no_put():
 @respx.mock
 async def test_commit_delete_calls_dialect():
     import examples.platform as p
-    respx.get(f"{DC_ROOT}/issue/PLAT-1").mock(return_value=httpx.Response(
-        200, json={"key": "PLAT-1", "fields": {
-            "summary": "x", "reporter": {"name": "alice"},
-            "customfield_10042": {"value": "S1"},
-        }},
-    ))
+
+    respx.get(f"{DC_ROOT}/issue/PLAT-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "key": "PLAT-1",
+                "fields": {
+                    "summary": "x",
+                    "reporter": {"name": "alice"},
+                    "customfield_10042": {"value": "S1"},
+                },
+            },
+        )
+    )
     respx.delete(f"{DC_ROOT}/issue/PLAT-1").mock(return_value=httpx.Response(204))
 
     engine = _dc_engine()
@@ -360,10 +410,12 @@ async def test_partial_commit_error_on_mixed_results():
     """First insert succeeds, second fails 400. Exception carries both results."""
     import examples.platform as p
 
-    respx.post(f"{DC_ROOT}/issue").mock(side_effect=[
-        httpx.Response(201, json={"id": "i1", "key": "PLAT-1"}),
-        httpx.Response(400, json={"errorMessages": ["bad input"]}),
-    ])
+    respx.post(f"{DC_ROOT}/issue").mock(
+        side_effect=[
+            httpx.Response(201, json={"id": "i1", "key": "PLAT-1"}),
+            httpx.Response(400, json={"errorMessages": ["bad input"]}),
+        ]
+    )
 
     engine = _dc_engine()
     state = _platform_state()
@@ -390,9 +442,13 @@ async def test_partial_commit_error_on_mixed_results():
 @respx.mock
 async def test_commit_clears_pending_inserts_and_deletes():
     import examples.platform as p
-    respx.post(f"{DC_ROOT}/issue").mock(return_value=httpx.Response(
-        201, json={"id": "i", "key": "PLAT-1"},
-    ))
+
+    respx.post(f"{DC_ROOT}/issue").mock(
+        return_value=httpx.Response(
+            201,
+            json={"id": "i", "key": "PLAT-1"},
+        )
+    )
 
     engine = _dc_engine()
     state = _platform_state()

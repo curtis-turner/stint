@@ -19,25 +19,23 @@ class Select:
     filters: list[Expression] = field(default_factory=list)
     limit_n: int | None = None
     order_by_attrs: list[tuple[str, str]] = field(default_factory=list)
-        # [(jql_field_name, "ASC"|"DESC")] populated by order_by()
+    # [(jql_field_name, "ASC"|"DESC")] populated by order_by()
 
-    def where(self, *exprs: Expression) -> "Select":
+    def where(self, *exprs: Expression) -> Select:
         """Add AND-combined filters."""
         self.filters.extend(exprs)
         return self
 
-    def limit(self, n: int) -> "Select":
+    def limit(self, n: int) -> Select:
         self.limit_n = int(n)
         return self
 
-    def order_by(self, column, direction: str = "ASC") -> "Select":
+    def order_by(self, column, direction: str = "ASC") -> Select:
         """Sort. Direction is `ASC` or `DESC`. Multiple calls append."""
         from pensum.query.expr import Column
 
         if not isinstance(column, Column):
-            raise TypeError(
-                f"order_by expects a Column (e.g. Bug.c.created), got {type(column).__name__}"
-            )
+            raise TypeError(f"order_by expects a Column (e.g. Bug.c.created), got {type(column).__name__}")
         direction = direction.upper()
         if direction not in ("ASC", "DESC"):
             raise ValueError(f"order_by direction must be ASC or DESC, got {direction!r}")
@@ -45,7 +43,7 @@ class Select:
         self.order_by_attrs.append((column, direction))  # type: ignore[arg-type]
         return self
 
-    def compile(self, state: "StateFile") -> str:
+    def compile(self, state: StateFile) -> str:
         """Render the JQL string. Empty filters → empty JQL (matches everything)."""
         jql_parts: list[str] = []
         if self.filters:

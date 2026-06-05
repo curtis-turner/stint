@@ -39,8 +39,7 @@ class ProjectMeta(PensumMeta):
         style = getattr(cls, "__style__", "company-managed")
         if style not in _ALLOWED_STYLES:
             raise ConfigurationError(
-                f"Project {name!r} has invalid __style__ {style!r}; "
-                f"expected one of {_ALLOWED_STYLES}"
+                f"Project {name!r} has invalid __style__ {style!r}; expected one of {_ALLOWED_STYLES}"
             )
 
         issuetypes = getattr(cls, "__issuetypes__", None)
