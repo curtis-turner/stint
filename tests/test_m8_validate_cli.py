@@ -1,4 +1,4 @@
-"""`pensum validate` CLI: schema-level checks without network calls.
+"""`stint validate` CLI: schema-level checks without network calls.
 
 Covers the success path against the bundled example, the failure paths for
 both registry-level problems and metaclass-time ConfigurationError raised
@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from pensum import registry
-from pensum.cli.main import main
+from stint import registry
+from stint.cli.main import main
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +43,7 @@ def test_validate_by_file_path_works(tmp_path, capsys):
         """
         from typing import Annotated, Literal
 
-        from pensum import (
+        from stint import (
             CustomField, IssueType, Project, Screen, ScreenScheme,
             FieldConfiguration, SelectField,
         )
@@ -88,8 +88,8 @@ def test_validate_reports_registry_inconsistency(tmp_path, capsys):
     schema = _write_schema(
         tmp_path,
         """
-        from pensum import CustomField, Screen, SelectField
-        from pensum.registry import registry
+        from stint import CustomField, Screen, SelectField
+        from stint.registry import registry
 
         real = CustomField(alias="real", name="Real", type=SelectField, options=["A"])
         screen = Screen(alias="scr", name="Scr", fields=["Summary", real])
@@ -112,7 +112,7 @@ def test_validate_surfaces_metaclass_configuration_error(tmp_path, capsys):
         """
         from typing import Annotated, Literal
 
-        from pensum import (
+        from stint import (
             CustomField, IssueType, Project, Screen, ScreenScheme,
             FieldConfiguration, SelectField,
         )

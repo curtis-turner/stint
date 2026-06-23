@@ -20,16 +20,16 @@ import httpx
 import pytest
 import respx
 
-from pensum import PATAuth, StateFile, create_engine, op
-from pensum.autogen.desired import build_desired_snapshot
-from pensum.autogen.diff import UpdateProject, diff
-from pensum.autogen.stamp import stamp
-from pensum.engine import Engine
-from pensum.exceptions import ConfigurationError, UnsupportedTMPOpError
-from pensum.migrations.context import MigrationContext, reset_context, set_context
-from pensum.registry import registry
-from pensum.state.file import ProjectMapping, SimpleMapping
-from pensum.state.snapshot import (
+from stint import PATAuth, StateFile, create_engine, op
+from stint.autogen.desired import build_desired_snapshot
+from stint.autogen.diff import UpdateProject, diff
+from stint.autogen.stamp import stamp
+from stint.engine import Engine
+from stint.exceptions import ConfigurationError, UnsupportedTMPOpError
+from stint.migrations.context import MigrationContext, reset_context, set_context
+from stint.registry import registry
+from stint.state.file import ProjectMapping, SimpleMapping
+from stint.state.snapshot import (
     ProjectSnapshot,
     ServerInfoSnapshot,
     Snapshot,
@@ -194,7 +194,7 @@ async def test_create_project_rejects_unknown_style():
                     name="X",
                     project_type_key="software",
                     lead="jdoe",
-                    style="next-gen",  # snapshot vocabulary, not pensum's
+                    style="next-gen",  # snapshot vocabulary, not stint's
                 ),
             )
     finally:
@@ -280,7 +280,7 @@ async def test_set_project_issuetype_screen_scheme_allowed_on_cmp():
 
 # ── Stamp captures style ─────────────────────────────────────────────
 def test_stamp_classifies_next_gen_as_team_managed():
-    from pensum import IssueType, Project
+    from stint import IssueType, Project
 
     class _Task(IssueType):
         __alias__ = "task"
@@ -305,7 +305,7 @@ def test_stamp_classifies_next_gen_as_team_managed():
 
 
 def test_stamp_classifies_classic_as_company_managed():
-    from pensum import IssueType, Project
+    from stint import IssueType, Project
 
     class _Bug(IssueType):
         __alias__ = "bug"
@@ -330,7 +330,7 @@ def test_stamp_classifies_classic_as_company_managed():
 def test_stamp_backfills_style_on_pre_m7_state():
     """A state file from before M7 records id only, defaulting style to CMP.
     If Jira actually has TMP, the next stamp should fix it."""
-    from pensum import IssueType, Project
+    from stint import IssueType, Project
 
     class _Task(IssueType):
         __alias__ = "task"
@@ -356,7 +356,7 @@ def test_stamp_backfills_style_on_pre_m7_state():
 
 
 def test_stamp_skips_id_divergence_without_overwriting_style():
-    from pensum import IssueType, Project
+    from stint import IssueType, Project
 
     class _Bug(IssueType):
         __alias__ = "bug"
@@ -387,7 +387,7 @@ def test_stamp_skips_id_divergence_without_overwriting_style():
 
 # ── Diff warns on style mismatch ─────────────────────────────────────
 def test_diff_warns_on_style_mismatch():
-    from pensum import IssueType, Project
+    from stint import IssueType, Project
 
     class _Bug(IssueType):
         __alias__ = "bug"
@@ -420,7 +420,7 @@ def test_diff_warns_on_style_mismatch():
 
 
 def test_diff_quiet_when_styles_match():
-    from pensum import IssueType, Project
+    from stint import IssueType, Project
 
     class _Bug(IssueType):
         __alias__ = "bug"
@@ -450,7 +450,7 @@ def test_diff_quiet_when_styles_match():
 
 # ── DesiredProject + Project metaclass ───────────────────────────────
 def test_desired_project_reads_style():
-    from pensum import IssueType, Project
+    from stint import IssueType, Project
 
     class _Task(IssueType):
         __alias__ = "task"
@@ -466,7 +466,7 @@ def test_desired_project_reads_style():
 
 
 def test_project_metaclass_rejects_unknown_style():
-    from pensum import IssueType, Project
+    from stint import IssueType, Project
 
     class _Bug(IssueType):
         __alias__ = "bug"
@@ -481,7 +481,7 @@ def test_project_metaclass_rejects_unknown_style():
 
 
 def test_project_metaclass_rejects_tmp_with_screen_scheme():
-    from pensum import IssueType, Project, Screen, ScreenScheme
+    from stint import IssueType, Project, Screen, ScreenScheme
 
     s = Screen(alias="s", name="S", fields=["Summary"])
     ss = ScreenScheme(alias="ss", name="SS", create=s, edit=s, view=s)
@@ -500,7 +500,7 @@ def test_project_metaclass_rejects_tmp_with_screen_scheme():
 
 
 def test_project_metaclass_rejects_tmp_with_field_configuration():
-    from pensum import FieldConfiguration, IssueType, Project
+    from stint import FieldConfiguration, IssueType, Project
 
     fc = FieldConfiguration(alias="fc", name="FC", required=["Summary"])
 

@@ -1,4 +1,4 @@
-# pensum
+# stint
 
 ## Package management
 

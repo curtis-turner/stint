@@ -6,12 +6,12 @@ import httpx
 import pytest
 import respx
 
-from pensum import StateFile
-from pensum.autogen.stamp import stamp
-from pensum.cli.main import main
-from pensum.fields import SelectField, TextField
-from pensum.registry import registry
-from pensum.state.snapshot import (
+from stint import StateFile
+from stint.autogen.stamp import stamp
+from stint.cli.main import main
+from stint.fields import SelectField, TextField
+from stint.registry import registry
+from stint.state.snapshot import (
     CustomFieldSnapshot,
     ProjectSnapshot,
     ScreenSnapshot,
@@ -42,7 +42,7 @@ def _empty_snapshot() -> Snapshot:
 
 # ── Match by name ────────────────────────────────────────────────────
 def test_stamp_matches_custom_field_by_name():
-    from pensum.fields import CustomField
+    from stint.fields import CustomField
 
     CustomField(alias="bug_severity", name="Severity", type=TextField)
     state = StateFile(env="dev", jira_url="x")
@@ -58,7 +58,7 @@ def test_stamp_matches_custom_field_by_name():
 
 
 def test_stamp_matches_select_field_with_options():
-    from pensum.fields import CustomField
+    from stint.fields import CustomField
 
     CustomField(
         alias="bug_severity",
@@ -81,7 +81,7 @@ def test_stamp_matches_select_field_with_options():
 
 
 def test_stamp_matches_screen_and_populates_tab_ids():
-    from pensum.schema.screen import Screen
+    from stint.schema.screen import Screen
 
     Screen(alias="bug_screen", name="Bug Screen", fields=["Summary"])
     state = StateFile(env="dev", jira_url="x")
@@ -116,7 +116,7 @@ def test_stamp_matches_project_by_key():
 
 # ── Unmatched ────────────────────────────────────────────────────────
 def test_stamp_records_unmatched():
-    from pensum.fields import CustomField
+    from stint.fields import CustomField
 
     CustomField(alias="missing", name="Not In Jira", type=TextField)
     state = StateFile(env="dev", jira_url="x")
@@ -128,8 +128,8 @@ def test_stamp_records_unmatched():
 
 # ── Conflict ─────────────────────────────────────────────────────────
 def test_stamp_skips_if_alias_already_mapped_to_different_id():
-    from pensum.fields import CustomField
-    from pensum.state.file import CustomFieldMapping
+    from stint.fields import CustomField
+    from stint.state.file import CustomFieldMapping
 
     CustomField(alias="bug_severity", name="Severity", type=TextField)
     state = StateFile(env="dev", jira_url="x")
@@ -155,7 +155,7 @@ def test_stamp_matches_derived_itss_by_synthesized_name():
     snap = _empty_snapshot()
     # The synthesized name comes from desired.py:
     # f"{project_key} Issue Type Screen Scheme"
-    from pensum.state.snapshot import IssueTypeScreenSchemeSnapshot
+    from stint.state.snapshot import IssueTypeScreenSchemeSnapshot
 
     snap.issuetype_screen_schemes["itss-1"] = IssueTypeScreenSchemeSnapshot(
         id="itss-1",
@@ -285,7 +285,7 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
     )
 
     state_path = tmp_path / "state.yaml"
-    monkeypatch.setenv("PENSUM_TOKEN", "tok")
+    monkeypatch.setenv("STINT_TOKEN", "tok")
     rc = main(
         [
             "stamp",

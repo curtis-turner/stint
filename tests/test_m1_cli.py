@@ -1,4 +1,4 @@
-"""`pensum reflect` CLI: argument parsing, auth wiring, output format."""
+"""`stint reflect` CLI: argument parsing, auth wiring, output format."""
 
 from typing import Any
 
@@ -7,7 +7,7 @@ import pytest
 import respx
 import yaml
 
-from pensum.cli.main import main
+from stint.cli.main import main
 
 BASE = "https://jira.example.com"
 CLOUD_ROOT = f"{BASE}/rest/api/3"
@@ -52,7 +52,7 @@ def _stub_empty(mock: respx.MockRouter) -> None:
 @respx.mock
 def test_reflect_yaml_output(monkeypatch, capsys):
     _stub_empty(respx.mock)
-    monkeypatch.setenv("PENSUM_TOKEN", "test-pat")
+    monkeypatch.setenv("STINT_TOKEN", "test-pat")
     rc = main(
         [
             "reflect",
@@ -74,7 +74,7 @@ def test_reflect_yaml_output(monkeypatch, capsys):
 @respx.mock
 def test_reflect_json_output(monkeypatch, capsys):
     _stub_empty(respx.mock)
-    monkeypatch.setenv("PENSUM_TOKEN", "test-pat")
+    monkeypatch.setenv("STINT_TOKEN", "test-pat")
     rc = main(
         [
             "reflect",
@@ -94,7 +94,7 @@ def test_reflect_json_output(monkeypatch, capsys):
 
 
 def test_reflect_missing_pat_env_exits(monkeypatch):
-    monkeypatch.delenv("PENSUM_TOKEN", raising=False)
+    monkeypatch.delenv("STINT_TOKEN", raising=False)
     with pytest.raises(SystemExit) as exc:
         main(
             [
@@ -105,12 +105,12 @@ def test_reflect_missing_pat_env_exits(monkeypatch):
                 "pat",
             ]
         )
-    assert "PENSUM_TOKEN" in str(exc.value)
+    assert "STINT_TOKEN" in str(exc.value)
 
 
 def test_reflect_missing_basic_auth_exits(monkeypatch):
-    monkeypatch.delenv("PENSUM_TOKEN", raising=False)
-    monkeypatch.delenv("PENSUM_USER", raising=False)
+    monkeypatch.delenv("STINT_TOKEN", raising=False)
+    monkeypatch.delenv("STINT_USER", raising=False)
     with pytest.raises(SystemExit):
         main(
             [
@@ -126,7 +126,7 @@ def test_reflect_missing_basic_auth_exits(monkeypatch):
 @respx.mock
 def test_reflect_dialect_kwarg_without_url_prefix(monkeypatch, capsys):
     _stub_empty(respx.mock)
-    monkeypatch.setenv("PENSUM_TOKEN", "test-pat")
+    monkeypatch.setenv("STINT_TOKEN", "test-pat")
     rc = main(
         [
             "reflect",
@@ -148,7 +148,7 @@ def test_reflect_requires_url_argument():
         main(["reflect", "--auth", "pat"])
 
 
-# ── pensum current / history ──────────────────────────────────────────
+# ── stint current / history ──────────────────────────────────────────
 def test_current_with_no_state_file(tmp_path, capsys):
     rc = main(["current", "--state", str(tmp_path / "missing.yaml")])
     assert rc == 0
@@ -156,7 +156,7 @@ def test_current_with_no_state_file(tmp_path, capsys):
 
 
 def test_current_reads_revision_from_state_file(tmp_path, capsys):
-    from pensum import StateFile
+    from stint import StateFile
 
     sf = StateFile(env="dev", jira_url="https://x", revision="abc12345")
     p = tmp_path / "state.yaml"

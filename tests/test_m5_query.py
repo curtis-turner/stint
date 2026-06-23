@@ -6,7 +6,7 @@ import httpx
 import pytest
 import respx
 
-from pensum import (
+from stint import (
     AsyncSession,
     PATAuth,
     StateFile,
@@ -15,9 +15,9 @@ from pensum import (
     or_,
     select,
 )
-from pensum.engine import Engine
-from pensum.registry import registry
-from pensum.state.file import CustomFieldMapping
+from stint.engine import Engine
+from stint.registry import registry
+from stint.state.file import CustomFieldMapping
 
 BASE = "https://jira.example.com"
 CLOUD_ROOT = f"{BASE}/rest/api/3"
@@ -159,7 +159,7 @@ def test_compile_unmapped_custom_field_raises():
     with pytest.raises(KeyError) as e:
         stmt.compile(state)
     assert "bug_severity" in str(e.value)
-    assert "pensum stamp" in str(e.value)
+    assert "stint stamp" in str(e.value)
 
 
 # ── End-to-end ────────────────────────────────────────────────────────

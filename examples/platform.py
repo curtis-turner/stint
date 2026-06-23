@@ -1,4 +1,4 @@
-"""Example pensum schema for a fictional 'Platform' Jira project.
+"""Example stint schema for a fictional 'Platform' Jira project.
 
 Demonstrates:
 
@@ -9,7 +9,7 @@ Demonstrates:
   __screen_scheme__) and data-plane Pydantic fields (summary, severity, ...).
 - Project with __style__ = "company-managed".
 
-Run `python -m pensum.validate` against this module to confirm no internal
+Run `python -m stint.validate` against this module to confirm no internal
 inconsistencies. (CLI not implemented in M0 spike; see tests/test_m0_spike.py.)
 """
 
@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pensum import (
+from stint import (
     CustomField,
     FieldConfiguration,
     IssueType,

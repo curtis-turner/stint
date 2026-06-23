@@ -7,12 +7,12 @@ import httpx
 import pytest
 import respx
 
-from pensum import PATAuth, StateFile, create_engine, op
-from pensum.engine import Engine
-from pensum.exceptions import ConfigurationError, TransportError
-from pensum.fields import SelectField
-from pensum.migrations.context import MigrationContext, reset_context, set_context
-from pensum.state.file import (
+from stint import PATAuth, StateFile, create_engine, op
+from stint.engine import Engine
+from stint.exceptions import ConfigurationError, TransportError
+from stint.fields import SelectField
+from stint.migrations.context import MigrationContext, reset_context, set_context
+from stint.state.file import (
     CustomFieldMapping,
     ScreenMapping,
     SimpleMapping,

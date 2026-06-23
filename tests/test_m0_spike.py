@@ -1,9 +1,9 @@
 """M0 spike validation.
 
-Covers the five gates from plan_pensum.md Section 17:
+Covers the five gates from plan_stint.md Section 17:
 
 1. The declarative classes from Section 4 parse verbatim.
-2. `pensum.validate()` reports internal inconsistencies.
+2. `stint.validate()` reports internal inconsistencies.
 3. Pydantic validation rejects bad data without any network call.
 4. The same class works as schema (registered in __issuetypes__) and as a data
    container (instantiable with valid data).
@@ -23,7 +23,7 @@ from pydantic import ValidationError
 # globals when it later resolves them; classes defined inside test functions
 # would have unresolvable ForwardRefs because function-local CustomField
 # objects are out of scope. Eager annotation evaluation sidesteps that.
-from pensum import (
+from stint import (
     ConfigurationError,
     CustomField,
     IssueType,

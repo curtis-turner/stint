@@ -1,7 +1,7 @@
-"""`pensum revision` CLI: empty stub + merge stub."""
+"""`stint revision` CLI: empty stub + merge stub."""
 
-from pensum import load_migrations
-from pensum.cli.main import main
+from stint import load_migrations
+from stint.cli.main import main
 
 
 def _write_initial(mig_dir, rev: str = "initial1234") -> None:

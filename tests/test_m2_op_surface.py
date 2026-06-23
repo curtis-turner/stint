@@ -1,4 +1,4 @@
-"""M2 expanded op surface: every op in pensum.op, end-to-end via respx.
+"""M2 expanded op surface: every op in stint.op, end-to-end via respx.
 
 Each test sets up the smallest state preconditions, runs the op inside a
 fresh MigrationContext, and asserts on Jira HTTP calls plus state mutations.
@@ -12,11 +12,11 @@ import httpx
 import pytest
 import respx
 
-from pensum import PATAuth, StateFile, create_engine, op
-from pensum.engine import Engine
-from pensum.exceptions import ConfigurationError
-from pensum.migrations.context import MigrationContext, reset_context, set_context
-from pensum.state.file import (
+from stint import PATAuth, StateFile, create_engine, op
+from stint.engine import Engine
+from stint.exceptions import ConfigurationError
+from stint.migrations.context import MigrationContext, reset_context, set_context
+from stint.state.file import (
     CustomFieldMapping,
     ProjectMapping,
     ScreenMapping,

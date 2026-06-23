@@ -8,22 +8,22 @@ import httpx
 import pytest
 import respx
 
-from pensum import (
+from stint import (
     PATAuth,
     StateFile,
     create_engine,
     op,
 )
-from pensum.engine import Engine
-from pensum.migrations.context import MigrationContext, reset_context, set_context
-from pensum.registry import registry
-from pensum.state.file import (
+from stint.engine import Engine
+from stint.migrations.context import MigrationContext, reset_context, set_context
+from stint.registry import registry
+from stint.state.file import (
     CustomFieldMapping,
     ProjectMapping,
     ScreenMapping,
     SimpleMapping,
 )
-from pensum.state.lock import StateLock, StateLockError
+from stint.state.lock import StateLock, StateLockError
 
 BASE = "https://jira.example.com"
 CLOUD_ROOT = f"{BASE}/rest/api/3"
@@ -62,7 +62,7 @@ async def _in_ctx(
 @respx.mock
 async def test_create_custom_field_idempotent_returns_existing_id():
     """Alias in state → returns existing id, makes no HTTP call."""
-    from pensum.fields import TextField
+    from stint.fields import TextField
 
     state = StateFile(env="dev", jira_url=BASE)
     state.custom_fields["bug_severity"] = CustomFieldMapping(id="customfield_10042")
@@ -92,7 +92,7 @@ async def test_create_custom_field_idempotent_returns_existing_id():
 async def test_create_custom_field_idempotent_adds_missing_options():
     """When the field exists but the schema declares new options, the missing
     ones are added (existing ones skipped)."""
-    from pensum.fields import SelectField
+    from stint.fields import SelectField
 
     respx.get(f"{CLOUD_ROOT}/field/customfield_10042/context").mock(
         return_value=httpx.Response(
@@ -267,7 +267,7 @@ async def test_retry_on_503_then_success():
 @respx.mock
 async def test_retry_gives_up_after_max_retries():
     """4 consecutive 429s (default max_retries=3) → TransportError."""
-    from pensum.exceptions import TransportError
+    from stint.exceptions import TransportError
 
     respx.get(f"{CLOUD_ROOT}/serverInfo").mock(
         return_value=httpx.Response(429, headers={"Retry-After": "0"}),
@@ -286,7 +286,7 @@ async def test_retry_gives_up_after_max_retries():
 @respx.mock
 async def test_no_retry_on_non_retryable_status():
     """4xx other than 429 propagates immediately (no retry)."""
-    from pensum.exceptions import NotFoundError
+    from stint.exceptions import NotFoundError
 
     respx.get(f"{CLOUD_ROOT}/serverInfo").mock(
         return_value=httpx.Response(404),
@@ -305,9 +305,9 @@ async def test_no_retry_on_non_retryable_status():
 # ──────────────────────────────────────────────────────────────────────
 def test_diff_emits_update_project_on_rename():
     import examples.platform  # noqa: F401  -- imports trigger registration
-    from pensum.autogen.desired import build_desired_snapshot
-    from pensum.autogen.diff import UpdateProject, diff
-    from pensum.state.snapshot import (
+    from stint.autogen.desired import build_desired_snapshot
+    from stint.autogen.diff import UpdateProject, diff
+    from stint.state.snapshot import (
         ProjectSnapshot,
         ServerInfoSnapshot,
         Snapshot,
@@ -348,13 +348,13 @@ def test_diff_emits_update_itss_when_mappings_change():
     """Existing ITSS in state has mapping default→ss-A, but schema wants
     default→ss-B (synthesized). Diff emits UpdateIssueTypeScreenScheme
     with new mappings."""
-    from pensum.autogen.desired import (
+    from stint.autogen.desired import (
         DesiredIssueTypeScreenScheme,
         DesiredScreenScheme,
         DesiredSnapshot,
     )
-    from pensum.autogen.diff import UpdateIssueTypeScreenScheme, diff
-    from pensum.state.snapshot import (
+    from stint.autogen.diff import UpdateIssueTypeScreenScheme, diff
+    from stint.state.snapshot import (
         IssueTypeScreenSchemeMappingSnapshot,
         IssueTypeScreenSchemeSnapshot,
         ServerInfoSnapshot,
@@ -407,23 +407,23 @@ def test_diff_emits_update_itss_when_mappings_change():
 # Env config loader
 # ──────────────────────────────────────────────────────────────────────
 def test_env_config_fills_in_missing_flags(tmp_path, monkeypatch):
-    """When ~/.pensum/envs/prod.yaml exists, --env prod fills in url/auth."""
+    """When ~/.stint/envs/prod.yaml exists, --env prod fills in url/auth."""
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
     (cfg_dir / "prod.yaml").write_text("url: https://jira.example.com\nauth: pat\ndialect: jira_cloud\n")
-    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
 
     import argparse
 
-    from pensum.cli.env_config import apply_env_defaults
+    from stint.cli.env_config import apply_env_defaults
 
     args = argparse.Namespace(
         env="prod",
         url=None,
         auth=None,
         dialect=None,
-        token_env="PENSUM_TOKEN",
-        user_env="PENSUM_USER",
+        token_env="STINT_TOKEN",
+        user_env="STINT_USER",
         no_verify_ssl=False,
     )
     apply_env_defaults(args, args.env)
@@ -436,19 +436,19 @@ def test_env_config_explicit_flags_override(tmp_path, monkeypatch):
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
     (cfg_dir / "prod.yaml").write_text("url: https://from-config\n")
-    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
 
     import argparse
 
-    from pensum.cli.env_config import apply_env_defaults
+    from stint.cli.env_config import apply_env_defaults
 
     args = argparse.Namespace(
         env="prod",
         url="https://from-cli",
         auth="pat",
         dialect=None,
-        token_env="PENSUM_TOKEN",
-        user_env="PENSUM_USER",
+        token_env="STINT_TOKEN",
+        user_env="STINT_USER",
         no_verify_ssl=False,
     )
     apply_env_defaults(args, args.env)
@@ -456,18 +456,18 @@ def test_env_config_explicit_flags_override(tmp_path, monkeypatch):
 
 
 def test_env_config_missing_file_is_silent(tmp_path, monkeypatch):
-    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("STINT_CONFIG_DIR", str(tmp_path))
     import argparse
 
-    from pensum.cli.env_config import apply_env_defaults
+    from stint.cli.env_config import apply_env_defaults
 
     args = argparse.Namespace(
         env="prod",
         url="x",
         auth="pat",
         dialect=None,
-        token_env="PENSUM_TOKEN",
-        user_env="PENSUM_USER",
+        token_env="STINT_TOKEN",
+        user_env="STINT_USER",
         no_verify_ssl=False,
     )
     apply_env_defaults(args, "prod")  # config does not exist → no-op
@@ -475,14 +475,14 @@ def test_env_config_missing_file_is_silent(tmp_path, monkeypatch):
 
 
 def test_env_config_rejects_unknown_keys(tmp_path, monkeypatch):
-    from pensum.exceptions import ConfigurationError
+    from stint.exceptions import ConfigurationError
 
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
     (cfg_dir / "prod.yaml").write_text("url: x\nnonsense: 1\n")
-    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
 
-    from pensum.cli.env_config import load_env_config
+    from stint.cli.env_config import load_env_config
 
     with pytest.raises(ConfigurationError) as e:
         load_env_config("prod")
@@ -500,11 +500,11 @@ def test_resolve_connection_reads_token_and_user_env_from_yaml(tmp_path, monkeyp
         "url: https://x.atlassian.net\n"
         "auth: api-token\n"
         "dialect: jira_cloud\n"
-        "token_env: PENSUM_CLOUD_TOKEN\n"
-        "user_env: PENSUM_CLOUD_EMAIL\n"
+        "token_env: STINT_CLOUD_TOKEN\n"
+        "user_env: STINT_CLOUD_EMAIL\n"
     )
-    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
-    from pensum.cli.env_config import resolve_connection
+    monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
+    from stint.cli.env_config import resolve_connection
 
     url, auth, dialect, token_env, user_env, no_verify_ssl = resolve_connection(
         env="cloud",
@@ -517,8 +517,8 @@ def test_resolve_connection_reads_token_and_user_env_from_yaml(tmp_path, monkeyp
     )
     assert url == "https://x.atlassian.net"
     assert auth == "api-token"
-    assert token_env == "PENSUM_CLOUD_TOKEN"
-    assert user_env == "PENSUM_CLOUD_EMAIL"
+    assert token_env == "STINT_CLOUD_TOKEN"
+    assert user_env == "STINT_CLOUD_EMAIL"
 
 
 def test_resolve_connection_explicit_cli_overrides_yaml(tmp_path, monkeypatch):
@@ -528,8 +528,8 @@ def test_resolve_connection_explicit_cli_overrides_yaml(tmp_path, monkeypatch):
     (cfg_dir / "cloud.yaml").write_text(
         "url: https://x.atlassian.net\nauth: api-token\ntoken_env: FROM_YAML_T\nuser_env: FROM_YAML_U\n"
     )
-    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
-    from pensum.cli.env_config import resolve_connection
+    monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
+    from stint.cli.env_config import resolve_connection
 
     _, _, _, token_env, user_env, _ = resolve_connection(
         env="cloud",
@@ -549,8 +549,8 @@ def test_resolve_connection_falls_back_to_defaults_when_unset(tmp_path, monkeypa
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
     (cfg_dir / "cloud.yaml").write_text("url: https://x.atlassian.net\nauth: api-token\n")
-    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
-    from pensum.cli.env_config import resolve_connection
+    monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
+    from stint.cli.env_config import resolve_connection
 
     _, _, _, token_env, user_env, _ = resolve_connection(
         env="cloud",
@@ -561,15 +561,15 @@ def test_resolve_connection_falls_back_to_defaults_when_unset(tmp_path, monkeypa
         user_env=None,
         no_verify_ssl=False,
     )
-    assert token_env == "PENSUM_TOKEN"
-    assert user_env == "PENSUM_USER"
+    assert token_env == "STINT_TOKEN"
+    assert user_env == "STINT_USER"
 
 
 def test_resolve_connection_defaults_when_no_yaml_at_all(tmp_path, monkeypatch):
     """Missing YAML file → CLI defaults still flow through as concrete strings."""
-    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(tmp_path))  # empty dir
-    # Use a unique env name so the user's ~/.pensum/envs/ fallback doesn't match.
-    from pensum.cli.env_config import resolve_connection
+    monkeypatch.setenv("STINT_CONFIG_DIR", str(tmp_path))  # empty dir
+    # Use a unique env name so the user's ~/.stint/envs/ fallback doesn't match.
+    from stint.cli.env_config import resolve_connection
 
     url, auth, dialect, token_env, user_env, _ = resolve_connection(
         env="pytest-no-such-env",
@@ -581,8 +581,8 @@ def test_resolve_connection_defaults_when_no_yaml_at_all(tmp_path, monkeypatch):
         no_verify_ssl=False,
     )
     assert url is None and auth is None and dialect is None
-    assert token_env == "PENSUM_TOKEN"
-    assert user_env == "PENSUM_USER"
+    assert token_env == "STINT_TOKEN"
+    assert user_env == "STINT_USER"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -590,9 +590,9 @@ def test_resolve_connection_defaults_when_no_yaml_at_all(tmp_path, monkeypatch):
 # ──────────────────────────────────────────────────────────────────────
 def test_cli_upgrade_errors_when_url_and_auth_missing(tmp_path, monkeypatch):
     """No env config, no --url, no --auth → clean SystemExit with the offending keys."""
-    from pensum.cli.main import main
+    from stint.cli.main import main
 
-    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(tmp_path / "nonexistent"))
+    monkeypatch.setenv("STINT_CONFIG_DIR", str(tmp_path / "nonexistent"))
     mig_dir = tmp_path / "migrations"
     state_path = tmp_path / "state.yaml"
     with pytest.raises(SystemExit) as e:
@@ -615,20 +615,20 @@ def test_cli_upgrade_errors_when_url_and_auth_missing(tmp_path, monkeypatch):
 # CLI: reflect / stamp / revision honor --env (issue #1)
 # ──────────────────────────────────────────────────────────────────────
 def test_cli_reflect_reads_connection_from_env_config(tmp_path, monkeypatch, capsys):
-    """`pensum reflect --env cloud` resolves url/auth/dialect from YAML and runs."""
+    """`stint reflect --env cloud` resolves url/auth/dialect from YAML and runs."""
     import httpx
     import respx
     import yaml as _yaml
 
-    from pensum.cli.main import main
+    from stint.cli.main import main
 
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
     (cfg_dir / "dev.yaml").write_text(
-        "url: jira_cloud+https://jira.example.com\nauth: pat\ndialect: jira_cloud\ntoken_env: PENSUM_DEV_TOKEN\n"
+        "url: jira_cloud+https://jira.example.com\nauth: pat\ndialect: jira_cloud\ntoken_env: STINT_DEV_TOKEN\n"
     )
-    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
-    monkeypatch.setenv("PENSUM_DEV_TOKEN", "test-pat-from-env-config")
+    monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setenv("STINT_DEV_TOKEN", "test-pat-from-env-config")
 
     base = "https://jira.example.com"
     dc_root = f"{base}/rest/api/3"
@@ -669,9 +669,9 @@ def test_cli_reflect_reads_connection_from_env_config(tmp_path, monkeypatch, cap
 
 def test_cli_reflect_errors_with_missing_connection_and_no_env(tmp_path, monkeypatch):
     """No --env, no --url, no --auth → SystemExit listing both missing keys."""
-    from pensum.cli.main import main
+    from stint.cli.main import main
 
-    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(tmp_path / "nonexistent"))
+    monkeypatch.setenv("STINT_CONFIG_DIR", str(tmp_path / "nonexistent"))
     with pytest.raises(SystemExit) as e:
         main(["reflect"])
     assert "url" in str(e.value)
@@ -679,17 +679,17 @@ def test_cli_reflect_errors_with_missing_connection_and_no_env(tmp_path, monkeyp
 
 
 def test_cli_stamp_reads_connection_from_env_config(tmp_path, monkeypatch):
-    """`pensum stamp --env dev` resolves url/auth/dialect from YAML."""
+    """`stint stamp --env dev` resolves url/auth/dialect from YAML."""
     import httpx
     import respx
 
-    from pensum.cli.main import main
+    from stint.cli.main import main
 
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
     (cfg_dir / "dev.yaml").write_text("url: jira_cloud+https://jira.example.com\nauth: pat\ndialect: jira_cloud\n")
-    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
-    monkeypatch.setenv("PENSUM_TOKEN", "test-pat")
+    monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setenv("STINT_TOKEN", "test-pat")
 
     schema_path = tmp_path / "schema.py"
     schema_path.write_text("# empty schema\n")
@@ -738,17 +738,17 @@ def test_cli_stamp_reads_connection_from_env_config(tmp_path, monkeypatch):
 
 
 def test_cli_revision_autogenerate_reads_connection_from_env_config(tmp_path, monkeypatch, capsys):
-    """`pensum revision --autogenerate --env dev` no longer requires --url/--auth on the CLI."""
+    """`stint revision --autogenerate --env dev` no longer requires --url/--auth on the CLI."""
     import httpx
     import respx
 
-    from pensum.cli.main import main
+    from stint.cli.main import main
 
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
     (cfg_dir / "dev.yaml").write_text("url: jira_cloud+https://jira.example.com\nauth: pat\ndialect: jira_cloud\n")
-    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
-    monkeypatch.setenv("PENSUM_TOKEN", "test-pat")
+    monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setenv("STINT_TOKEN", "test-pat")
 
     schema_path = tmp_path / "schema.py"
     schema_path.write_text("# empty schema\n")
@@ -803,9 +803,9 @@ def test_cli_revision_autogenerate_reads_connection_from_env_config(tmp_path, mo
 
 def test_cli_revision_autogenerate_errors_with_missing_connection(tmp_path, monkeypatch):
     """Autogen with --env but no YAML and no --url/--auth → SystemExit."""
-    from pensum.cli.main import main
+    from stint.cli.main import main
 
-    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(tmp_path / "nonexistent"))
+    monkeypatch.setenv("STINT_CONFIG_DIR", str(tmp_path / "nonexistent"))
     schema_path = tmp_path / "schema.py"
     schema_path.write_text("# empty\n")
     with pytest.raises(SystemExit) as e:

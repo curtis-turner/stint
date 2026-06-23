@@ -1,4 +1,4 @@
-"""End-to-end test of `pensum revision --autogenerate` CLI."""
+"""End-to-end test of `stint revision --autogenerate` CLI."""
 
 import sys
 
@@ -6,9 +6,9 @@ import httpx
 import pytest
 import respx
 
-from pensum import StateFile, load_migrations
-from pensum.cli.main import main
-from pensum.registry import registry
+from stint import StateFile, load_migrations
+from stint.cli.main import main
+from stint.registry import registry
 
 BASE = "https://jira.example.com"
 CLOUD_ROOT = f"{BASE}/rest/api/3"
@@ -65,7 +65,7 @@ def test_autogenerate_greenfield_writes_full_migration(tmp_path, monkeypatch, ca
 
     mig_dir = tmp_path / "migrations"
     state_path = tmp_path / "state.yaml"
-    monkeypatch.setenv("PENSUM_TOKEN", "tok")
+    monkeypatch.setenv("STINT_TOKEN", "tok")
     rc = main(
         [
             "revision",
@@ -99,8 +99,8 @@ def test_autogenerate_greenfield_writes_full_migration(tmp_path, monkeypatch, ca
     # Inspect source for sanity.
     files = list(mig_dir.glob("*.py"))
     source = files[0].read_text()
-    assert "from pensum import op" in source
-    assert "from pensum.fields import SelectField, TextField" in source
+    assert "from stint import op" in source
+    assert "from stint.fields import SelectField, TextField" in source
     assert "op.create_custom_field" in source
     assert "op.create_issuetype" in source
     assert "op.create_screen" in source
@@ -124,7 +124,7 @@ def test_autogenerate_in_sync_writes_nothing(tmp_path, monkeypatch, capsys):
     _stub_empty_jira(respx.mock)
     mig_dir = tmp_path / "migrations"
     state_path = tmp_path / "state.yaml"
-    monkeypatch.setenv("PENSUM_TOKEN", "tok")
+    monkeypatch.setenv("STINT_TOKEN", "tok")
     rc = main(
         [
             "revision",
@@ -135,7 +135,7 @@ def test_autogenerate_in_sync_writes_nothing(tmp_path, monkeypatch, capsys):
             "--autogenerate",
             # No schema declarations imported (registry empty due to fixture reset).
             "--schema",
-            "pensum.registry",  # any importable, no schema content
+            "stint.registry",  # any importable, no schema content
             "--state",
             str(state_path),
             "--env",
@@ -163,12 +163,12 @@ def test_autogenerate_orphan_state_warns_without_allow_delete(
     mig_dir = tmp_path / "migrations"
     state_path = tmp_path / "state.yaml"
     state = StateFile(env="dev", jira_url=BASE)
-    from pensum.state.file import CustomFieldMapping
+    from stint.state.file import CustomFieldMapping
 
     state.custom_fields["orphan"] = CustomFieldMapping(id="customfield_99999")
     state.save(state_path)
 
-    monkeypatch.setenv("PENSUM_TOKEN", "tok")
+    monkeypatch.setenv("STINT_TOKEN", "tok")
     rc = main(
         [
             "revision",
@@ -178,7 +178,7 @@ def test_autogenerate_orphan_state_warns_without_allow_delete(
             "noop",
             "--autogenerate",
             "--schema",
-            "pensum.registry",
+            "stint.registry",
             "--state",
             str(state_path),
             "--env",
@@ -203,12 +203,12 @@ def test_autogenerate_allow_delete_emits_delete(tmp_path, monkeypatch, capsys):
     mig_dir = tmp_path / "migrations"
     state_path = tmp_path / "state.yaml"
     state = StateFile(env="dev", jira_url=BASE)
-    from pensum.state.file import CustomFieldMapping
+    from stint.state.file import CustomFieldMapping
 
     state.custom_fields["orphan"] = CustomFieldMapping(id="customfield_99999")
     state.save(state_path)
 
-    monkeypatch.setenv("PENSUM_TOKEN", "tok")
+    monkeypatch.setenv("STINT_TOKEN", "tok")
     rc = main(
         [
             "revision",
@@ -218,7 +218,7 @@ def test_autogenerate_allow_delete_emits_delete(tmp_path, monkeypatch, capsys):
             "drop orphan",
             "--autogenerate",
             "--schema",
-            "pensum.registry",
+            "stint.registry",
             "--state",
             str(state_path),
             "--env",

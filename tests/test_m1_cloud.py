@@ -6,7 +6,7 @@ import httpx
 import pytest
 import respx
 
-from pensum import APITokenAuth, create_engine
+from stint import APITokenAuth, create_engine
 
 BASE = "https://acme.atlassian.net"
 CLOUD_ROOT = f"{BASE}/rest/api/3"

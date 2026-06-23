@@ -14,7 +14,7 @@ import httpx
 import pytest
 import respx
 
-from pensum import (
+from stint import (
     PartialCommitError,
     PATAuth,
     Session,
@@ -22,9 +22,9 @@ from pensum import (
     create_engine,
     select,
 )
-from pensum.engine import Engine
-from pensum.registry import registry
-from pensum.state.file import (
+from stint.engine import Engine
+from stint.registry import registry
+from stint.state.file import (
     CustomFieldMapping,
     ProjectMapping,
     SimpleMapping,

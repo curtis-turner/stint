@@ -1,7 +1,7 @@
 """Initial: create the bug severity select field."""
 
-from pensum import op
-from pensum.fields import SelectField
+from stint import op
+from stint.fields import SelectField
 
 revision = "abc123def456"
 down_revision = None

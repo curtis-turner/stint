@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from pensum import StateFile, StateFileCorruptError
-from pensum.state.file import CustomFieldMapping, ScreenMapping, SimpleMapping
+from stint import StateFile, StateFileCorruptError
+from stint.state.file import CustomFieldMapping, ScreenMapping, SimpleMapping
 
 
 def test_state_file_roundtrip_yaml():

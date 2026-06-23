@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to pensum are documented here. The format follows
+All notable changes to stint are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version
 numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
@@ -9,9 +9,9 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 - Sync `Session` facade over `AsyncSession` for callers who do not want to
   manage an event loop.
-- `pensum validate` CLI subcommand for schema-level checks with no network
+- `stint validate` CLI subcommand for schema-level checks with no network
   calls.
-- `pensum/py.typed` PEP 561 marker, shipped via
+- `stint/py.typed` PEP 561 marker, shipped via
   `[tool.setuptools.package-data]`. Type checkers now honor the inline
   annotations against the installed package.
 
@@ -28,7 +28,7 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Removed
 - `[project.optional-dependencies].dev` block from `pyproject.toml`. It
   duplicated `[dependency-groups].dev` with stale lower bounds and leaked
-  test/lint tooling into `pip install pensum[dev]`. `uv sync --dev` only
+  test/lint tooling into `pip install stint[dev]`. `uv sync --dev` only
   read the dependency group anyway.
 
 ## [0.1.0a0]
@@ -44,8 +44,8 @@ end-to-end against Jira Data Center and Jira Cloud.
 - Migration package: `Migration`, `RevisionGraph`, op API (30 functions),
   runner with mid-op state persistence, `op.unsupported` escape hatch,
   multi-parent merges.
-- `pensum revision --autogenerate` for diffing schema against a live env.
-- `pensum stamp` for brownfield adoption.
+- `stint revision --autogenerate` for diffing schema against a live env.
+- `stint stamp` for brownfield adoption.
 - HTTP retry with `Retry-After` honoring, advisory lock on state file,
   env config loader.
 - Async data plane: `AsyncSession` with identity map, dirty tracking,
@@ -53,5 +53,5 @@ end-to-end against Jira Data Center and Jira Cloud.
 - TMP awareness: project style tracked in state, CMP-only ops raise
   `UnsupportedTMPOpError` with a deep link to the Jira UI.
 
-[Unreleased]: https://github.com/curtis-turner/pensum/compare/v0.1.0a0...HEAD
-[0.1.0a0]: https://github.com/curtis-turner/pensum/releases/tag/v0.1.0a0
+[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.1.0a0...HEAD
+[0.1.0a0]: https://github.com/curtis-turner/stint/releases/tag/v0.1.0a0

@@ -2,14 +2,14 @@
 
 import pytest
 
-from pensum import (
+from stint import (
     ConfigurationError,
     Engine,
     PATAuth,
     create_engine,
 )
-from pensum.dialects.jira.cloud import JiraCloudDialect
-from pensum.engine import _split_dialect_prefix
+from stint.dialects.jira.cloud import JiraCloudDialect
+from stint.engine import _split_dialect_prefix
 
 
 # ── URL parsing ───────────────────────────────────────────────────────

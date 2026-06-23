@@ -2,8 +2,8 @@
 
 import pytest
 
-from pensum import load_migrations
-from pensum.migrations.exceptions import MigrationGraphError
+from stint import load_migrations
+from stint.migrations.exceptions import MigrationGraphError
 
 
 # ── Tuple down_revision loads ────────────────────────────────────────

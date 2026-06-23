@@ -6,23 +6,23 @@ import httpx
 import pytest
 import respx
 
-from pensum import (
+from stint import (
     AsyncSession,
     PartialCommitError,
     PATAuth,
     StateFile,
     create_engine,
 )
-from pensum.engine import Engine
-from pensum.exceptions import ConfigurationError
-from pensum.query.adf import wrap_plain_text
-from pensum.query.payload import (
+from stint.engine import Engine
+from stint.exceptions import ConfigurationError
+from stint.query.adf import wrap_plain_text
+from stint.query.payload import (
     build_fields_payload,
     build_insert_payload,
     build_update_payload,
 )
-from pensum.registry import registry
-from pensum.state.file import (
+from stint.registry import registry
+from stint.state.file import (
     CustomFieldMapping,
     ProjectMapping,
     SimpleMapping,

@@ -1,8 +1,8 @@
-# pensum
+# stint
 
 Declarative schema-as-code and ORM for work-management systems. Jira first.
 
-pensum is two tools in one, the same way SQLAlchemy + Alembic is.
+stint is two tools in one, the same way SQLAlchemy + Alembic is.
 
 1. **Schema as code with versioned migrations.** Declare projects,
    issuetypes, custom fields, screens, and schemes as Pydantic classes.
@@ -18,7 +18,7 @@ team-managed projects. Live-instance validation against a real Cloud
 tenant is the gating work for `0.1.0` final.
 
 **Jira Data Center is out of scope for 0.1.** An audit against Atlassian's
-official OpenAPI specs found that ~17 of the admin endpoints pensum drives
+official OpenAPI specs found that ~17 of the admin endpoints stint drives
 exist only on Cloud; DC keeps those objects web-admin-only and never added
 REST. Rather than ship a DC dialect that fails on half the op surface, 0.1
 is Cloud-only. The dialect protocol stays the extension point, so a real DC
@@ -28,7 +28,7 @@ release.
 ## Install
 
 ```bash
-pip install pensum
+pip install stint
 ```
 
 Python 3.10 or newer. The only required runtime deps are `pydantic`,
@@ -38,7 +38,7 @@ Python 3.10 or newer. The only required runtime deps are `pydantic`,
 
 Jira admin lives in a web UI. That makes it hard to review changes, hard
 to mirror across environments, and impossible to roll back cleanly.
-pensum treats Jira as a database where the schema happens to be
+stint treats Jira as a database where the schema happens to be
 unusually heavy. The schema is Python you commit. Migrations are Python
 you commit. Two environments get the same shape by running the same
 migration chain.
@@ -56,7 +56,7 @@ Define the schema as Pydantic classes:
 # schemas/platform.py
 from typing import Annotated, Literal
 
-from pensum import (
+from stint import (
     CustomField, IssueType, Project, Screen, ScreenScheme,
     FieldConfiguration, SelectField, TextField,
 )
@@ -103,15 +103,15 @@ class Platform(Project):
 Validate it without any network call:
 
 ```bash
-pensum validate --schema schemas/platform.py
+stint validate --schema schemas/platform.py
 ```
 
 Generate a migration from the diff between your schema and the live env:
 
 ```bash
-export PENSUM_USER=you@example.com   # Jira Cloud account email
-export PENSUM_TOKEN=...               # Jira Cloud API token
-pensum revision --autogenerate \
+export STINT_USER=you@example.com   # Jira Cloud account email
+export STINT_TOKEN=...               # Jira Cloud API token
+stint revision --autogenerate \
     --schema schemas.platform \
     --state state/dev.yaml \
     --migrations-dir migrations/ \
@@ -125,8 +125,8 @@ Review the emitted Python file. It looks roughly like:
 
 ```python
 # migrations/2026_05_25_1430_add_bug_severity.py
-from pensum import op
-from pensum.fields import SelectField
+from stint import op
+from stint.fields import SelectField
 
 revision = "abc123def456"
 down_revision = None
@@ -146,13 +146,13 @@ async def downgrade():
 Apply it:
 
 ```bash
-pensum upgrade --env dev
+stint upgrade --env dev
 ```
 
 Then query and write issues through the same classes:
 
 ```python
-from pensum import Session, StateFile, APITokenAuth, create_engine, select
+from stint import Session, StateFile, APITokenAuth, create_engine, select
 from schemas.platform import Bug
 
 state = StateFile.load("state/dev.yaml")
@@ -206,14 +206,14 @@ plus `await` on the I/O methods.
 ## CLI
 
 ```
-pensum reflect    Reflect a Jira instance into a snapshot and print it.
-pensum revision   Create a migration (empty, --merge, or --autogenerate).
-pensum stamp      Brownfield: match aliases against existing Jira, populate state.
-pensum upgrade    Apply pending migrations to head (or --to <rev>).
-pensum downgrade  Roll back to a specific revision.
-pensum current    Show the env's current revision.
-pensum history    List migrations in revision order.
-pensum validate   Run schema-level checks on a Python schema module.
+stint reflect    Reflect a Jira instance into a snapshot and print it.
+stint revision   Create a migration (empty, --merge, or --autogenerate).
+stint stamp      Brownfield: match aliases against existing Jira, populate state.
+stint upgrade    Apply pending migrations to head (or --to <rev>).
+stint downgrade  Roll back to a specific revision.
+stint current    Show the env's current revision.
+stint history    List migrations in revision order.
+stint validate   Run schema-level checks on a Python schema module.
 ```
 
 ## Caveats

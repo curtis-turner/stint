@@ -6,18 +6,18 @@ import httpx
 import pytest
 import respx
 
-from pensum import (
+from stint import (
     PATAuth,
     StateFile,
     create_engine,
     load_migrations,
 )
-from pensum.migrations.exceptions import (
+from stint.migrations.exceptions import (
     MigrationConflictError,
     MigrationGraphError,
     UnsupportedDowngradeError,
 )
-from pensum.migrations.runner import upgrade as run_upgrade
+from stint.migrations.runner import upgrade as run_upgrade
 
 BASE = "https://jira.example.com"
 CLOUD_ROOT = f"{BASE}/rest/api/3"
@@ -211,7 +211,7 @@ async def test_state_file_persisted_after_each_migration(tmp_path):
     graph = load_migrations(FIXTURES_DIR)
     engine = _engine()
     try:
-        from pensum.exceptions import TransportError
+        from stint.exceptions import TransportError
 
         with pytest.raises(TransportError):
             await run_upgrade(engine, state, graph, state_path)
@@ -228,7 +228,7 @@ async def test_state_file_persisted_after_each_migration(tmp_path):
 @pytest.mark.asyncio
 async def test_unsupported_downgrade_raises(tmp_path):
     """The first migration's downgrade calls op.unsupported(...); runner aborts."""
-    from pensum.migrations.context import MigrationContext, reset_context, set_context
+    from stint.migrations.context import MigrationContext, reset_context, set_context
 
     state = StateFile(env="dev", jira_url=BASE, revision="abc123def456")
     engine = _engine()
@@ -253,7 +253,7 @@ async def test_create_custom_field_is_idempotent_when_alias_in_state(tmp_path):
     """M4 idempotency: when alias is already in state, the op is a no-op
     (returns existing id, no HTTP). This makes re-running a partially-applied
     migration safe — the previously-completed ops simply pass through."""
-    from pensum.state.file import CustomFieldMapping
+    from stint.state.file import CustomFieldMapping
 
     state = StateFile(env="dev", jira_url=BASE)
     state.custom_fields["bug_severity"] = CustomFieldMapping(

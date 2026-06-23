@@ -9,7 +9,7 @@ import httpx
 import pytest
 import respx
 
-from pensum import (
+from stint import (
     AuthenticationError,
     PATAuth,
     PermissionError,

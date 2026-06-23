@@ -1,4 +1,4 @@
-"""Migration runner: downgrade path. Plus CLI `pensum downgrade` smoke."""
+"""Migration runner: downgrade path. Plus CLI `stint downgrade` smoke."""
 
 from pathlib import Path
 
@@ -6,19 +6,19 @@ import httpx
 import pytest
 import respx
 
-from pensum import (
+from stint import (
     PATAuth,
     StateFile,
     create_engine,
     load_migrations,
 )
-from pensum.cli.main import main
-from pensum.migrations.exceptions import (
+from stint.cli.main import main
+from stint.migrations.exceptions import (
     MigrationGraphError,
     UnsupportedDowngradeError,
 )
-from pensum.migrations.runner import downgrade as run_downgrade
-from pensum.state.file import CustomFieldMapping
+from stint.migrations.runner import downgrade as run_downgrade
+from stint.state.file import CustomFieldMapping
 
 BASE = "https://jira.example.com"
 CLOUD_ROOT = f"{BASE}/rest/api/3"
@@ -185,7 +185,7 @@ def test_cli_downgrade_one_step(tmp_path, monkeypatch, capsys):
     state_path = tmp_path / "state.yaml"
     state.save(state_path)
 
-    monkeypatch.setenv("PENSUM_TOKEN", "tok")
+    monkeypatch.setenv("STINT_TOKEN", "tok")
     rc = main(
         [
             "downgrade",
@@ -217,7 +217,7 @@ def test_cli_downgrade_noop_when_at_target(tmp_path, monkeypatch, capsys):
     state_path = tmp_path / "state.yaml"
     state.save(state_path)
 
-    monkeypatch.setenv("PENSUM_TOKEN", "tok")
+    monkeypatch.setenv("STINT_TOKEN", "tok")
     rc = main(
         [
             "downgrade",
