@@ -3,7 +3,7 @@
   from pensum import Session, create_engine, StateFile, PATAuth, select
 
   state = StateFile.load("state/dev.yaml")
-  engine = create_engine("jira_dc+https://...", auth=PATAuth(token))
+  engine = create_engine("jira_cloud+https://...", auth=APITokenAuth(email, token))
 
   with Session(engine, state) as session:
       bug = session.get(Bug, "PLAT-1")

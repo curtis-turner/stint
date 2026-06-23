@@ -110,7 +110,7 @@ def test_validate_flags_screen_referencing_unregistered_custom_field():
     # Build a synthetic invalid setup: declare a CustomField, register it, then
     # remove it from the registry to simulate the dangling reference.
     cf = CustomField(alias="ghost", name="Ghost", type=TextField)
-    screen = Screen(alias="s1", name="S1", fields=[cf])
+    Screen(alias="s1", name="S1", fields=[cf])  # registers via constructor side effect
     # Remove the custom field from the registry to dangle the reference.
     del registry.custom_fields["ghost"]
     problems = validate()

@@ -36,7 +36,6 @@ from pensum.state.snapshot import (
 )
 
 BASE = "https://jira.example.com"
-DC_ROOT = f"{BASE}/rest/api/2"
 CLOUD_ROOT = f"{BASE}/rest/api/3"
 
 
@@ -47,10 +46,6 @@ def _isolate_registry():
     yield
     registry.reset()
     sys.modules.pop("examples.platform", None)
-
-
-def _dc_engine() -> Engine:
-    return create_engine(f"jira_dc+{BASE}", auth=PATAuth("tok"))
 
 
 def _cloud_engine() -> Engine:
@@ -121,11 +116,11 @@ def test_project_mapping_from_dict_defaults_style():
 @pytest.mark.asyncio
 @respx.mock
 async def test_create_project_records_default_style():
-    respx.post(f"{DC_ROOT}/project").mock(
+    respx.post(f"{CLOUD_ROOT}/project").mock(
         return_value=httpx.Response(201, json={"id": "p-1"}),
     )
     state = StateFile(env="dev", jira_url=BASE)
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -187,7 +182,7 @@ async def test_create_project_team_managed_defaults_template():
 @pytest.mark.asyncio
 async def test_create_project_rejects_unknown_style():
     state = StateFile(env="dev", jira_url=BASE)
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         with pytest.raises(ConfigurationError, match="unknown style"):
             await _run_in_ctx(
@@ -216,7 +211,7 @@ async def test_set_project_issuetype_screen_scheme_refuses_tmp():
         key="GRW",
     )
     state.issuetype_screen_schemes["grw_itss"] = SimpleMapping(id="itss-1")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         with pytest.raises(UnsupportedTMPOpError) as excinfo:
             await _run_in_ctx(
@@ -243,7 +238,7 @@ async def test_set_project_field_configuration_scheme_refuses_tmp():
         key="GRW",
     )
     state.field_configuration_schemes["grw_fcs"] = SimpleMapping(id="fcs-1")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         with pytest.raises(UnsupportedTMPOpError) as excinfo:
             await _run_in_ctx(
@@ -263,13 +258,13 @@ async def test_set_project_field_configuration_scheme_refuses_tmp():
 @respx.mock
 async def test_set_project_issuetype_screen_scheme_allowed_on_cmp():
     """Sanity check: CMP project doesn't trigger the TMP guard."""
-    respx.put(f"{DC_ROOT}/issuetypescreenscheme/project").mock(
+    respx.put(f"{CLOUD_ROOT}/issuetypescreenscheme/project").mock(
         return_value=httpx.Response(204),
     )
     state = StateFile(env="dev", jira_url=BASE)
     state.projects["plat"] = ProjectMapping(id="p-1", key="PLAT")
     state.issuetype_screen_schemes["plat_itss"] = SimpleMapping(id="itss-1")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,

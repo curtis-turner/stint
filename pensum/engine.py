@@ -1,10 +1,8 @@
 """Engine: holds a dialect and a configured HTTP client.
 
-M1 first slice: explicit dialect via URL prefix (``jira_dc+https://...``)
-or via the ``dialect=`` kwarg. Auto-detection without a hint is deferred
-because it requires an async probe at construction time; the factory would
-have to be async (`create_engine_async`) and that is a bigger API decision
-worth a separate round.
+Cloud-only as of 0.1. Explicit dialect via URL prefix (``jira_cloud+https://...``)
+or the ``dialect=`` kwarg. Auto-detection without a hint is deferred because
+it requires an async probe at construction time.
 """
 
 from __future__ import annotations
@@ -15,7 +13,6 @@ from pensum.client.auth import Auth
 from pensum.client.http import JiraHTTPClient
 from pensum.dialects.base import Dialect
 from pensum.dialects.jira.cloud import JiraCloudDialect
-from pensum.dialects.jira.dc import JiraDCDialect
 from pensum.exceptions import ConfigurationError
 from pensum.state.snapshot import Snapshot
 
@@ -46,7 +43,6 @@ class Engine:
 
 
 _DIALECT_REGISTRY: dict[str, type[Dialect]] = {
-    "jira_dc": JiraDCDialect,
     "jira_cloud": JiraCloudDialect,
 }
 
@@ -62,8 +58,8 @@ def create_engine(
     """Build an Engine from a URL plus auth.
 
     URL forms:
-      - ``jira_dc+https://jira.example.com`` - explicit dialect prefix
-      - ``https://jira.example.com`` with ``dialect="jira_dc"`` kwarg
+      - ``jira_cloud+https://you.atlassian.net`` - explicit dialect prefix
+      - ``https://you.atlassian.net`` with ``dialect="jira_cloud"`` kwarg
 
     Raises ConfigurationError if the dialect is unknown or missing.
     """
@@ -71,7 +67,8 @@ def create_engine(
     chosen = dialect or prefix_dialect
     if not chosen:
         raise ConfigurationError(
-            "create_engine requires a dialect. Use a URL prefix like 'jira_dc+https://...' or pass dialect='jira_dc'."
+            "create_engine requires a dialect. Use a URL prefix like "
+            "'jira_cloud+https://...' or pass dialect='jira_cloud'."
         )
     if chosen not in _DIALECT_REGISTRY:
         raise ConfigurationError(f"Unknown dialect {chosen!r}. Known: {sorted(_DIALECT_REGISTRY)}")

@@ -1,13 +1,12 @@
-"""FieldConfiguration declarations (CMP / DC only)."""
+"""FieldConfiguration declarations (company-managed only)."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Union
 
 from pensum.fields import CustomField
 
-FieldRef = Union[str, CustomField]
+FieldRef = str | CustomField
 
 
 @dataclass

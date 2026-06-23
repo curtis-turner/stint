@@ -24,12 +24,7 @@ from pensum.state.file import (
 )
 
 BASE = "https://jira.example.com"
-DC_ROOT = f"{BASE}/rest/api/2"
 CLOUD_ROOT = f"{BASE}/rest/api/3"
-
-
-def _dc_engine() -> Engine:
-    return create_engine(f"jira_dc+{BASE}", auth=PATAuth("tok"))
 
 
 def _cloud_engine() -> Engine:
@@ -54,14 +49,14 @@ async def _run_in_ctx(
 @respx.mock
 async def test_create_screen_records_id():
     respx.post(
-        f"{DC_ROOT}/screens",
+        f"{CLOUD_ROOT}/screens",
         json__eq={
             "name": "Bug Screen",
             "description": "for bugs",
         },
     ).mock(return_value=httpx.Response(201, json={"id": "scr-1"}))
     state = StateFile(env="dev", jira_url=BASE)
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -81,10 +76,10 @@ async def test_create_screen_records_id():
 @pytest.mark.asyncio
 @respx.mock
 async def test_delete_screen_removes_mapping():
-    respx.delete(f"{DC_ROOT}/screens/scr-1").mock(return_value=httpx.Response(204))
+    respx.delete(f"{CLOUD_ROOT}/screens/scr-1").mock(return_value=httpx.Response(204))
     state = StateFile(env="dev", jira_url=BASE)
     state.screens["bug_screen"] = ScreenMapping(id="scr-1")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(engine, state, lambda: op.delete_screen(alias="bug_screen"))
     finally:
@@ -95,12 +90,12 @@ async def test_delete_screen_removes_mapping():
 @pytest.mark.asyncio
 @respx.mock
 async def test_add_screen_tab_records_tab_id():
-    respx.post(f"{DC_ROOT}/screens/scr-1/tabs", json__eq={"name": "Fields"}).mock(
+    respx.post(f"{CLOUD_ROOT}/screens/scr-1/tabs", json__eq={"name": "Fields"}).mock(
         return_value=httpx.Response(201, json={"id": "tab-7"})
     )
     state = StateFile(env="dev", jira_url=BASE)
     state.screens["bug_screen"] = ScreenMapping(id="scr-1")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -121,7 +116,7 @@ async def test_add_screen_tab_is_idempotent_for_existing_tab_name():
     existing tab id without hitting Jira."""
     state = StateFile(env="dev", jira_url=BASE)
     state.screens["bug_screen"] = ScreenMapping(id="scr-1", tab_ids={"Fields": "tab-7"})
-    engine = _dc_engine()
+    engine = _cloud_engine()
     captured: list[str] = []
 
     async def _call():
@@ -144,13 +139,13 @@ async def test_add_screen_tab_is_idempotent_for_existing_tab_name():
 @respx.mock
 async def test_add_screen_tab_field_resolves_field_alias():
     respx.post(
-        f"{DC_ROOT}/screens/scr-1/tabs/tab-7/fields",
+        f"{CLOUD_ROOT}/screens/scr-1/tabs/tab-7/fields",
         json__eq={"fieldId": "customfield_10042"},
     ).mock(return_value=httpx.Response(204))
     state = StateFile(env="dev", jira_url=BASE)
     state.screens["bug_screen"] = ScreenMapping(id="scr-1", tab_ids={"Fields": "tab-7"})
     state.custom_fields["bug_severity"] = CustomFieldMapping(id="customfield_10042")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -170,7 +165,7 @@ async def test_add_screen_tab_field_rejects_unknown_tab():
     state = StateFile(env="dev", jira_url=BASE)
     state.screens["bug_screen"] = ScreenMapping(id="scr-1")
     state.custom_fields["bug_severity"] = CustomFieldMapping(id="customfield_10042")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         with pytest.raises(ConfigurationError) as e:
             await _run_in_ctx(
@@ -192,7 +187,7 @@ async def test_add_screen_tab_field_rejects_unknown_tab():
 @respx.mock
 async def test_create_screen_scheme_resolves_screen_aliases():
     respx.post(
-        f"{DC_ROOT}/screenscheme",
+        f"{CLOUD_ROOT}/screenscheme",
         json__eq={
             "name": "Bug SS",
             "description": "",
@@ -202,7 +197,7 @@ async def test_create_screen_scheme_resolves_screen_aliases():
     state = StateFile(env="dev", jira_url=BASE)
     state.screens["bug_screen"] = ScreenMapping(id="scr-1")
     state.screens["bug_create_screen"] = ScreenMapping(id="scr-2")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -222,7 +217,7 @@ async def test_create_screen_scheme_resolves_screen_aliases():
 async def test_create_screen_scheme_requires_default():
     state = StateFile(env="dev", jira_url=BASE)
     state.screens["bug_screen"] = ScreenMapping(id="scr-1")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         with pytest.raises(ConfigurationError) as e:
             await _run_in_ctx(
@@ -242,10 +237,10 @@ async def test_create_screen_scheme_requires_default():
 @pytest.mark.asyncio
 @respx.mock
 async def test_delete_screen_scheme():
-    respx.delete(f"{DC_ROOT}/screenscheme/ss-1").mock(return_value=httpx.Response(204))
+    respx.delete(f"{CLOUD_ROOT}/screenscheme/ss-1").mock(return_value=httpx.Response(204))
     state = StateFile(env="dev", jira_url=BASE)
     state.screen_schemes["bug_ss"] = SimpleMapping(id="ss-1")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(engine, state, lambda: op.delete_screen_scheme(alias="bug_ss"))
     finally:
@@ -259,7 +254,7 @@ async def test_delete_screen_scheme():
 async def test_create_issuetype_screen_scheme_resolves_default_and_typed_mappings():
     """Both 'default' and a typed issuetype alias resolve correctly."""
     respx.post(
-        f"{DC_ROOT}/issuetypescreenscheme",
+        f"{CLOUD_ROOT}/issuetypescreenscheme",
         json__eq={
             "name": "Bug ITSS",
             "description": "",
@@ -273,7 +268,7 @@ async def test_create_issuetype_screen_scheme_resolves_default_and_typed_mapping
     state.screen_schemes["default_ss"] = SimpleMapping(id="ss-1")
     state.screen_schemes["bug_ss"] = SimpleMapping(id="ss-2")
     state.issuetypes["bug"] = SimpleMapping(id="10010")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -293,7 +288,7 @@ async def test_create_issuetype_screen_scheme_resolves_default_and_typed_mapping
 async def test_create_issuetype_screen_scheme_requires_default():
     state = StateFile(env="dev", jira_url=BASE)
     state.screen_schemes["bug_ss"] = SimpleMapping(id="ss-1")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         with pytest.raises(ConfigurationError):
             await _run_in_ctx(
@@ -312,10 +307,10 @@ async def test_create_issuetype_screen_scheme_requires_default():
 @pytest.mark.asyncio
 @respx.mock
 async def test_delete_issuetype_screen_scheme():
-    respx.delete(f"{DC_ROOT}/issuetypescreenscheme/itss-1").mock(return_value=httpx.Response(204))
+    respx.delete(f"{CLOUD_ROOT}/issuetypescreenscheme/itss-1").mock(return_value=httpx.Response(204))
     state = StateFile(env="dev", jira_url=BASE)
     state.issuetype_screen_schemes["bug_itss"] = SimpleMapping(id="itss-1")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -334,14 +329,14 @@ async def test_delete_issuetype_screen_scheme():
 @respx.mock
 async def test_create_field_configuration():
     respx.post(
-        f"{DC_ROOT}/fieldconfiguration",
+        f"{CLOUD_ROOT}/fieldconfiguration",
         json__eq={
             "name": "Bug FC",
             "description": "",
         },
     ).mock(return_value=httpx.Response(201, json={"id": "fc-1"}))
     state = StateFile(env="dev", jira_url=BASE)
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -360,7 +355,7 @@ async def test_create_field_configuration():
 @respx.mock
 async def test_set_field_configuration_item_resolves_aliases():
     respx.put(
-        f"{DC_ROOT}/fieldconfiguration/fc-1/fields",
+        f"{CLOUD_ROOT}/fieldconfiguration/fc-1/fields",
         json__eq={
             "fieldConfigurationItems": [
                 {
@@ -375,7 +370,7 @@ async def test_set_field_configuration_item_resolves_aliases():
     state = StateFile(env="dev", jira_url=BASE)
     state.field_configurations["bug_fc"] = SimpleMapping(id="fc-1")
     state.custom_fields["bug_severity"] = CustomFieldMapping(id="customfield_10042")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -394,10 +389,10 @@ async def test_set_field_configuration_item_resolves_aliases():
 @pytest.mark.asyncio
 @respx.mock
 async def test_delete_field_configuration():
-    respx.delete(f"{DC_ROOT}/fieldconfiguration/fc-1").mock(return_value=httpx.Response(204))
+    respx.delete(f"{CLOUD_ROOT}/fieldconfiguration/fc-1").mock(return_value=httpx.Response(204))
     state = StateFile(env="dev", jira_url=BASE)
     state.field_configurations["bug_fc"] = SimpleMapping(id="fc-1")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -416,14 +411,14 @@ async def test_delete_field_configuration():
 @respx.mock
 async def test_create_field_configuration_scheme_creates_and_sets_mappings():
     respx.post(
-        f"{DC_ROOT}/fieldconfigurationscheme",
+        f"{CLOUD_ROOT}/fieldconfigurationscheme",
         json__eq={
             "name": "Bug FCS",
             "description": "",
         },
     ).mock(return_value=httpx.Response(201, json={"id": "fcs-1"}))
     respx.put(
-        f"{DC_ROOT}/fieldconfigurationscheme/fcs-1/mapping",
+        f"{CLOUD_ROOT}/fieldconfigurationscheme/fcs-1/mapping",
         json__eq={
             "mappings": [
                 {"issueTypeId": "default", "fieldConfigurationId": "fc-1"},
@@ -432,7 +427,7 @@ async def test_create_field_configuration_scheme_creates_and_sets_mappings():
     ).mock(return_value=httpx.Response(204))
     state = StateFile(env="dev", jira_url=BASE)
     state.field_configurations["default_fc"] = SimpleMapping(id="fc-1")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -451,10 +446,10 @@ async def test_create_field_configuration_scheme_creates_and_sets_mappings():
 @pytest.mark.asyncio
 @respx.mock
 async def test_delete_field_configuration_scheme():
-    respx.delete(f"{DC_ROOT}/fieldconfigurationscheme/fcs-1").mock(return_value=httpx.Response(204))
+    respx.delete(f"{CLOUD_ROOT}/fieldconfigurationscheme/fcs-1").mock(return_value=httpx.Response(204))
     state = StateFile(env="dev", jira_url=BASE)
     state.field_configuration_schemes["bug_fcs"] = SimpleMapping(id="fcs-1")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -473,7 +468,7 @@ async def test_delete_field_configuration_scheme():
 @respx.mock
 async def test_create_issuetype():
     respx.post(
-        f"{DC_ROOT}/issuetype",
+        f"{CLOUD_ROOT}/issuetype",
         json__eq={
             "name": "Bug",
             "description": "a bug",
@@ -481,7 +476,7 @@ async def test_create_issuetype():
         },
     ).mock(return_value=httpx.Response(201, json={"id": "10010"}))
     state = StateFile(env="dev", jira_url=BASE)
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -501,7 +496,7 @@ async def test_create_issuetype():
 @respx.mock
 async def test_create_issuetype_subtask_sends_subtask_type():
     respx.post(
-        f"{DC_ROOT}/issuetype",
+        f"{CLOUD_ROOT}/issuetype",
         json__eq={
             "name": "Sub-bug",
             "description": "",
@@ -509,7 +504,7 @@ async def test_create_issuetype_subtask_sends_subtask_type():
         },
     ).mock(return_value=httpx.Response(201, json={"id": "10011"}))
     state = StateFile(env="dev", jira_url=BASE)
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -527,10 +522,10 @@ async def test_create_issuetype_subtask_sends_subtask_type():
 @pytest.mark.asyncio
 @respx.mock
 async def test_delete_issuetype():
-    respx.delete(f"{DC_ROOT}/issuetype/10010").mock(return_value=httpx.Response(204))
+    respx.delete(f"{CLOUD_ROOT}/issuetype/10010").mock(return_value=httpx.Response(204))
     state = StateFile(env="dev", jira_url=BASE)
     state.issuetypes["bug"] = SimpleMapping(id="10010")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(engine, state, lambda: op.delete_issuetype(alias="bug"))
     finally:
@@ -541,39 +536,7 @@ async def test_delete_issuetype():
 # ── Projects ─────────────────────────────────────────────────────────
 @pytest.mark.asyncio
 @respx.mock
-async def test_create_project_dc_uses_lead_field():
-    respx.post(
-        f"{DC_ROOT}/project",
-        json__eq={
-            "key": "BUG",
-            "name": "Bug Tracker",
-            "projectTypeKey": "software",
-            "lead": "jdoe",
-            "description": "",
-        },
-    ).mock(return_value=httpx.Response(201, json={"id": "p-1"}))
-    state = StateFile(env="dev", jira_url=BASE)
-    engine = _dc_engine()
-    try:
-        await _run_in_ctx(
-            engine,
-            state,
-            lambda: op.create_project(
-                alias="bug_tracker",
-                key="BUG",
-                name="Bug Tracker",
-                project_type_key="software",
-                lead="jdoe",
-            ),
-        )
-    finally:
-        await engine.close()
-    assert state.projects["bug_tracker"].id == "p-1"
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_create_project_cloud_uses_leadAccountId():
+async def test_create_project_cloud_uses_leadAccountId():  # noqa: N802 (mirrors Jira's leadAccountId field)
     respx.get(f"{CLOUD_ROOT}/serverInfo").mock(
         return_value=httpx.Response(
             200,
@@ -614,11 +577,11 @@ async def test_create_project_cloud_uses_leadAccountId():
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_delete_project_dc_uses_key():
-    respx.delete(f"{DC_ROOT}/project/BUG").mock(return_value=httpx.Response(204))
+async def test_delete_project_cloud_uses_id():
+    respx.delete(f"{CLOUD_ROOT}/project/p-1").mock(return_value=httpx.Response(204))
     state = StateFile(env="dev", jira_url=BASE)
     state.projects["bug_tracker"] = ProjectMapping(id="p-1", key="BUG")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -637,13 +600,13 @@ async def test_delete_project_dc_uses_key():
 @respx.mock
 async def test_set_project_issuetype_screen_scheme():
     respx.put(
-        f"{DC_ROOT}/issuetypescreenscheme/project",
+        f"{CLOUD_ROOT}/issuetypescreenscheme/project",
         json__eq={"issueTypeScreenSchemeId": "itss-1", "projectId": "p-1"},
     ).mock(return_value=httpx.Response(204))
     state = StateFile(env="dev", jira_url=BASE)
     state.projects["bug_tracker"] = ProjectMapping(id="p-1", key="BUG")
     state.issuetype_screen_schemes["bug_itss"] = SimpleMapping(id="itss-1")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -661,13 +624,13 @@ async def test_set_project_issuetype_screen_scheme():
 @respx.mock
 async def test_set_project_field_configuration_scheme():
     respx.put(
-        f"{DC_ROOT}/fieldconfigurationscheme/project",
+        f"{CLOUD_ROOT}/fieldconfigurationscheme/project",
         json__eq={"fieldConfigurationSchemeId": "fcs-1", "projectId": "p-1"},
     ).mock(return_value=httpx.Response(204))
     state = StateFile(env="dev", jira_url=BASE)
     state.projects["bug_tracker"] = ProjectMapping(id="p-1", key="BUG")
     state.field_configuration_schemes["bug_fcs"] = SimpleMapping(id="fcs-1")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -688,7 +651,7 @@ async def test_create_issuetype_scheme_resolves_member_aliases_to_ids():
     """create_issuetype_scheme resolves each member alias to its Jira id,
     plus the default issuetype, and persists state.issuetype_schemes."""
     respx.post(
-        f"{DC_ROOT}/issuetypescheme",
+        f"{CLOUD_ROOT}/issuetypescheme",
         json__eq={
             "name": "Platform Issue Type Scheme",
             "description": "Auto-derived for project PLAT",
@@ -699,7 +662,7 @@ async def test_create_issuetype_scheme_resolves_member_aliases_to_ids():
     state = StateFile(env="dev", jira_url=BASE)
     state.issuetypes["bug"] = SimpleMapping(id="10010")
     state.issuetypes["task"] = SimpleMapping(id="10011")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -719,15 +682,17 @@ async def test_create_issuetype_scheme_resolves_member_aliases_to_ids():
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_create_issuetype_scheme_accepts_issueTypeSchemeId_response_shape():
+async def test_create_issuetype_scheme_accepts_issueTypeSchemeId_response_shape():  # noqa: N802 (mirrors Jira's issueTypeSchemeId field)
     """Atlassian Cloud's POST /issuetypescheme returns
     {"issueTypeSchemeId": "..."} rather than the more common {"id": ...}
     shape. Surfaced by the live-Cloud smoke; pinned in a unit test so the
     next time someone narrows the response parser, this fails fast."""
-    respx.post(f"{DC_ROOT}/issuetypescheme").mock(return_value=httpx.Response(201, json={"issueTypeSchemeId": "10146"}))
+    respx.post(f"{CLOUD_ROOT}/issuetypescheme").mock(
+        return_value=httpx.Response(201, json={"issueTypeSchemeId": "10146"})
+    )
     state = StateFile(env="dev", jira_url=BASE)
     state.issuetypes["bug"] = SimpleMapping(id="10010")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -748,13 +713,13 @@ async def test_create_issuetype_scheme_accepts_issueTypeSchemeId_response_shape(
 @respx.mock
 async def test_set_project_issuetype_scheme():
     respx.put(
-        f"{DC_ROOT}/issuetypescheme/project",
+        f"{CLOUD_ROOT}/issuetypescheme/project",
         json__eq={"issueTypeSchemeId": "its-1", "projectId": "p-1"},
     ).mock(return_value=httpx.Response(204))
     state = StateFile(env="dev", jira_url=BASE)
     state.projects["PLAT"] = ProjectMapping(id="p-1", key="PLAT")
     state.issuetype_schemes["PLAT_its"] = SimpleMapping(id="its-1")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         await _run_in_ctx(
             engine,
@@ -773,7 +738,7 @@ async def test_create_issuetype_scheme_rejects_default_outside_member_list():
     state = StateFile(env="dev", jira_url=BASE)
     state.issuetypes["bug"] = SimpleMapping(id="10010")
     state.issuetypes["task"] = SimpleMapping(id="10011")
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         with pytest.raises(Exception, match="default_issuetype"):
             await _run_in_ctx(
@@ -796,7 +761,7 @@ async def test_delete_missing_alias_is_noop():
     """M4 idempotency: deleting an alias not in state is a no-op (not an error).
     This makes downgrade-of-partial safe."""
     state = StateFile(env="dev", jira_url=BASE)
-    engine = _dc_engine()
+    engine = _cloud_engine()
     try:
         # Should not raise, should not hit Jira.
         await _run_in_ctx(engine, state, lambda: op.delete_screen(alias="ghost"))

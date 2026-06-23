@@ -1,6 +1,5 @@
-"""Jira dialect family: DC and Cloud share the common module, diverge in dc/cloud."""
+"""Jira dialect family. Cloud-only as of 0.1; DC was dropped (see plan_pensum.md)."""
 
 from pensum.dialects.jira.cloud import JiraCloudDialect
-from pensum.dialects.jira.dc import JiraDCDialect
 
-__all__ = ["JiraCloudDialect", "JiraDCDialect"]
+__all__ = ["JiraCloudDialect"]

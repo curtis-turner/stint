@@ -18,7 +18,7 @@ from pensum.state.file import StateFile
 from pensum.state.lock import StateLock
 
 AuthMode = Literal["pat", "basic", "api-token"]
-DialectName = Literal["jira_dc", "jira_cloud"]
+DialectName = Literal["jira_cloud"]
 
 
 @app.command

@@ -11,7 +11,7 @@ from pensum.cli.main import main
 from pensum.registry import registry
 
 BASE = "https://jira.example.com"
-DC_ROOT = f"{BASE}/rest/api/2"
+CLOUD_ROOT = f"{BASE}/rest/api/3"
 
 
 @pytest.fixture(autouse=True)
@@ -29,7 +29,7 @@ def _paginated(values):
 
 def _stub_empty_jira(mock):
     """All admin endpoints return empty — Jira has nothing."""
-    mock.get(f"{DC_ROOT}/serverInfo").mock(
+    mock.get(f"{CLOUD_ROOT}/serverInfo").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -39,8 +39,8 @@ def _stub_empty_jira(mock):
             },
         )
     )
-    mock.get(f"{DC_ROOT}/field").mock(return_value=httpx.Response(200, json=[]))
-    mock.get(f"{DC_ROOT}/issuetype").mock(return_value=httpx.Response(200, json=[]))
+    mock.get(f"{CLOUD_ROOT}/field").mock(return_value=httpx.Response(200, json=[]))
+    mock.get(f"{CLOUD_ROOT}/issuetype").mock(return_value=httpx.Response(200, json=[]))
     for path in (
         "/project/search",
         "/screens",
@@ -54,7 +54,7 @@ def _stub_empty_jira(mock):
         "/fieldconfigurationscheme",
         "/fieldconfigurationscheme/project",
     ):
-        mock.get(f"{DC_ROOT}{path}").mock(return_value=httpx.Response(200, json=_paginated([])))
+        mock.get(f"{CLOUD_ROOT}{path}").mock(return_value=httpx.Response(200, json=_paginated([])))
 
 
 @respx.mock
@@ -81,7 +81,7 @@ def test_autogenerate_greenfield_writes_full_migration(tmp_path, monkeypatch, ca
             "--env",
             "dev",
             "--url",
-            f"jira_dc+{BASE}",
+            f"jira_cloud+{BASE}",
             "--auth",
             "pat",
         ]
@@ -141,7 +141,7 @@ def test_autogenerate_in_sync_writes_nothing(tmp_path, monkeypatch, capsys):
             "--env",
             "dev",
             "--url",
-            f"jira_dc+{BASE}",
+            f"jira_cloud+{BASE}",
             "--auth",
             "pat",
         ]
@@ -184,7 +184,7 @@ def test_autogenerate_orphan_state_warns_without_allow_delete(
             "--env",
             "dev",
             "--url",
-            f"jira_dc+{BASE}",
+            f"jira_cloud+{BASE}",
             "--auth",
             "pat",
         ]
@@ -224,7 +224,7 @@ def test_autogenerate_allow_delete_emits_delete(tmp_path, monkeypatch, capsys):
             "--env",
             "dev",
             "--url",
-            f"jira_dc+{BASE}",
+            f"jira_cloud+{BASE}",
             "--auth",
             "pat",
             "--allow-delete",

@@ -29,7 +29,6 @@ from pensum.state.file import (
 )
 
 BASE = "https://jira.example.com"
-DC_ROOT = f"{BASE}/rest/api/2"
 CLOUD_ROOT = f"{BASE}/rest/api/3"
 
 
@@ -40,10 +39,6 @@ def _isolate_registry():
     yield
     registry.reset()
     sys.modules.pop("examples.platform", None)
-
-
-def _dc_engine() -> Engine:
-    return create_engine(f"jira_dc+{BASE}", auth=PATAuth("tok"))
 
 
 def _cloud_engine() -> Engine:
@@ -198,7 +193,7 @@ def test_project_meta_sets_projects_on_issuetype():
 def test_add_rejects_instance_with_existing_key():
     import examples.platform as p
 
-    engine = _dc_engine()
+    engine = _cloud_engine()
     session = AsyncSession(engine, _platform_state())
     bug = p.Bug(key="PLAT-1", summary="x", reporter="a", severity="S1")
     with pytest.raises(ConfigurationError) as e:
@@ -209,7 +204,7 @@ def test_add_rejects_instance_with_existing_key():
 def test_add_with_explicit_project_overrides_inferred():
     import examples.platform as p
 
-    engine = _dc_engine()
+    engine = _cloud_engine()
     session = AsyncSession(engine, _platform_state())
     bug = p.Bug(summary="x", reporter="a", severity="S1")
     session.add(bug, project="PLAT")
@@ -220,7 +215,7 @@ def test_add_with_explicit_project_overrides_inferred():
 def test_delete_requires_key():
     import examples.platform as p
 
-    engine = _dc_engine()
+    engine = _cloud_engine()
     session = AsyncSession(engine, _platform_state())
     bug = p.Bug(summary="x", reporter="a", severity="S1")
     with pytest.raises(ConfigurationError):
@@ -230,17 +225,17 @@ def test_delete_requires_key():
 # ── End-to-end: insert ──────────────────────────────────────────────
 @pytest.mark.asyncio
 @respx.mock
-async def test_commit_insert_dc_posts_issue_and_sets_key():
+async def test_commit_insert_posts_issue_and_sets_key():
     import examples.platform as p
 
-    respx.post(f"{DC_ROOT}/issue").mock(
+    respx.post(f"{CLOUD_ROOT}/issue").mock(
         return_value=httpx.Response(
             201,
             json={"id": "issue-1", "key": "PLAT-7"},
         )
     )
 
-    engine = _dc_engine()
+    engine = _cloud_engine()
     state = _platform_state()
     bug = p.Bug(summary="boom", reporter="alice", severity="S1")
     async with AsyncSession(engine, state) as session:
@@ -300,7 +295,7 @@ async def test_dirty_tracking_emits_minimal_put():
 
     import examples.platform as p
 
-    respx.get(f"{DC_ROOT}/issue/PLAT-1").mock(
+    respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -320,9 +315,9 @@ async def test_dirty_tracking_emits_minimal_put():
         captured_body.append(json.loads(request.content))
         return httpx.Response(204)
 
-    respx.put(f"{DC_ROOT}/issue/PLAT-1").mock(side_effect=_record)
+    respx.put(f"{CLOUD_ROOT}/issue/PLAT-1").mock(side_effect=_record)
 
-    engine = _dc_engine()
+    engine = _cloud_engine()
     state = _platform_state()
     async with AsyncSession(engine, state) as session:
         try:
@@ -341,7 +336,7 @@ async def test_dirty_tracking_emits_minimal_put():
 async def test_no_dirty_changes_means_no_put():
     import examples.platform as p
 
-    respx.get(f"{DC_ROOT}/issue/PLAT-1").mock(
+    respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -356,7 +351,7 @@ async def test_no_dirty_changes_means_no_put():
     )
     # No PUT mock — if commit fires one, respx raises.
 
-    engine = _dc_engine()
+    engine = _cloud_engine()
     state = _platform_state()
     async with AsyncSession(engine, state) as session:
         try:
@@ -374,7 +369,7 @@ async def test_no_dirty_changes_means_no_put():
 async def test_commit_delete_calls_dialect():
     import examples.platform as p
 
-    respx.get(f"{DC_ROOT}/issue/PLAT-1").mock(
+    respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -387,9 +382,9 @@ async def test_commit_delete_calls_dialect():
             },
         )
     )
-    respx.delete(f"{DC_ROOT}/issue/PLAT-1").mock(return_value=httpx.Response(204))
+    respx.delete(f"{CLOUD_ROOT}/issue/PLAT-1").mock(return_value=httpx.Response(204))
 
-    engine = _dc_engine()
+    engine = _cloud_engine()
     state = _platform_state()
     async with AsyncSession(engine, state) as session:
         try:
@@ -410,14 +405,14 @@ async def test_partial_commit_error_on_mixed_results():
     """First insert succeeds, second fails 400. Exception carries both results."""
     import examples.platform as p
 
-    respx.post(f"{DC_ROOT}/issue").mock(
+    respx.post(f"{CLOUD_ROOT}/issue").mock(
         side_effect=[
             httpx.Response(201, json={"id": "i1", "key": "PLAT-1"}),
             httpx.Response(400, json={"errorMessages": ["bad input"]}),
         ]
     )
 
-    engine = _dc_engine()
+    engine = _cloud_engine()
     state = _platform_state()
     async with AsyncSession(engine, state) as session:
         try:
@@ -443,14 +438,14 @@ async def test_partial_commit_error_on_mixed_results():
 async def test_commit_clears_pending_inserts_and_deletes():
     import examples.platform as p
 
-    respx.post(f"{DC_ROOT}/issue").mock(
+    respx.post(f"{CLOUD_ROOT}/issue").mock(
         return_value=httpx.Response(
             201,
             json={"id": "i", "key": "PLAT-1"},
         )
     )
 
-    engine = _dc_engine()
+    engine = _cloud_engine()
     state = _platform_state()
     async with AsyncSession(engine, state) as session:
         try:

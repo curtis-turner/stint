@@ -31,7 +31,7 @@ from pensum.state.file import (
 )
 
 BASE = "https://jira.example.com"
-DC_ROOT = f"{BASE}/rest/api/2"
+CLOUD_ROOT = f"{BASE}/rest/api/3"
 
 
 @pytest.fixture(autouse=True)
@@ -43,8 +43,8 @@ def _isolate_registry():
     sys.modules.pop("examples.platform", None)
 
 
-def _dc_engine() -> Engine:
-    return create_engine(f"jira_dc+{BASE}", auth=PATAuth("tok"))
+def _cloud_engine() -> Engine:
+    return create_engine(f"jira_cloud+{BASE}", auth=PATAuth("tok"))
 
 
 def _platform_state() -> StateFile:
@@ -66,13 +66,13 @@ def test_session_refuses_inside_running_loop():
 
     async def _inner():
         with pytest.raises(RuntimeError, match="running event loop"):
-            Session(_dc_engine(), _platform_state())
+            Session(_cloud_engine(), _platform_state())
 
     asyncio.run(_inner())
 
 
 def test_session_context_manager_closes_loop():
-    engine = _dc_engine()
+    engine = _cloud_engine()
     with Session(engine, _platform_state()) as session:
         assert not session._closed
     assert session._closed
@@ -80,7 +80,7 @@ def test_session_context_manager_closes_loop():
 
 
 def test_session_close_is_idempotent():
-    engine = _dc_engine()
+    engine = _cloud_engine()
     session = Session(engine, _platform_state())
     session.close()
     session.close()  # must not raise
@@ -88,7 +88,7 @@ def test_session_close_is_idempotent():
 
 
 def test_session_close_engine_false_keeps_engine_open():
-    engine = _dc_engine()
+    engine = _cloud_engine()
     session = Session(engine, _platform_state(), close_engine=False)
     session.close()
     # Engine's underlying http client should still be usable; close it now.
@@ -101,7 +101,7 @@ def test_session_close_engine_false_keeps_engine_open():
 def test_session_get_returns_hydrated_instance():
     import examples.platform as p
 
-    respx.get(f"{DC_ROOT}/issue/PLAT-7").mock(
+    respx.get(f"{CLOUD_ROOT}/issue/PLAT-7").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -114,7 +114,7 @@ def test_session_get_returns_hydrated_instance():
             },
         )
     )
-    with Session(_dc_engine(), _platform_state()) as session:
+    with Session(_cloud_engine(), _platform_state()) as session:
         bug = session.get(p.Bug, "PLAT-7")
 
     assert bug is not None
@@ -126,8 +126,8 @@ def test_session_get_returns_hydrated_instance():
 def test_session_get_returns_none_on_404():
     import examples.platform as p
 
-    respx.get(f"{DC_ROOT}/issue/MISSING-1").mock(return_value=httpx.Response(404))
-    with Session(_dc_engine(), _platform_state()) as session:
+    respx.get(f"{CLOUD_ROOT}/issue/MISSING-1").mock(return_value=httpx.Response(404))
+    with Session(_cloud_engine(), _platform_state()) as session:
         assert session.get(p.Bug, "MISSING-1") is None
 
 
@@ -135,7 +135,7 @@ def test_session_get_returns_none_on_404():
 def test_session_scalars_round_trip():
     import examples.platform as p
 
-    respx.get(f"{DC_ROOT}/search").mock(
+    respx.post(f"{CLOUD_ROOT}/search/jql").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -144,18 +144,15 @@ def test_session_scalars_round_trip():
                         "key": "PLAT-1",
                         "fields": {
                             "summary": "s",
-                            "reporter": {"name": "alice"},
+                            "reporter": {"accountId": "acc-1"},
                             "customfield_10042": {"value": "S1"},
                         },
                     }
                 ],
-                "total": 1,
-                "startAt": 0,
-                "maxResults": 50,
             },
         )
     )
-    with Session(_dc_engine(), _platform_state()) as session:
+    with Session(_cloud_engine(), _platform_state()) as session:
         results = session.scalars(select(p.Bug).where(p.Bug.c.severity == "S1"))
 
     assert len(results) == 1
@@ -167,7 +164,7 @@ def test_session_scalars_round_trip():
 def test_session_identity_map_preserved():
     import examples.platform as p
 
-    respx.get(f"{DC_ROOT}/issue/PLAT-1").mock(
+    respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -180,7 +177,7 @@ def test_session_identity_map_preserved():
             },
         )
     )
-    with Session(_dc_engine(), _platform_state()) as session:
+    with Session(_cloud_engine(), _platform_state()) as session:
         first = session.get(p.Bug, "PLAT-1")
         second = session.get(p.Bug, "PLAT-1")
 
@@ -193,9 +190,9 @@ def test_session_identity_map_preserved():
 def test_session_add_and_commit_inserts_issue():
     import examples.platform as p
 
-    respx.post(f"{DC_ROOT}/issue").mock(return_value=httpx.Response(201, json={"id": "10000", "key": "PLAT-100"}))
+    respx.post(f"{CLOUD_ROOT}/issue").mock(return_value=httpx.Response(201, json={"id": "10000", "key": "PLAT-100"}))
     bug = p.Bug(summary="boom", reporter="alice", severity="S2")
-    with Session(_dc_engine(), _platform_state()) as session:
+    with Session(_cloud_engine(), _platform_state()) as session:
         session.add(bug)
         results = session.commit()
 
@@ -209,7 +206,7 @@ def test_session_add_and_commit_inserts_issue():
 def test_session_dirty_update_commits_only_changed_fields():
     import examples.platform as p
 
-    respx.get(f"{DC_ROOT}/issue/PLAT-1").mock(
+    respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -222,9 +219,9 @@ def test_session_dirty_update_commits_only_changed_fields():
             },
         )
     )
-    put_route = respx.put(f"{DC_ROOT}/issue/PLAT-1").mock(return_value=httpx.Response(204))
+    put_route = respx.put(f"{CLOUD_ROOT}/issue/PLAT-1").mock(return_value=httpx.Response(204))
 
-    with Session(_dc_engine(), _platform_state()) as session:
+    with Session(_cloud_engine(), _platform_state()) as session:
         bug = session.get(p.Bug, "PLAT-1")
         bug.severity = "S1"
         session.commit()
@@ -241,7 +238,7 @@ def test_session_partial_commit_raises():
     import examples.platform as p
 
     # First insert succeeds, second fails with 400.
-    respx.post(f"{DC_ROOT}/issue").mock(
+    respx.post(f"{CLOUD_ROOT}/issue").mock(
         side_effect=[
             httpx.Response(201, json={"id": "1", "key": "PLAT-1"}),
             httpx.Response(400, json={"errors": {"summary": "required"}}),
@@ -250,7 +247,7 @@ def test_session_partial_commit_raises():
 
     ok = p.Bug(summary="good", reporter="alice", severity="S1")
     bad = p.Bug(summary="also good", reporter="alice", severity="S2")
-    with Session(_dc_engine(), _platform_state()) as session:
+    with Session(_cloud_engine(), _platform_state()) as session:
         session.add(ok)
         session.add(bad)
         with pytest.raises(PartialCommitError) as exc:

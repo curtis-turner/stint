@@ -17,12 +17,13 @@ Status: alpha (`0.1.0a0`). API may shift before `0.1.0` final.
 team-managed projects. Live-instance validation against a real Cloud
 tenant is the gating work for `0.1.0` final.
 
-**Jira Data Center is fast-follow.** The DC dialect is in the tree and
-exercised by the same test suite, but has not yet been smoke-tested
-against a live DC instance. Treat 0.1 DC support as best-effort until
-that validation lands. Plenty of teams will sit on DC for years, and the
-architecture accommodates them. The validation gap is the only thing
-holding DC back from parity.
+**Jira Data Center is out of scope for 0.1.** An audit against Atlassian's
+official OpenAPI specs found that ~17 of the admin endpoints pensum drives
+exist only on Cloud; DC keeps those objects web-admin-only and never added
+REST. Rather than ship a DC dialect that fails on half the op surface, 0.1
+is Cloud-only. The dialect protocol stays the extension point, so a real DC
+dialect (scoped to the endpoints DC actually exposes) can land in a later
+release.
 
 ## Install
 
@@ -108,13 +109,14 @@ pensum validate --schema schemas/platform.py
 Generate a migration from the diff between your schema and the live env:
 
 ```bash
-export PENSUM_TOKEN=...        # PAT for Jira DC
+export PENSUM_USER=you@example.com   # Jira Cloud account email
+export PENSUM_TOKEN=...               # Jira Cloud API token
 pensum revision --autogenerate \
     --schema schemas.platform \
     --state state/dev.yaml \
     --migrations-dir migrations/ \
-    --url jira_dc+https://jira.example.com \
-    --auth pat \
+    --url jira_cloud+https://you.atlassian.net \
+    --auth api-token \
     --env dev \
     -m "add bug severity"
 ```
@@ -150,11 +152,14 @@ pensum upgrade --env dev
 Then query and write issues through the same classes:
 
 ```python
-from pensum import Session, StateFile, PATAuth, create_engine, select
+from pensum import Session, StateFile, APITokenAuth, create_engine, select
 from schemas.platform import Bug
 
 state = StateFile.load("state/dev.yaml")
-engine = create_engine("jira_dc+https://jira.example.com", auth=PATAuth(token))
+engine = create_engine(
+    "jira_cloud+https://you.atlassian.net",
+    auth=APITokenAuth(email="you@example.com", token=token),
+)
 
 with Session(engine, state) as session:
     # READ
@@ -177,10 +182,9 @@ plus `await` on the I/O methods.
 
 ## What ships in 0.1
 
-- **Jira Cloud (primary)**: company-managed and team-managed projects.
-  Live-tenant smoke is the gating work for `0.1.0` final.
-- **Jira Data Center (`9.12` LTS and newer, fast-follow)**: same code
-  paths via the shared dialect base; awaits live-instance smoke testing.
+- **Jira Cloud (only target in 0.1)**: company-managed and team-managed
+  projects. Live-tenant smoke is the gating work for `0.1.0` final.
+  Data Center is deferred to a later release (see the status note above).
 - Schema plane: custom fields, screens, screen schemes, issue type
   screen schemes, field configurations, field configuration schemes,
   issue types, projects.

@@ -20,7 +20,6 @@ from pensum.registry import registry
 from pensum.state.file import CustomFieldMapping
 
 BASE = "https://jira.example.com"
-DC_ROOT = f"{BASE}/rest/api/2"
 CLOUD_ROOT = f"{BASE}/rest/api/3"
 
 
@@ -31,10 +30,6 @@ def _isolate_registry():
     yield
     registry.reset()
     sys.modules.pop("examples.platform", None)
-
-
-def _dc_engine() -> Engine:
-    return create_engine(f"jira_dc+{BASE}", auth=PATAuth("tok"))
 
 
 def _cloud_engine() -> Engine:
@@ -167,68 +162,13 @@ def test_compile_unmapped_custom_field_raises():
     assert "pensum stamp" in str(e.value)
 
 
-# ── End-to-end on DC ──────────────────────────────────────────────────
-@pytest.mark.asyncio
-@respx.mock
-async def test_session_scalars_dc_returns_hydrated_instances():
-    import examples.platform as p
-
-    respx.get(f"{DC_ROOT}/search").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "issues": [
-                    {
-                        "key": "PLAT-1",
-                        "fields": {
-                            "summary": "login broken",
-                            "reporter": {"name": "alice"},
-                            "assignee": {"name": "bob"},
-                            "customfield_10042": {"value": "S1", "id": "100"},
-                        },
-                    },
-                    {
-                        "key": "PLAT-2",
-                        "fields": {
-                            "summary": "ui crash",
-                            "reporter": {"name": "carol"},
-                            "customfield_10042": {"value": "S2", "id": "101"},
-                        },
-                    },
-                ],
-                "total": 2,
-                "startAt": 0,
-                "maxResults": 50,
-            },
-        )
-    )
-
-    state = _platform_state()
-    engine = _dc_engine()
-    async with AsyncSession(engine, state) as session:
-        try:
-            results = await session.scalars(
-                select(p.Bug).where(p.Bug.c.severity == "S1"),
-            )
-        finally:
-            await engine.close()
-
-    assert len(results) == 2
-    assert results[0].key == "PLAT-1"
-    assert results[0].summary == "login broken"
-    assert results[0].reporter == "alice"
-    assert results[0].assignee == "bob"
-    assert results[0].severity == "S1"
-    assert results[1].key == "PLAT-2"
-    assert results[1].severity == "S2"
-
-
+# ── End-to-end ────────────────────────────────────────────────────────
 @pytest.mark.asyncio
 @respx.mock
 async def test_session_get_by_key_hits_issue_endpoint():
     import examples.platform as p
 
-    respx.get(f"{DC_ROOT}/issue/PLAT-7").mock(
+    respx.get(f"{CLOUD_ROOT}/issue/PLAT-7").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -243,7 +183,7 @@ async def test_session_get_by_key_hits_issue_endpoint():
     )
 
     state = _platform_state()
-    engine = _dc_engine()
+    engine = _cloud_engine()
     async with AsyncSession(engine, state) as session:
         try:
             bug = await session.get(p.Bug, "PLAT-7")
@@ -260,8 +200,8 @@ async def test_session_get_by_key_hits_issue_endpoint():
 async def test_session_get_returns_none_on_404():
     import examples.platform as p
 
-    respx.get(f"{DC_ROOT}/issue/MISSING-1").mock(return_value=httpx.Response(404))
-    engine = _dc_engine()
+    respx.get(f"{CLOUD_ROOT}/issue/MISSING-1").mock(return_value=httpx.Response(404))
+    engine = _cloud_engine()
     async with AsyncSession(engine, _platform_state()) as session:
         try:
             assert await session.get(p.Bug, "MISSING-1") is None
@@ -275,7 +215,7 @@ async def test_session_get_returns_none_on_404():
 async def test_identity_map_returns_same_instance():
     import examples.platform as p
 
-    respx.get(f"{DC_ROOT}/issue/PLAT-1").mock(
+    respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -289,7 +229,7 @@ async def test_identity_map_returns_same_instance():
         )
     )
 
-    engine = _dc_engine()
+    engine = _cloud_engine()
     async with AsyncSession(engine, _platform_state()) as session:
         try:
             first = await session.get(p.Bug, "PLAT-1")
@@ -307,7 +247,7 @@ async def test_scalars_then_get_reuses_identity():
     """Issue returned by scalars() is reused by subsequent .get()."""
     import examples.platform as p
 
-    respx.get(f"{DC_ROOT}/search").mock(
+    respx.post(f"{CLOUD_ROOT}/search/jql").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -316,18 +256,15 @@ async def test_scalars_then_get_reuses_identity():
                         "key": "PLAT-1",
                         "fields": {
                             "summary": "s",
-                            "reporter": {"name": "alice"},
+                            "reporter": {"accountId": "acc-1"},
                             "customfield_10042": {"value": "S1"},
                         },
                     }
                 ],
-                "total": 1,
-                "startAt": 0,
-                "maxResults": 50,
             },
         )
     )
-    engine = _dc_engine()
+    engine = _cloud_engine()
     async with AsyncSession(engine, _platform_state()) as session:
         try:
             results = await session.scalars(
@@ -337,7 +274,7 @@ async def test_scalars_then_get_reuses_identity():
         finally:
             await engine.close()
     assert results[0] is cached
-    # Only the /search call, no /issue/ call
+    # Only the /search/jql call, no /issue/ call
     assert respx.calls.call_count == 1
 
 
@@ -428,60 +365,39 @@ async def test_cloud_pagination_via_next_page_token():
     assert [r.key for r in results] == ["PLAT-1", "PLAT-2"]
 
 
-# ── DC pagination ────────────────────────────────────────────────────
+# ── limit truncates results before the next page is fetched ──────────
 @pytest.mark.asyncio
 @respx.mock
-async def test_dc_pagination_via_start_at():
+async def test_limit_truncates_results():
     import examples.platform as p
 
-    respx.get(f"{DC_ROOT}/search").mock(
-        side_effect=[
-            httpx.Response(
-                200,
-                json={
-                    "issues": [
-                        {
-                            "key": "PLAT-1",
-                            "fields": {
-                                "summary": "p1",
-                                "reporter": {"name": "a"},
-                                "customfield_10042": {"value": "S1"},
-                            },
-                        }
-                    ],
-                    "total": 2,
-                    "startAt": 0,
-                    "maxResults": 1,
-                },
-            ),
-            httpx.Response(
-                200,
-                json={
-                    "issues": [
-                        {
-                            "key": "PLAT-2",
-                            "fields": {
-                                "summary": "p2",
-                                "reporter": {"name": "b"},
-                                "customfield_10042": {"value": "S2"},
-                            },
-                        }
-                    ],
-                    "total": 2,
-                    "startAt": 1,
-                    "maxResults": 1,
-                },
-            ),
-        ]
+    # Page one advertises a nextPageToken, but limit(1) stops the generator
+    # before the second page is ever requested.
+    respx.post(f"{CLOUD_ROOT}/search/jql").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "issues": [
+                    {
+                        "key": "PLAT-1",
+                        "fields": {
+                            "summary": "p1",
+                            "reporter": {"accountId": "a"},
+                            "customfield_10042": {"value": "S1"},
+                        },
+                    }
+                ],
+                "nextPageToken": "tok-2",
+            },
+        )
     )
 
-    engine = _dc_engine()
+    engine = _cloud_engine()
     async with AsyncSession(engine, _platform_state()) as session:
         try:
             results = await session.scalars(select(p.Bug).limit(1))
         finally:
             await engine.close()
-    # With limit=1, only the first page's first issue is returned.
     assert [r.key for r in results] == ["PLAT-1"]
 
 
@@ -489,24 +405,18 @@ async def test_dc_pagination_via_start_at():
 @pytest.mark.asyncio
 @respx.mock
 async def test_select_no_filters_emits_empty_jql():
+    import json
+
     import examples.platform as p
 
     captured: list[str] = []
 
     def _capture(request):
-        captured.append(request.url.params.get("jql", ""))
-        return httpx.Response(
-            200,
-            json={
-                "issues": [],
-                "total": 0,
-                "startAt": 0,
-                "maxResults": 50,
-            },
-        )
+        captured.append(json.loads(request.content).get("jql", ""))
+        return httpx.Response(200, json={"issues": []})
 
-    respx.get(f"{DC_ROOT}/search").mock(side_effect=_capture)
-    engine = _dc_engine()
+    respx.post(f"{CLOUD_ROOT}/search/jql").mock(side_effect=_capture)
+    engine = _cloud_engine()
     async with AsyncSession(engine, _platform_state()) as session:
         try:
             await session.scalars(select(p.Bug))

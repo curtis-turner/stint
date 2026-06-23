@@ -43,7 +43,7 @@ class StateFileError(PensumError):
     """Base for state-file problems."""
 
 
-class StateFileCorrupt(StateFileError):
+class StateFileCorruptError(StateFileError):
     """State file exists but cannot be parsed."""
 
 

@@ -22,7 +22,7 @@ from pensum.migrations.exceptions import MigrationGraphError
 from pensum.migrations.loader import load_migrations
 
 AuthMode = Literal["pat", "basic", "api-token"]
-DialectName = Literal["jira_dc", "jira_cloud"]
+DialectName = Literal["jira_cloud"]
 
 
 @app.command

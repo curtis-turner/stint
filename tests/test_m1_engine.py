@@ -8,15 +8,15 @@ from pensum import (
     PATAuth,
     create_engine,
 )
-from pensum.dialects.jira.dc import JiraDCDialect
+from pensum.dialects.jira.cloud import JiraCloudDialect
 from pensum.engine import _split_dialect_prefix
 
 
 # ── URL parsing ───────────────────────────────────────────────────────
 def test_split_url_with_dialect_prefix():
-    base, dialect = _split_dialect_prefix("jira_dc+https://jira.example.com")
+    base, dialect = _split_dialect_prefix("jira_cloud+https://jira.example.com")
     assert base == "https://jira.example.com"
-    assert dialect == "jira_dc"
+    assert dialect == "jira_cloud"
 
 
 def test_split_url_without_prefix():
@@ -26,16 +26,16 @@ def test_split_url_without_prefix():
 
 
 def test_split_url_with_path():
-    base, dialect = _split_dialect_prefix("jira_dc+https://jira.example.com/jira")
+    base, dialect = _split_dialect_prefix("jira_cloud+https://jira.example.com/jira")
     assert base == "https://jira.example.com/jira"
-    assert dialect == "jira_dc"
+    assert dialect == "jira_cloud"
 
 
 # ── Engine construction ───────────────────────────────────────────────
 def test_create_engine_with_url_prefix():
-    eng = create_engine("jira_dc+https://jira.example.com", auth=PATAuth("tok"))
+    eng = create_engine("jira_cloud+https://jira.example.com", auth=PATAuth("tok"))
     assert isinstance(eng, Engine)
-    assert isinstance(eng.dialect, JiraDCDialect)
+    assert isinstance(eng.dialect, JiraCloudDialect)
     assert eng.base_url == "https://jira.example.com"
 
 
@@ -43,9 +43,9 @@ def test_create_engine_with_kwarg_dialect():
     eng = create_engine(
         "https://jira.example.com",
         auth=PATAuth("tok"),
-        dialect="jira_dc",
+        dialect="jira_cloud",
     )
-    assert isinstance(eng.dialect, JiraDCDialect)
+    assert isinstance(eng.dialect, JiraCloudDialect)
 
 
 def test_create_engine_missing_dialect_raises():
@@ -65,10 +65,14 @@ def test_create_engine_unknown_dialect_raises():
 
 
 def test_create_engine_kwarg_dialect_overrides_url_prefix():
-    """A kwarg dialect wins over a URL-prefix dialect when both are present."""
+    """A kwarg dialect wins over a URL-prefix dialect when both are present.
+
+    The URL prefix names an unknown dialect; if the kwarg did not take
+    precedence, construction would raise on the unknown prefix.
+    """
     eng = create_engine(
-        "jira_cloud+https://acme.atlassian.net",
+        "jira_legacy+https://acme.atlassian.net",
         auth=PATAuth("tok"),
-        dialect="jira_dc",
+        dialect="jira_cloud",
     )
-    assert isinstance(eng.dialect, JiraDCDialect)
+    assert isinstance(eng.dialect, JiraCloudDialect)

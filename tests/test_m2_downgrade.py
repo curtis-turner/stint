@@ -21,13 +21,13 @@ from pensum.migrations.runner import downgrade as run_downgrade
 from pensum.state.file import CustomFieldMapping
 
 BASE = "https://jira.example.com"
-DC_ROOT = f"{BASE}/rest/api/2"
+CLOUD_ROOT = f"{BASE}/rest/api/3"
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "migrations"
 
 
 def _engine():
-    return create_engine(f"jira_dc+{BASE}", auth=PATAuth("tok"))
+    return create_engine(f"jira_cloud+{BASE}", auth=PATAuth("tok"))
 
 
 # ── Happy path: downgrade one step ────────────────────────────────────
@@ -36,7 +36,7 @@ def _engine():
 async def test_downgrade_one_step_calls_downgrade_and_updates_revision(tmp_path):
     """Currently at def789… (head). Downgrade -> abc123… runs the second
     migration's downgrade body (delete_custom_field) and bumps revision back."""
-    respx.delete(f"{DC_ROOT}/field/customfield_10043").mock(return_value=httpx.Response(204))
+    respx.delete(f"{CLOUD_ROOT}/field/customfield_10043").mock(return_value=httpx.Response(204))
 
     state = StateFile(env="dev", jira_url=BASE, revision="def789ghi012")
     state.custom_fields["bug_severity"] = CustomFieldMapping(id="customfield_10042")
@@ -66,7 +66,7 @@ async def test_downgrade_one_step_calls_downgrade_and_updates_revision(tmp_path)
 @pytest.mark.asyncio
 @respx.mock
 async def test_downgrade_persists_state_after_each_step(tmp_path):
-    respx.delete(f"{DC_ROOT}/field/customfield_10043").mock(return_value=httpx.Response(204))
+    respx.delete(f"{CLOUD_ROOT}/field/customfield_10043").mock(return_value=httpx.Response(204))
 
     state = StateFile(env="dev", jira_url=BASE, revision="def789ghi012")
     state.custom_fields["bug_severity"] = CustomFieldMapping(id="customfield_10042")
@@ -92,7 +92,7 @@ async def test_downgrade_to_base_aborts_when_unsupported(tmp_path):
     """Going all the way to base hits the initial migration whose downgrade
     calls op.unsupported. The runner must abort with UnsupportedDowngradeError.
     The first downgrade step (def789…→abc123…) still succeeded and persists."""
-    respx.delete(f"{DC_ROOT}/field/customfield_10043").mock(return_value=httpx.Response(204))
+    respx.delete(f"{CLOUD_ROOT}/field/customfield_10043").mock(return_value=httpx.Response(204))
 
     state = StateFile(env="dev", jira_url=BASE, revision="def789ghi012")
     state.custom_fields["bug_severity"] = CustomFieldMapping(id="customfield_10042")
@@ -177,7 +177,7 @@ async def test_downgrade_target_not_an_ancestor_raises(tmp_path):
 # ── CLI smoke ─────────────────────────────────────────────────────────
 @respx.mock
 def test_cli_downgrade_one_step(tmp_path, monkeypatch, capsys):
-    respx.delete(f"{DC_ROOT}/field/customfield_10043").mock(return_value=httpx.Response(204))
+    respx.delete(f"{CLOUD_ROOT}/field/customfield_10043").mock(return_value=httpx.Response(204))
 
     state = StateFile(env="dev", jira_url=BASE, revision="def789ghi012")
     state.custom_fields["bug_severity"] = CustomFieldMapping(id="customfield_10042")
@@ -196,7 +196,7 @@ def test_cli_downgrade_one_step(tmp_path, monkeypatch, capsys):
             "--env",
             "dev",
             "--url",
-            f"jira_dc+{BASE}",
+            f"jira_cloud+{BASE}",
             "--auth",
             "pat",
             "-r",
@@ -228,7 +228,7 @@ def test_cli_downgrade_noop_when_at_target(tmp_path, monkeypatch, capsys):
             "--env",
             "dev",
             "--url",
-            f"jira_dc+{BASE}",
+            f"jira_cloud+{BASE}",
             "--auth",
             "pat",
             "-r",

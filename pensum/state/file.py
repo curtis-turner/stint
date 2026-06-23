@@ -15,7 +15,7 @@ from typing import Any
 
 import yaml
 
-from pensum.exceptions import StateFileCorrupt
+from pensum.exceptions import StateFileCorruptError
 
 SCHEMA_VERSION = 1
 
@@ -144,12 +144,12 @@ class StateFile:
         try:
             raw = yaml.safe_load(text)
         except yaml.YAMLError as e:
-            raise StateFileCorrupt(f"state file is not valid YAML: {e}") from e
+            raise StateFileCorruptError(f"state file is not valid YAML: {e}") from e
         if not isinstance(raw, dict):
-            raise StateFileCorrupt("state file root must be a mapping")
+            raise StateFileCorruptError("state file root must be a mapping")
         sv = raw.get("schema_version", SCHEMA_VERSION)
         if sv != SCHEMA_VERSION:
-            raise StateFileCorrupt(f"state file schema_version {sv} not understood; expected {SCHEMA_VERSION}")
+            raise StateFileCorruptError(f"state file schema_version {sv} not understood; expected {SCHEMA_VERSION}")
         m = raw.get("mappings") or {}
         return cls(
             env=raw["env"],
@@ -183,5 +183,5 @@ class StateFile:
     def load(cls, path: str | Path) -> StateFile:
         p = Path(path)
         if not p.exists():
-            raise StateFileCorrupt(f"state file does not exist: {p}")
+            raise StateFileCorruptError(f"state file does not exist: {p}")
         return cls.from_yaml(p.read_text())

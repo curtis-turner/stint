@@ -20,7 +20,7 @@ from pensum.engine import create_engine
 from pensum.state.file import StateFile
 
 AuthMode = Literal["pat", "basic", "api-token"]
-DialectName = Literal["jira_dc", "jira_cloud"]
+DialectName = Literal["jira_cloud"]
 
 
 @app.command

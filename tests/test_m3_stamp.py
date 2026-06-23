@@ -167,7 +167,7 @@ def test_stamp_matches_derived_itss_by_synthesized_name():
 
 # ── CLI smoke ────────────────────────────────────────────────────────
 BASE = "https://jira.example.com"
-DC_ROOT = f"{BASE}/rest/api/2"
+CLOUD_ROOT = f"{BASE}/rest/api/3"
 
 
 def _paginated(values):
@@ -177,17 +177,17 @@ def _paginated(values):
 @respx.mock
 def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
     """End-to-end: stamp loads schema, hits /reflect endpoints, writes state."""
-    respx.get(f"{DC_ROOT}/serverInfo").mock(
+    respx.get(f"{CLOUD_ROOT}/serverInfo").mock(
         return_value=httpx.Response(
             200,
             json={
                 "baseUrl": BASE,
-                "version": "9",
-                "deploymentType": "Server",
+                "version": "1001.0.0",
+                "deploymentType": "Cloud",
             },
         )
     )
-    respx.get(f"{DC_ROOT}/field").mock(
+    respx.get(f"{CLOUD_ROOT}/field").mock(
         return_value=httpx.Response(
             200,
             json=[
@@ -196,18 +196,23 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
             ],
         )
     )
-    respx.get(f"{DC_ROOT}/field/customfield_10042/option").mock(
+    respx.get(f"{CLOUD_ROOT}/field/customfield_10042/context").mock(
+        return_value=httpx.Response(200, json=_paginated([{"id": "ctx-1"}]))
+    )
+    respx.get(f"{CLOUD_ROOT}/field/customfield_10042/context/ctx-1/option").mock(
         return_value=httpx.Response(
             200,
-            json=[
-                {"id": "100", "value": "S1"},
-                {"id": "101", "value": "S2"},
-                {"id": "102", "value": "S3"},
-                {"id": "103", "value": "S4"},
-            ],
+            json=_paginated(
+                [
+                    {"id": "100", "value": "S1"},
+                    {"id": "101", "value": "S2"},
+                    {"id": "102", "value": "S3"},
+                    {"id": "103", "value": "S4"},
+                ]
+            ),
         )
     )
-    respx.get(f"{DC_ROOT}/issuetype").mock(
+    respx.get(f"{CLOUD_ROOT}/issuetype").mock(
         return_value=httpx.Response(
             200,
             json=[
@@ -215,7 +220,7 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
             ],
         )
     )
-    respx.get(f"{DC_ROOT}/project/search").mock(
+    respx.get(f"{CLOUD_ROOT}/project/search").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -225,7 +230,7 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
             ),
         )
     )
-    respx.get(f"{DC_ROOT}/screens").mock(
+    respx.get(f"{CLOUD_ROOT}/screens").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -238,11 +243,11 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
         )
     )
     for sid in ("scr-1", "scr-2", "scr-3"):
-        respx.get(f"{DC_ROOT}/screens/{sid}/tabs").mock(
+        respx.get(f"{CLOUD_ROOT}/screens/{sid}/tabs").mock(
             return_value=httpx.Response(200, json=[{"id": f"{sid}-tab", "name": "Fields"}])
         )
-        respx.get(f"{DC_ROOT}/screens/{sid}/tabs/{sid}-tab/fields").mock(return_value=httpx.Response(200, json=[]))
-    respx.get(f"{DC_ROOT}/screenscheme").mock(
+        respx.get(f"{CLOUD_ROOT}/screens/{sid}/tabs/{sid}-tab/fields").mock(return_value=httpx.Response(200, json=[]))
+    respx.get(f"{CLOUD_ROOT}/screenscheme").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -256,12 +261,12 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
             ),
         )
     )
-    respx.get(f"{DC_ROOT}/issuetypescheme").mock(return_value=httpx.Response(200, json=_paginated([])))
-    respx.get(f"{DC_ROOT}/issuetypescheme/mapping").mock(return_value=httpx.Response(200, json=_paginated([])))
-    respx.get(f"{DC_ROOT}/issuetypescheme/project").mock(return_value=httpx.Response(200, json=_paginated([])))
-    respx.get(f"{DC_ROOT}/issuetypescreenscheme").mock(return_value=httpx.Response(200, json=_paginated([])))
-    respx.get(f"{DC_ROOT}/issuetypescreenscheme/project").mock(return_value=httpx.Response(200, json=_paginated([])))
-    respx.get(f"{DC_ROOT}/fieldconfiguration").mock(
+    respx.get(f"{CLOUD_ROOT}/issuetypescheme").mock(return_value=httpx.Response(200, json=_paginated([])))
+    respx.get(f"{CLOUD_ROOT}/issuetypescheme/mapping").mock(return_value=httpx.Response(200, json=_paginated([])))
+    respx.get(f"{CLOUD_ROOT}/issuetypescheme/project").mock(return_value=httpx.Response(200, json=_paginated([])))
+    respx.get(f"{CLOUD_ROOT}/issuetypescreenscheme").mock(return_value=httpx.Response(200, json=_paginated([])))
+    respx.get(f"{CLOUD_ROOT}/issuetypescreenscheme/project").mock(return_value=httpx.Response(200, json=_paginated([])))
+    respx.get(f"{CLOUD_ROOT}/fieldconfiguration").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -271,9 +276,13 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
             ),
         )
     )
-    respx.get(f"{DC_ROOT}/fieldconfiguration/fc-1/items").mock(return_value=httpx.Response(200, json=_paginated([])))
-    respx.get(f"{DC_ROOT}/fieldconfigurationscheme").mock(return_value=httpx.Response(200, json=_paginated([])))
-    respx.get(f"{DC_ROOT}/fieldconfigurationscheme/project").mock(return_value=httpx.Response(200, json=_paginated([])))
+    respx.get(f"{CLOUD_ROOT}/fieldconfiguration/fc-1/fields").mock(
+        return_value=httpx.Response(200, json=_paginated([]))
+    )
+    respx.get(f"{CLOUD_ROOT}/fieldconfigurationscheme").mock(return_value=httpx.Response(200, json=_paginated([])))
+    respx.get(f"{CLOUD_ROOT}/fieldconfigurationscheme/project").mock(
+        return_value=httpx.Response(200, json=_paginated([]))
+    )
 
     state_path = tmp_path / "state.yaml"
     monkeypatch.setenv("PENSUM_TOKEN", "tok")
@@ -287,7 +296,7 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
             "--env",
             "prod",
             "--url",
-            f"jira_dc+{BASE}",
+            f"jira_cloud+{BASE}",
             "--auth",
             "pat",
         ]

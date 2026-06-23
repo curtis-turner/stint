@@ -26,7 +26,7 @@ from pensum.state.file import (
 from pensum.state.lock import StateLock, StateLockError
 
 BASE = "https://jira.example.com"
-DC_ROOT = f"{BASE}/rest/api/2"
+CLOUD_ROOT = f"{BASE}/rest/api/3"
 
 
 @pytest.fixture(autouse=True)
@@ -39,7 +39,7 @@ def _isolate_registry():
 
 
 def _engine() -> Engine:
-    return create_engine(f"jira_dc+{BASE}", auth=PATAuth("tok"))
+    return create_engine(f"jira_cloud+{BASE}", auth=PATAuth("tok"))
 
 
 async def _in_ctx(
@@ -94,10 +94,16 @@ async def test_create_custom_field_idempotent_adds_missing_options():
     ones are added (existing ones skipped)."""
     from pensum.fields import SelectField
 
+    respx.get(f"{CLOUD_ROOT}/field/customfield_10042/context").mock(
+        return_value=httpx.Response(
+            200,
+            json={"values": [{"id": "ctx-1"}], "isLast": True, "startAt": 0, "maxResults": 1},
+        )
+    )
     respx.post(
-        f"{DC_ROOT}/field/customfield_10042/option",
-        json__eq={"value": "S5"},
-    ).mock(return_value=httpx.Response(201, json={"id": "200"}))
+        f"{CLOUD_ROOT}/field/customfield_10042/context/ctx-1/option",
+        json__eq={"options": [{"value": "S5"}]},
+    ).mock(return_value=httpx.Response(200, json={"options": [{"id": "200", "value": "S5"}]}))
 
     state = StateFile(env="dev", jira_url=BASE)
     state.custom_fields["bug_severity"] = CustomFieldMapping(
@@ -210,7 +216,7 @@ def test_state_lock_context_manager_releases_on_exception(tmp_path):
 @respx.mock
 async def test_retry_on_429_then_success():
     """First response 429, second 200 — request succeeds after one retry."""
-    respx.get(f"{DC_ROOT}/serverInfo").mock(
+    respx.get(f"{CLOUD_ROOT}/serverInfo").mock(
         side_effect=[
             httpx.Response(429, headers={"Retry-After": "0"}),
             httpx.Response(
@@ -218,7 +224,7 @@ async def test_retry_on_429_then_success():
                 json={
                     "baseUrl": BASE,
                     "version": "9",
-                    "deploymentType": "Server",
+                    "deploymentType": "Cloud",
                 },
             ),
         ]
@@ -235,7 +241,7 @@ async def test_retry_on_429_then_success():
 @pytest.mark.asyncio
 @respx.mock
 async def test_retry_on_503_then_success():
-    respx.get(f"{DC_ROOT}/serverInfo").mock(
+    respx.get(f"{CLOUD_ROOT}/serverInfo").mock(
         side_effect=[
             httpx.Response(503, headers={"Retry-After": "0"}),
             httpx.Response(503, headers={"Retry-After": "0"}),
@@ -263,7 +269,7 @@ async def test_retry_gives_up_after_max_retries():
     """4 consecutive 429s (default max_retries=3) → TransportError."""
     from pensum.exceptions import TransportError
 
-    respx.get(f"{DC_ROOT}/serverInfo").mock(
+    respx.get(f"{CLOUD_ROOT}/serverInfo").mock(
         return_value=httpx.Response(429, headers={"Retry-After": "0"}),
     )
     engine = _engine()
@@ -282,7 +288,7 @@ async def test_no_retry_on_non_retryable_status():
     """4xx other than 429 propagates immediately (no retry)."""
     from pensum.exceptions import NotFoundError
 
-    respx.get(f"{DC_ROOT}/serverInfo").mock(
+    respx.get(f"{CLOUD_ROOT}/serverInfo").mock(
         return_value=httpx.Response(404),
     )
     engine = _engine()
@@ -404,7 +410,7 @@ def test_env_config_fills_in_missing_flags(tmp_path, monkeypatch):
     """When ~/.pensum/envs/prod.yaml exists, --env prod fills in url/auth."""
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
-    (cfg_dir / "prod.yaml").write_text("url: https://jira.example.com\nauth: pat\ndialect: jira_dc\n")
+    (cfg_dir / "prod.yaml").write_text("url: https://jira.example.com\nauth: pat\ndialect: jira_cloud\n")
     monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
 
     import argparse
@@ -423,7 +429,7 @@ def test_env_config_fills_in_missing_flags(tmp_path, monkeypatch):
     apply_env_defaults(args, args.env)
     assert args.url == "https://jira.example.com"
     assert args.auth == "pat"
-    assert args.dialect == "jira_dc"
+    assert args.dialect == "jira_cloud"
 
 
 def test_env_config_explicit_flags_override(tmp_path, monkeypatch):
@@ -619,13 +625,13 @@ def test_cli_reflect_reads_connection_from_env_config(tmp_path, monkeypatch, cap
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
     (cfg_dir / "dev.yaml").write_text(
-        "url: jira_dc+https://jira.example.com\nauth: pat\ndialect: jira_dc\ntoken_env: PENSUM_DEV_TOKEN\n"
+        "url: jira_cloud+https://jira.example.com\nauth: pat\ndialect: jira_cloud\ntoken_env: PENSUM_DEV_TOKEN\n"
     )
     monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
     monkeypatch.setenv("PENSUM_DEV_TOKEN", "test-pat-from-env-config")
 
     base = "https://jira.example.com"
-    dc_root = f"{base}/rest/api/2"
+    dc_root = f"{base}/rest/api/3"
 
     def _paginated(values: list) -> dict:
         return {"values": values, "isLast": True, "startAt": 0, "maxResults": len(values)}
@@ -681,7 +687,7 @@ def test_cli_stamp_reads_connection_from_env_config(tmp_path, monkeypatch):
 
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
-    (cfg_dir / "dev.yaml").write_text("url: jira_dc+https://jira.example.com\nauth: pat\ndialect: jira_dc\n")
+    (cfg_dir / "dev.yaml").write_text("url: jira_cloud+https://jira.example.com\nauth: pat\ndialect: jira_cloud\n")
     monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
     monkeypatch.setenv("PENSUM_TOKEN", "test-pat")
 
@@ -689,7 +695,7 @@ def test_cli_stamp_reads_connection_from_env_config(tmp_path, monkeypatch):
     schema_path.write_text("# empty schema\n")
 
     base = "https://jira.example.com"
-    dc_root = f"{base}/rest/api/2"
+    dc_root = f"{base}/rest/api/3"
 
     def _paginated(values: list) -> dict:
         return {"values": values, "isLast": True, "startAt": 0, "maxResults": len(values)}
@@ -740,7 +746,7 @@ def test_cli_revision_autogenerate_reads_connection_from_env_config(tmp_path, mo
 
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
-    (cfg_dir / "dev.yaml").write_text("url: jira_dc+https://jira.example.com\nauth: pat\ndialect: jira_dc\n")
+    (cfg_dir / "dev.yaml").write_text("url: jira_cloud+https://jira.example.com\nauth: pat\ndialect: jira_cloud\n")
     monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
     monkeypatch.setenv("PENSUM_TOKEN", "test-pat")
 
@@ -748,7 +754,7 @@ def test_cli_revision_autogenerate_reads_connection_from_env_config(tmp_path, mo
     schema_path.write_text("# empty schema\n")
 
     base = "https://jira.example.com"
-    dc_root = f"{base}/rest/api/2"
+    dc_root = f"{base}/rest/api/3"
 
     def _paginated(values: list) -> dict:
         return {"values": values, "isLast": True, "startAt": 0, "maxResults": len(values)}

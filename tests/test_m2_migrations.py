@@ -20,7 +20,7 @@ from pensum.migrations.exceptions import (
 from pensum.migrations.runner import upgrade as run_upgrade
 
 BASE = "https://jira.example.com"
-DC_ROOT = f"{BASE}/rest/api/2"
+CLOUD_ROOT = f"{BASE}/rest/api/3"
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "migrations"
 
@@ -97,7 +97,7 @@ def test_multiple_heads_blocks_chain(tmp_path):
 
 # ── End-to-end upgrade against respx ──────────────────────────────────
 def _engine():
-    return create_engine(f"jira_dc+{BASE}", auth=PATAuth("tok"))
+    return create_engine(f"jira_cloud+{BASE}", auth=PATAuth("tok"))
 
 
 @pytest.mark.asyncio
@@ -108,14 +108,20 @@ async def test_upgrade_runs_initial_migration_and_records_revision(tmp_path):
     - POST /field/{id}/option is called once per option (4 times)
     - State file records the new alias mapping and the revision marker
     """
-    respx.post(f"{DC_ROOT}/field").mock(
+    respx.post(f"{CLOUD_ROOT}/field").mock(
         return_value=httpx.Response(201, json={"id": "customfield_10042", "name": "Severity"})
+    )
+    respx.get(f"{CLOUD_ROOT}/field/customfield_10042/context").mock(
+        return_value=httpx.Response(
+            200,
+            json={"values": [{"id": "ctx-1"}], "isLast": True, "startAt": 0, "maxResults": 1},
+        )
     )
     for opt, opt_id in [("S1", "100"), ("S2", "101"), ("S3", "102"), ("S4", "103")]:
         respx.post(
-            f"{DC_ROOT}/field/customfield_10042/option",
-            json__eq={"value": opt},
-        ).mock(return_value=httpx.Response(201, json={"id": opt_id, "value": opt}))
+            f"{CLOUD_ROOT}/field/customfield_10042/context/ctx-1/option",
+            json__eq={"options": [{"value": opt}]},
+        ).mock(return_value=httpx.Response(200, json={"options": [{"id": opt_id, "value": opt}]}))
 
     state = StateFile(env="dev", jira_url=BASE)
     state_path = tmp_path / "state.yaml"
@@ -142,7 +148,7 @@ async def test_upgrade_runs_initial_migration_and_records_revision(tmp_path):
 @respx.mock
 async def test_second_migration_only_runs_from_intermediate(tmp_path):
     """If state.revision is already at the first revision, only the second runs."""
-    respx.post(f"{DC_ROOT}/field").mock(
+    respx.post(f"{CLOUD_ROOT}/field").mock(
         return_value=httpx.Response(201, json={"id": "customfield_10043", "name": "Root Cause"})
     )
 
@@ -180,7 +186,7 @@ async def test_upgrade_at_head_is_noop(tmp_path):
 async def test_state_file_persisted_after_each_migration(tmp_path):
     """Even if a later migration would fail, the state at the last good revision
     is on disk."""
-    respx.post(f"{DC_ROOT}/field").mock(
+    respx.post(f"{CLOUD_ROOT}/field").mock(
         side_effect=[
             # first migration's POST succeeds
             httpx.Response(201, json={"id": "customfield_10042", "name": "Severity"}),
@@ -188,11 +194,17 @@ async def test_state_file_persisted_after_each_migration(tmp_path):
             httpx.Response(500, json={"errorMessages": ["server boom"]}),
         ]
     )
+    respx.get(f"{CLOUD_ROOT}/field/customfield_10042/context").mock(
+        return_value=httpx.Response(
+            200,
+            json={"values": [{"id": "ctx-1"}], "isLast": True, "startAt": 0, "maxResults": 1},
+        )
+    )
     for opt, opt_id in [("S1", "100"), ("S2", "101"), ("S3", "102"), ("S4", "103")]:
         respx.post(
-            f"{DC_ROOT}/field/customfield_10042/option",
-            json__eq={"value": opt},
-        ).mock(return_value=httpx.Response(201, json={"id": opt_id, "value": opt}))
+            f"{CLOUD_ROOT}/field/customfield_10042/context/ctx-1/option",
+            json__eq={"options": [{"value": opt}]},
+        ).mock(return_value=httpx.Response(200, json={"options": [{"id": opt_id, "value": opt}]}))
 
     state = StateFile(env="dev", jira_url=BASE)
     state_path = tmp_path / "state.yaml"
@@ -249,7 +261,7 @@ async def test_create_custom_field_is_idempotent_when_alias_in_state(tmp_path):
         options={"S1": "100", "S2": "101", "S3": "102", "S4": "103"},
     )
     # The second migration creates bug_root_cause, which we DO need to allow.
-    respx.post(f"{DC_ROOT}/field").mock(return_value=httpx.Response(201, json={"id": "customfield_10043"}))
+    respx.post(f"{CLOUD_ROOT}/field").mock(return_value=httpx.Response(201, json={"id": "customfield_10043"}))
 
     state_path = tmp_path / "state.yaml"
     graph = load_migrations(FIXTURES_DIR)

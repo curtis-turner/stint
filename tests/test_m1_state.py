@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from pensum import StateFile, StateFileCorrupt
+from pensum import StateFile, StateFileCorruptError
 from pensum.state.file import CustomFieldMapping, ScreenMapping, SimpleMapping
 
 
@@ -50,19 +50,19 @@ def test_state_file_save_load_round_trip(tmp_path: Path):
 
 
 def test_state_file_missing_path_raises():
-    with pytest.raises(StateFileCorrupt):
+    with pytest.raises(StateFileCorruptError):
         StateFile.load("/no/such/file/anywhere.yaml")
 
 
 def test_state_file_unknown_schema_version_rejected():
     bad = "schema_version: 99\nenv: prod\njira_url: x\nmappings:\n  custom_fields: {}\n"
-    with pytest.raises(StateFileCorrupt) as e:
+    with pytest.raises(StateFileCorruptError) as e:
         StateFile.from_yaml(bad)
     assert "schema_version" in str(e.value)
 
 
 def test_state_file_garbage_input_rejected():
-    with pytest.raises(StateFileCorrupt):
+    with pytest.raises(StateFileCorruptError):
         StateFile.from_yaml("[ this is not a mapping ]")
 
 

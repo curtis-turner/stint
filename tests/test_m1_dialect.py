@@ -17,11 +17,11 @@ from pensum import (
 )
 
 BASE = "https://jira.example.com"
-DC_ROOT = f"{BASE}/rest/api/2"
+CLOUD_ROOT = f"{BASE}/rest/api/3"
 
 
-def _dc_engine():
-    return create_engine(f"jira_dc+{BASE}", auth=PATAuth("test-token"))
+def _cloud_engine():
+    return create_engine(f"jira_cloud+{BASE}", auth=PATAuth("test-token"))
 
 
 def _paginated(values: list[Any]) -> dict[str, Any]:
@@ -29,7 +29,7 @@ def _paginated(values: list[Any]) -> dict[str, Any]:
     return {"values": values, "isLast": True, "startAt": 0, "maxResults": len(values)}
 
 
-def _stub_empty_admin(mock: respx.MockRouter, root: str = DC_ROOT) -> None:
+def _stub_empty_admin(mock: respx.MockRouter, root: str = CLOUD_ROOT) -> None:
     """Mock every admin endpoint with an empty response.
 
     Lets a test stub only the endpoints it cares about. The default is "nothing
@@ -40,8 +40,8 @@ def _stub_empty_admin(mock: respx.MockRouter, root: str = DC_ROOT) -> None:
             200,
             json={
                 "baseUrl": BASE,
-                "version": "9.12.4",
-                "deploymentType": "Server",
+                "version": "1001.0.0",
+                "deploymentType": "Cloud",
             },
         )
     )
@@ -60,57 +60,22 @@ def _stub_empty_admin(mock: respx.MockRouter, root: str = DC_ROOT) -> None:
     mock.get(f"{root}/fieldconfigurationscheme/project").mock(return_value=httpx.Response(200, json=_paginated([])))
 
 
-# ── detect() ──────────────────────────────────────────────────────────
-@pytest.mark.asyncio
-@respx.mock
-async def test_detect_returns_true_for_dc_server():
-    respx.get(f"{DC_ROOT}/serverInfo").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "baseUrl": BASE,
-                "version": "9.12.4",
-                "deploymentType": "Server",
-            },
-        )
-    )
-    async with _dc_engine() as eng:
-        assert await eng.detect() is True
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_detect_returns_false_for_cloud_server():
-    respx.get(f"{DC_ROOT}/serverInfo").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "baseUrl": BASE,
-                "version": "1001.0.0",
-                "deploymentType": "Cloud",
-            },
-        )
-    )
-    async with _dc_engine() as eng:
-        assert await eng.detect() is False
-
-
 # ── reflect(): custom fields ──────────────────────────────────────────
 @pytest.mark.asyncio
 @respx.mock
 async def test_reflect_captures_server_info():
     _stub_empty_admin(respx.mock)
-    async with _dc_engine() as eng:
+    async with _cloud_engine() as eng:
         snap = await eng.reflect()
-    assert snap.server_info.deployment_type == "Server"
-    assert snap.server_info.version == "9.12.4"
+    assert snap.server_info.deployment_type == "Cloud"
+    assert snap.server_info.version == "1001.0.0"
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_reflect_filters_out_system_fields():
     _stub_empty_admin(respx.mock)
-    respx.get(f"{DC_ROOT}/field").mock(
+    respx.get(f"{CLOUD_ROOT}/field").mock(
         return_value=httpx.Response(
             200,
             json=[
@@ -120,7 +85,7 @@ async def test_reflect_filters_out_system_fields():
             ],
         )
     )
-    async with _dc_engine() as eng:
+    async with _cloud_engine() as eng:
         snap = await eng.reflect()
     assert snap.custom_fields == {}
 
@@ -129,7 +94,7 @@ async def test_reflect_filters_out_system_fields():
 @respx.mock
 async def test_reflect_captures_custom_fields_with_options():
     _stub_empty_admin(respx.mock)
-    respx.get(f"{DC_ROOT}/field").mock(
+    respx.get(f"{CLOUD_ROOT}/field").mock(
         return_value=httpx.Response(
             200,
             json=[
@@ -147,8 +112,12 @@ async def test_reflect_captures_custom_fields_with_options():
             ],
         )
     )
-    # Select-field options are fetched per field. Text field is skipped.
-    respx.get(f"{DC_ROOT}/field/customfield_10042/option").mock(
+    # Select-field options are fetched per field through the default context.
+    # Text field is skipped.
+    respx.get(f"{CLOUD_ROOT}/field/customfield_10042/context").mock(
+        return_value=httpx.Response(200, json=_paginated([{"id": "ctx-1"}]))
+    )
+    respx.get(f"{CLOUD_ROOT}/field/customfield_10042/context/ctx-1/option").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -161,7 +130,7 @@ async def test_reflect_captures_custom_fields_with_options():
             ),
         )
     )
-    async with _dc_engine() as eng:
+    async with _cloud_engine() as eng:
         snap = await eng.reflect()
     sev = snap.custom_fields["customfield_10042"]
     assert sev.options == {"S1": "10100", "S2": "10101", "S3": "10102", "S4": "10103"}
@@ -174,7 +143,7 @@ async def test_reflect_captures_custom_fields_with_options():
 @respx.mock
 async def test_reflect_captures_issuetypes():
     _stub_empty_admin(respx.mock)
-    respx.get(f"{DC_ROOT}/issuetype").mock(
+    respx.get(f"{CLOUD_ROOT}/issuetype").mock(
         return_value=httpx.Response(
             200,
             json=[
@@ -184,7 +153,7 @@ async def test_reflect_captures_issuetypes():
             ],
         )
     )
-    async with _dc_engine() as eng:
+    async with _cloud_engine() as eng:
         snap = await eng.reflect()
     assert set(snap.issuetypes) == {"10001", "10002", "10003"}
     assert snap.issuetypes["10001"].name == "Bug"
@@ -196,7 +165,7 @@ async def test_reflect_captures_issuetypes():
 @respx.mock
 async def test_reflect_captures_projects():
     _stub_empty_admin(respx.mock)
-    respx.get(f"{DC_ROOT}/project/search").mock(
+    respx.get(f"{CLOUD_ROOT}/project/search").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -218,7 +187,7 @@ async def test_reflect_captures_projects():
             ),
         )
     )
-    async with _dc_engine() as eng:
+    async with _cloud_engine() as eng:
         snap = await eng.reflect()
     assert set(snap.projects) == {"PLAT", "DOCS"}
     plat = snap.projects["PLAT"]
@@ -233,7 +202,7 @@ async def test_reflect_populates_project_scheme_bindings():
     IssueTypeScreenScheme, and FieldConfigurationScheme so the diff can
     detect drift against existing projects (issue #5)."""
     _stub_empty_admin(respx.mock)
-    respx.get(f"{DC_ROOT}/project/search").mock(
+    respx.get(f"{CLOUD_ROOT}/project/search").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -244,7 +213,7 @@ async def test_reflect_populates_project_scheme_bindings():
             ),
         )
     )
-    respx.get(f"{DC_ROOT}/issuetypescheme/project").mock(
+    respx.get(f"{CLOUD_ROOT}/issuetypescheme/project").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -255,13 +224,13 @@ async def test_reflect_populates_project_scheme_bindings():
             ),
         )
     )
-    respx.get(f"{DC_ROOT}/issuetypescreenscheme/project").mock(
+    respx.get(f"{CLOUD_ROOT}/issuetypescreenscheme/project").mock(
         return_value=httpx.Response(
             200,
             json=_paginated([{"issueTypeScreenScheme": {"id": "30000"}, "projectIds": ["10000"]}]),
         )
     )
-    respx.get(f"{DC_ROOT}/fieldconfigurationscheme/project").mock(
+    respx.get(f"{CLOUD_ROOT}/fieldconfigurationscheme/project").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -272,7 +241,7 @@ async def test_reflect_populates_project_scheme_bindings():
             ),
         )
     )
-    async with _dc_engine() as eng:
+    async with _cloud_engine() as eng:
         snap = await eng.reflect()
     plat = snap.projects["PLAT"]
     docs = snap.projects["DOCS"]
@@ -293,7 +262,7 @@ async def test_reflect_populates_project_scheme_bindings():
 @respx.mock
 async def test_reflect_captures_screens_with_tabs_and_fields():
     _stub_empty_admin(respx.mock)
-    respx.get(f"{DC_ROOT}/screens").mock(
+    respx.get(f"{CLOUD_ROOT}/screens").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -303,7 +272,7 @@ async def test_reflect_captures_screens_with_tabs_and_fields():
             ),
         )
     )
-    respx.get(f"{DC_ROOT}/screens/10100/tabs").mock(
+    respx.get(f"{CLOUD_ROOT}/screens/10100/tabs").mock(
         return_value=httpx.Response(
             200,
             json=[
@@ -311,7 +280,7 @@ async def test_reflect_captures_screens_with_tabs_and_fields():
             ],
         )
     )
-    respx.get(f"{DC_ROOT}/screens/10100/tabs/11000/fields").mock(
+    respx.get(f"{CLOUD_ROOT}/screens/10100/tabs/11000/fields").mock(
         return_value=httpx.Response(
             200,
             json=[
@@ -320,7 +289,7 @@ async def test_reflect_captures_screens_with_tabs_and_fields():
             ],
         )
     )
-    async with _dc_engine() as eng:
+    async with _cloud_engine() as eng:
         snap = await eng.reflect()
     screen = snap.screens["10100"]
     assert screen.name == "Bug Create Screen"
@@ -332,7 +301,7 @@ async def test_reflect_captures_screens_with_tabs_and_fields():
 @respx.mock
 async def test_reflect_captures_screen_schemes_and_itss():
     _stub_empty_admin(respx.mock)
-    respx.get(f"{DC_ROOT}/screenscheme").mock(
+    respx.get(f"{CLOUD_ROOT}/screenscheme").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -346,7 +315,7 @@ async def test_reflect_captures_screen_schemes_and_itss():
             ),
         )
     )
-    respx.get(f"{DC_ROOT}/issuetypescreenscheme").mock(
+    respx.get(f"{CLOUD_ROOT}/issuetypescreenscheme").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -356,7 +325,7 @@ async def test_reflect_captures_screen_schemes_and_itss():
             ),
         )
     )
-    respx.get(f"{DC_ROOT}/issuetypescreenscheme/mapping").mock(
+    respx.get(f"{CLOUD_ROOT}/issuetypescreenscheme/mapping").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -367,7 +336,7 @@ async def test_reflect_captures_screen_schemes_and_itss():
             ),
         )
     )
-    async with _dc_engine() as eng:
+    async with _cloud_engine() as eng:
         snap = await eng.reflect()
     ss = snap.screen_schemes["10200"]
     assert ss.mappings["default"] == "10100"
@@ -381,7 +350,7 @@ async def test_reflect_captures_screen_schemes_and_itss():
 @respx.mock
 async def test_reflect_captures_field_configurations_with_items():
     _stub_empty_admin(respx.mock)
-    respx.get(f"{DC_ROOT}/fieldconfiguration").mock(
+    respx.get(f"{CLOUD_ROOT}/fieldconfiguration").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -391,7 +360,7 @@ async def test_reflect_captures_field_configurations_with_items():
             ),
         )
     )
-    respx.get(f"{DC_ROOT}/fieldconfiguration/10400/items").mock(
+    respx.get(f"{CLOUD_ROOT}/fieldconfiguration/10400/fields").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -402,7 +371,7 @@ async def test_reflect_captures_field_configurations_with_items():
             ),
         )
     )
-    async with _dc_engine() as eng:
+    async with _cloud_engine() as eng:
         snap = await eng.reflect()
     fc = snap.field_configurations["10400"]
     assert set(fc.items) == {"summary", "customfield_10042"}
@@ -413,7 +382,7 @@ async def test_reflect_captures_field_configurations_with_items():
 @respx.mock
 async def test_reflect_captures_field_configuration_schemes():
     _stub_empty_admin(respx.mock)
-    respx.get(f"{DC_ROOT}/fieldconfigurationscheme").mock(
+    respx.get(f"{CLOUD_ROOT}/fieldconfigurationscheme").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -423,7 +392,7 @@ async def test_reflect_captures_field_configuration_schemes():
             ),
         )
     )
-    respx.get(f"{DC_ROOT}/fieldconfigurationscheme/mapping").mock(
+    respx.get(f"{CLOUD_ROOT}/fieldconfigurationscheme/mapping").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -433,7 +402,7 @@ async def test_reflect_captures_field_configuration_schemes():
             ),
         )
     )
-    async with _dc_engine() as eng:
+    async with _cloud_engine() as eng:
         snap = await eng.reflect()
     fcs = snap.field_configuration_schemes["10500"]
     assert fcs.name == "Bug FCS"
@@ -445,8 +414,10 @@ async def test_reflect_captures_field_configuration_schemes():
 @pytest.mark.asyncio
 @respx.mock
 async def test_401_raises_authentication_error():
-    respx.get(f"{DC_ROOT}/serverInfo").mock(return_value=httpx.Response(401, json={"errorMessages": ["Unauthorized"]}))
-    async with _dc_engine() as eng:
+    respx.get(f"{CLOUD_ROOT}/serverInfo").mock(
+        return_value=httpx.Response(401, json={"errorMessages": ["Unauthorized"]})
+    )
+    async with _cloud_engine() as eng:
         with pytest.raises(AuthenticationError):
             await eng.detect()
 
@@ -455,10 +426,10 @@ async def test_401_raises_authentication_error():
 @respx.mock
 async def test_403_raises_permission_error():
     _stub_empty_admin(respx.mock)
-    respx.get(f"{DC_ROOT}/field").mock(
+    respx.get(f"{CLOUD_ROOT}/field").mock(
         return_value=httpx.Response(403, json={"errorMessages": ["Site Admin required"]})
     )
-    async with _dc_engine() as eng:
+    async with _cloud_engine() as eng:
         with pytest.raises(PermissionError) as e:
             await eng.reflect()
     assert "Admin" in str(e.value)
@@ -470,7 +441,7 @@ async def test_403_raises_permission_error():
 async def test_reflect_handles_multi_page_results():
     """Two-page response: first has isLast=False, second has isLast=True."""
     _stub_empty_admin(respx.mock)
-    respx.get(f"{DC_ROOT}/screens").mock(
+    respx.get(f"{CLOUD_ROOT}/screens").mock(
         side_effect=[
             httpx.Response(
                 200,
@@ -492,9 +463,9 @@ async def test_reflect_handles_multi_page_results():
             ),
         ]
     )
-    respx.get(f"{DC_ROOT}/screens/1/tabs").mock(return_value=httpx.Response(200, json=[]))
-    respx.get(f"{DC_ROOT}/screens/2/tabs").mock(return_value=httpx.Response(200, json=[]))
-    async with _dc_engine() as eng:
+    respx.get(f"{CLOUD_ROOT}/screens/1/tabs").mock(return_value=httpx.Response(200, json=[]))
+    respx.get(f"{CLOUD_ROOT}/screens/2/tabs").mock(return_value=httpx.Response(200, json=[]))
+    async with _cloud_engine() as eng:
         snap = await eng.reflect()
     assert set(snap.screens) == {"1", "2"}
 
@@ -509,7 +480,7 @@ async def test_reflect_skips_screens_whose_tabs_endpoint_returns_400():
     {"errorMessages":["Screen with id 10000 does not exist"]}. The reflect
     must not crash; the bad screen is skipped with a warning."""
     _stub_empty_admin(respx.mock)
-    respx.get(f"{DC_ROOT}/screens").mock(
+    respx.get(f"{CLOUD_ROOT}/screens").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -520,12 +491,12 @@ async def test_reflect_skips_screens_whose_tabs_endpoint_returns_400():
             ),
         )
     )
-    respx.get(f"{DC_ROOT}/screens/1/tabs").mock(return_value=httpx.Response(200, json=[]))
-    respx.get(f"{DC_ROOT}/screens/10000/tabs").mock(
+    respx.get(f"{CLOUD_ROOT}/screens/1/tabs").mock(return_value=httpx.Response(200, json=[]))
+    respx.get(f"{CLOUD_ROOT}/screens/10000/tabs").mock(
         return_value=httpx.Response(400, json={"errorMessages": ["Screen with id 10000 does not exist"], "errors": {}})
     )
     with pytest.warns(UserWarning, match="skipping screen 10000"):
-        async with _dc_engine() as eng:
+        async with _cloud_engine() as eng:
             snap = await eng.reflect()
     assert set(snap.screens) == {"1"}
 
@@ -537,7 +508,7 @@ async def test_reflect_captures_issuetype_schemes_with_members():
     """IssueTypeScheme reflect: members come from /issuetypescheme/mapping
     filtered to the scheme id. Members are kept ordered."""
     _stub_empty_admin(respx.mock)
-    respx.get(f"{DC_ROOT}/issuetypescheme").mock(
+    respx.get(f"{CLOUD_ROOT}/issuetypescheme").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -553,7 +524,7 @@ async def test_reflect_captures_issuetype_schemes_with_members():
             ),
         )
     )
-    respx.get(f"{DC_ROOT}/issuetypescheme/mapping").mock(
+    respx.get(f"{CLOUD_ROOT}/issuetypescheme/mapping").mock(
         return_value=httpx.Response(
             200,
             json=_paginated(
@@ -565,7 +536,7 @@ async def test_reflect_captures_issuetype_schemes_with_members():
             ),
         )
     )
-    async with _dc_engine() as eng:
+    async with _cloud_engine() as eng:
         snap = await eng.reflect()
     its = snap.issuetype_schemes["10200"]
     assert its.name == "PLAT Issue Type Scheme"

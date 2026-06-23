@@ -10,7 +10,7 @@ import yaml
 from pensum.cli.main import main
 
 BASE = "https://jira.example.com"
-DC_ROOT = f"{BASE}/rest/api/2"
+CLOUD_ROOT = f"{BASE}/rest/api/3"
 
 
 def _paginated(values: list[Any]) -> dict[str, Any]:
@@ -18,7 +18,7 @@ def _paginated(values: list[Any]) -> dict[str, Any]:
 
 
 def _stub_empty(mock: respx.MockRouter) -> None:
-    mock.get(f"{DC_ROOT}/serverInfo").mock(
+    mock.get(f"{CLOUD_ROOT}/serverInfo").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -29,22 +29,22 @@ def _stub_empty(mock: respx.MockRouter) -> None:
         )
     )
     for path in (
-        f"{DC_ROOT}/field",
-        f"{DC_ROOT}/issuetype",
+        f"{CLOUD_ROOT}/field",
+        f"{CLOUD_ROOT}/issuetype",
     ):
         mock.get(path).mock(return_value=httpx.Response(200, json=[]))
     for path in (
-        f"{DC_ROOT}/project/search",
-        f"{DC_ROOT}/screens",
-        f"{DC_ROOT}/screenscheme",
-        f"{DC_ROOT}/issuetypescheme",
-        f"{DC_ROOT}/issuetypescheme/mapping",
-        f"{DC_ROOT}/issuetypescheme/project",
-        f"{DC_ROOT}/issuetypescreenscheme",
-        f"{DC_ROOT}/issuetypescreenscheme/project",
-        f"{DC_ROOT}/fieldconfiguration",
-        f"{DC_ROOT}/fieldconfigurationscheme",
-        f"{DC_ROOT}/fieldconfigurationscheme/project",
+        f"{CLOUD_ROOT}/project/search",
+        f"{CLOUD_ROOT}/screens",
+        f"{CLOUD_ROOT}/screenscheme",
+        f"{CLOUD_ROOT}/issuetypescheme",
+        f"{CLOUD_ROOT}/issuetypescheme/mapping",
+        f"{CLOUD_ROOT}/issuetypescheme/project",
+        f"{CLOUD_ROOT}/issuetypescreenscheme",
+        f"{CLOUD_ROOT}/issuetypescreenscheme/project",
+        f"{CLOUD_ROOT}/fieldconfiguration",
+        f"{CLOUD_ROOT}/fieldconfigurationscheme",
+        f"{CLOUD_ROOT}/fieldconfigurationscheme/project",
     ):
         mock.get(path).mock(return_value=httpx.Response(200, json=_paginated([])))
 
@@ -57,7 +57,7 @@ def test_reflect_yaml_output(monkeypatch, capsys):
         [
             "reflect",
             "--url",
-            f"jira_dc+{BASE}",
+            f"jira_cloud+{BASE}",
             "--auth",
             "pat",
         ]
@@ -79,7 +79,7 @@ def test_reflect_json_output(monkeypatch, capsys):
         [
             "reflect",
             "--url",
-            f"jira_dc+{BASE}",
+            f"jira_cloud+{BASE}",
             "--auth",
             "pat",
             "--format",
@@ -100,7 +100,7 @@ def test_reflect_missing_pat_env_exits(monkeypatch):
             [
                 "reflect",
                 "--url",
-                f"jira_dc+{BASE}",
+                f"jira_cloud+{BASE}",
                 "--auth",
                 "pat",
             ]
@@ -116,7 +116,7 @@ def test_reflect_missing_basic_auth_exits(monkeypatch):
             [
                 "reflect",
                 "--url",
-                f"jira_dc+{BASE}",
+                f"jira_cloud+{BASE}",
                 "--auth",
                 "basic",
             ]
@@ -133,7 +133,7 @@ def test_reflect_dialect_kwarg_without_url_prefix(monkeypatch, capsys):
             "--url",
             BASE,
             "--dialect",
-            "jira_dc",
+            "jira_cloud",
             "--auth",
             "pat",
         ]

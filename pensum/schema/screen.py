@@ -1,13 +1,12 @@
-"""Screen and ScreenScheme declarations (CMP / DC only)."""
+"""Screen and ScreenScheme declarations (company-managed only)."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Union
 
 from pensum.fields import CustomField
 
-ScreenFieldRef = Union[str, CustomField]
+ScreenFieldRef = str | CustomField
 
 
 @dataclass

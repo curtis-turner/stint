@@ -23,7 +23,7 @@ from pensum.client.auth import APITokenAuth, BasicAuth, PATAuth
 from pensum.engine import create_engine
 
 AuthMode = Literal["pat", "basic", "api-token"]
-DialectName = Literal["jira_dc", "jira_cloud"]
+DialectName = Literal["jira_cloud"]
 
 
 @app.command
