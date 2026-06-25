@@ -11,6 +11,29 @@ stint is two tools in one, the same way SQLAlchemy + Alembic is.
 2. **ORM.** Insert and query issues through the same model classes.
    `session.add(Bug(...))`, `session.scalars(select(Bug).where(...))`.
 
+## The problem, in one screen
+
+Changing a Jira project today means clicking through the admin web UI. No
+diff. No review. No record of who changed what or why. Staging and
+production drift apart and nobody can reconstruct how.
+
+With stint the same change is a commit your teammate can review:
+
+```python
+# migrations/2026_06_25_1500_add_bug_severity.py
+async def upgrade():
+    await op.create_custom_field(
+        alias="bug_severity",
+        name="Severity",
+        type=SelectField,
+        options=["S1", "S2", "S3", "S4"],
+    )
+```
+
+CI applies that file to staging, then production, from the same source. A
+bad change rolls back to a known revision. The schema lives in your repo
+next to the code that depends on it.
+
 Status: alpha (`0.1.0a0`). API may shift before `0.1.0` final.
 
 **Primary target: Jira Cloud**, covering both company-managed and
