@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="stint — Alembic plus SQLAlchemy, for Jira">
+  <defs>
+    <radialGradient id="glow" cx="78%" cy="22%" r="55%">
+      <stop offset="0%" stop-color="#34D39A" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#34D39A" stop-opacity="0"/>
+    </radialGradient>
+    <style>
+      .sans { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; }
+      .mono { font-family: 'SF Mono', 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+
+  <!-- background -->
+  <rect width="1280" height="640" fill="#0B1221"/>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+
+  <!-- wordmark -->
+  <text class="sans" x="640" y="296" text-anchor="middle"
+        font-size="180" font-weight="800" letter-spacing="-5" fill="#F5F8FF">stint</text>
+
+  <!-- accent underline -->
+  <rect x="528" y="322" width="224" height="10" rx="5" fill="#34D39A"/>
+
+  <!-- hook -->
+  <text class="sans" x="640" y="424" text-anchor="middle" font-size="60" font-weight="600" fill="#F5F8FF">
+    <tspan>Alembic + SQLAlchemy, for</tspan><tspan fill="#34D39A" dx="0.28em">Jira</tspan>
+  </text>
+
+  <!-- subtitle -->
+  <text class="sans" x="640" y="478" text-anchor="middle" font-size="30" font-weight="500"
+        letter-spacing="0.5" fill="#8A97AE">schema as code &#183; reviewable migrations</text>
+
+  <!-- install prompt -->
+  <text class="mono" x="640" y="556" text-anchor="middle" font-size="27" fill="#9AA7BD">
+    <tspan fill="#34D39A">$</tspan><tspan dx="0.3em">pip install stint</tspan>
+  </text>
+</svg>
