@@ -56,8 +56,9 @@ release.
 pip install stint
 ```
 
-Python 3.10 or newer. The only required runtime deps are `pydantic`,
-`httpx`, and `pyyaml`.
+Python 3.10 or newer. Runtime deps are `pydantic` (with the `email`
+extra), `pydantic-settings`, `httpx`, `pyyaml`, and `cyclopts` for the
+CLI. `cyclopts` pulls in `rich` for terminal output.
 
 ## Why
 
