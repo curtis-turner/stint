@@ -15,45 +15,45 @@
   <rect width="1280" height="460" fill="url(#glow)"/>
 
   <!-- header -->
-  <text class="sans" x="56" y="64" font-size="42" font-weight="800" letter-spacing="-2" fill="#F5F8FF">stint</text>
-  <text class="sans" x="1224" y="60" text-anchor="end" font-size="23" font-weight="500" fill="#8A97AE">Jira admin as code, not clickops</text>
+  <text class="sans" x="56" y="68" font-size="54" font-weight="800" letter-spacing="-2" fill="#F5F8FF">stint</text>
+  <text class="sans" x="1224" y="62" text-anchor="end" font-size="27" font-weight="500" fill="#8A97AE">Jira admin as code, not clickops</text>
 
   <!-- center divider + arrow -->
   <line x1="640" y1="120" x2="640" y2="404" stroke="#23304A" stroke-width="2"/>
-  <circle cx="640" cy="262" r="26" fill="#0B1221" stroke="#23304A" stroke-width="2"/>
-  <text class="sans" x="640" y="274" text-anchor="middle" font-size="30" font-weight="700" fill="#34D39A">&#8594;</text>
+  <circle cx="640" cy="262" r="30" fill="#0B1221" stroke="#23304A" stroke-width="2"/>
+  <text class="sans" x="640" y="276" text-anchor="middle" font-size="40" font-weight="700" fill="#34D39A">&#8594;</text>
 
   <!-- LEFT: the old way -->
-  <text class="sans" x="56" y="150" font-size="24" font-weight="700" letter-spacing="2" fill="#E0728A">THE OLD WAY</text>
-  <g class="sans" font-size="27" font-weight="500" fill="#B6C0D0">
-    <text x="92" y="210">click through the Jira admin web UI</text>
-    <text x="92" y="262">no diff, no review, no record</text>
-    <text x="92" y="314">no clean rollback</text>
-    <text x="92" y="366">staging and prod drift apart</text>
+  <text class="sans" x="56" y="154" font-size="31" font-weight="700" letter-spacing="2" fill="#E0728A">THE OLD WAY</text>
+  <g class="sans" font-size="31" font-weight="500" fill="#BAC4D4">
+    <text x="98" y="216">click through a web UI</text>
+    <text x="98" y="272">no diff, no review</text>
+    <text x="98" y="328">no clean rollback</text>
+    <text x="98" y="384">envs drift apart</text>
   </g>
-  <g class="sans" font-size="27" font-weight="700" fill="#E0728A">
-    <text x="56" y="210">&#215;</text>
-    <text x="56" y="262">&#215;</text>
-    <text x="56" y="314">&#215;</text>
-    <text x="56" y="366">&#215;</text>
+  <g class="sans" font-size="31" font-weight="700" fill="#E0728A">
+    <text x="56" y="216">&#215;</text>
+    <text x="56" y="272">&#215;</text>
+    <text x="56" y="328">&#215;</text>
+    <text x="56" y="384">&#215;</text>
   </g>
 
   <!-- RIGHT: with stint -->
-  <text class="sans" x="700" y="150" font-size="24" font-weight="700" letter-spacing="2" fill="#34D39A">WITH STINT</text>
-  <rect x="700" y="176" width="524" height="232" rx="12" fill="#0E1A2C"/>
-  <rect x="700" y="176" width="6" height="232" rx="3" fill="#34D39A"/>
-  <g class="mono" font-size="21" fill="#D7E0EC" xml:space="preserve">
-    <text x="744" y="222">async def upgrade():</text>
-    <text x="744" y="262">    await op.create_custom_field(</text>
-    <text x="744" y="302">        alias="bug_severity",</text>
-    <text x="744" y="342">        options=["S1","S2","S3","S4"],</text>
-    <text x="744" y="382">    )</text>
+  <text class="sans" x="708" y="154" font-size="31" font-weight="700" letter-spacing="2" fill="#34D39A">WITH STINT</text>
+  <rect x="688" y="176" width="556" height="236" rx="12" fill="#0E1A2C"/>
+  <rect x="688" y="176" width="6" height="236" rx="3" fill="#34D39A"/>
+  <g class="mono" font-size="22" fill="#D7E0EC" xml:space="preserve">
+    <text x="730" y="224">async def upgrade():</text>
+    <text x="730" y="264">    await op.create_custom_field(</text>
+    <text x="730" y="304">        alias="bug_severity",</text>
+    <text x="730" y="344">        options=["S1","S2","S3","S4"],</text>
+    <text x="730" y="384">    )</text>
   </g>
-  <g class="mono" font-size="21" font-weight="700" fill="#34D39A">
-    <text x="716" y="222">+</text>
-    <text x="716" y="262">+</text>
-    <text x="716" y="302">+</text>
-    <text x="716" y="342">+</text>
-    <text x="716" y="382">+</text>
+  <g class="mono" font-size="22" font-weight="700" fill="#34D39A">
+    <text x="706" y="224">+</text>
+    <text x="706" y="264">+</text>
+    <text x="706" y="304">+</text>
+    <text x="706" y="344">+</text>
+    <text x="706" y="384">+</text>
   </g>
 </svg>
