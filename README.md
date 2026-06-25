@@ -42,13 +42,12 @@ Status: alpha (`0.1.0a0`). API may shift before `0.1.0` final.
 team-managed projects. Live-instance validation against a real Cloud
 tenant is the gating work for `0.1.0` final.
 
-**Jira Data Center is out of scope for 0.1.** An audit against Atlassian's
-official OpenAPI specs found that ~17 of the admin endpoints stint drives
-exist only on Cloud; DC keeps those objects web-admin-only and never added
-REST. Rather than ship a DC dialect that fails on half the op surface, 0.1
-is Cloud-only. The dialect protocol stays the extension point, so a real DC
-dialect (scoped to the endpoints DC actually exposes) can land in a later
-release.
+**Jira Data Center is out of scope, not on the roadmap.** An audit against
+Atlassian's official OpenAPI specs found that ~17 of the admin endpoints
+stint drives exist only on Cloud; DC keeps those objects web-admin-only and
+never added REST. A DC dialect would fail on a large part of the op surface,
+so stint does not target it. Future growth goes to other work-management
+backends, like Linear, through the dialect protocol.
 
 ## Install
 
@@ -210,7 +209,6 @@ plus `await` on the I/O methods.
 
 - **Jira Cloud (only target in 0.1)**: company-managed and team-managed
   projects. Live-tenant smoke is the gating work for `0.1.0` final.
-  Data Center is deferred to a later release (see the status note above).
 - Schema plane: custom fields, screens, screen schemes, issue type
   screen schemes, field configurations, field configuration schemes,
   issue types, projects.

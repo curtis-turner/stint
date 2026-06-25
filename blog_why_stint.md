@@ -108,7 +108,7 @@ The query layer also routes through a dialect instead of emitting one fixed JQL 
 
 stint is alpha. Worth being straight about the edges.
 
-- Jira Cloud first. Company-managed and team-managed projects. Data Center is deferred, because roughly 17 of the admin endpoints stint drives exist only on Cloud and DC never shipped them over REST.
+- Jira Cloud is the target. Company-managed and team-managed projects. Data Center is out of scope, because roughly 17 of the admin endpoints stint drives exist only on Cloud and DC never shipped them over REST. Future backends like Linear come through the dialect protocol.
 - No transactions. Jira admin REST doesn't offer them, so a failed migration can leave a partial state. Re-running picks up where it left off, because each operation checks what already exists first.
 - Drift still happens. Someone can always open the UI and click. stint won't stop them. What it gives you is a way to reflect the live instance, see the diff, and pull the change back into code on your terms.
 
