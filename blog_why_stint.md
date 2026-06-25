@@ -1,3 +1,8 @@
+---
+title: "Your Jira config is production infrastructure. You manage it like a whiteboard."
+show_hn_title: "Show HN: stint - schema-as-code and migrations for Jira admin"
+---
+
 # Your Jira config is production infrastructure. You manage it like a whiteboard.
 
 A teammate pings you on a Friday afternoon.
