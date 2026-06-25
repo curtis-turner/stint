@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="460" viewBox="0 0 1280 460" role="img" aria-label="stint: Jira admin as code, not clickops">
+  <defs>
+    <radialGradient id="glow" cx="82%" cy="14%" r="60%">
+      <stop offset="0%" stop-color="#34D39A" stop-opacity="0.14"/>
+      <stop offset="100%" stop-color="#34D39A" stop-opacity="0"/>
+    </radialGradient>
+    <style>
+      .sans { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; }
+      .mono { font-family: 'SF Mono', 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+
+  <!-- background -->
+  <rect width="1280" height="460" fill="#0B1221"/>
+  <rect width="1280" height="460" fill="url(#glow)"/>
+
+  <!-- header -->
+  <text class="sans" x="56" y="64" font-size="42" font-weight="800" letter-spacing="-2" fill="#F5F8FF">stint</text>
+  <text class="sans" x="1224" y="60" text-anchor="end" font-size="23" font-weight="500" fill="#8A97AE">Jira admin as code, not clickops</text>
+
+  <!-- center divider + arrow -->
+  <line x1="640" y1="120" x2="640" y2="404" stroke="#23304A" stroke-width="2"/>
+  <circle cx="640" cy="262" r="26" fill="#0B1221" stroke="#23304A" stroke-width="2"/>
+  <text class="sans" x="640" y="274" text-anchor="middle" font-size="30" font-weight="700" fill="#34D39A">&#8594;</text>
+
+  <!-- LEFT: the old way -->
+  <text class="sans" x="56" y="150" font-size="24" font-weight="700" letter-spacing="2" fill="#E0728A">THE OLD WAY</text>
+  <g class="sans" font-size="27" font-weight="500" fill="#B6C0D0">
+    <text x="92" y="210">click through the Jira admin web UI</text>
+    <text x="92" y="262">no diff, no review, no record</text>
+    <text x="92" y="314">no clean rollback</text>
+    <text x="92" y="366">staging and prod drift apart</text>
+  </g>
+  <g class="sans" font-size="27" font-weight="700" fill="#E0728A">
+    <text x="56" y="210">&#215;</text>
+    <text x="56" y="262">&#215;</text>
+    <text x="56" y="314">&#215;</text>
+    <text x="56" y="366">&#215;</text>
+  </g>
+
+  <!-- RIGHT: with stint -->
+  <text class="sans" x="700" y="150" font-size="24" font-weight="700" letter-spacing="2" fill="#34D39A">WITH STINT</text>
+  <rect x="700" y="176" width="524" height="232" rx="12" fill="#0E1A2C"/>
+  <rect x="700" y="176" width="6" height="232" rx="3" fill="#34D39A"/>
+  <g class="mono" font-size="21" fill="#D7E0EC" xml:space="preserve">
+    <text x="744" y="222">async def upgrade():</text>
+    <text x="744" y="262">    await op.create_custom_field(</text>
+    <text x="744" y="302">        alias="bug_severity",</text>
+    <text x="744" y="342">        options=["S1","S2","S3","S4"],</text>
+    <text x="744" y="382">    )</text>
+  </g>
+  <g class="mono" font-size="21" font-weight="700" fill="#34D39A">
+    <text x="716" y="222">+</text>
+    <text x="716" y="262">+</text>
+    <text x="716" y="302">+</text>
+    <text x="716" y="342">+</text>
+    <text x="716" y="382">+</text>
+  </g>
+</svg>

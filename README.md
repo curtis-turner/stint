@@ -1,5 +1,7 @@
 # stint
 
+![stint: Jira admin as code, not clickops](https://raw.githubusercontent.com/curtis-turner/stint/main/assets/readme-hero.png)
+
 Declarative schema-as-code and ORM for work-management systems. Jira first.
 
 stint is two tools in one, the same way SQLAlchemy + Alembic is.
