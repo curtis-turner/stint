@@ -15,6 +15,12 @@ venv/
 # Per-developer stint env connection config (url/auth; secrets stay in env vars)
 .stint/
 
+# Local autogenerate scratch output from the examples/ playground
+examples/migrations/
+examples/*.state
+# Clean-room probe tenant scratch (schema, state, migrations) — never committed
+examples/cleanroom/
+
 # Caches
 .pytest_cache/
 .ruff_cache/
