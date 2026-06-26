@@ -1,0 +1,61 @@
+name: Publish
+
+# Build once on a published GitHub release, then ship to TestPyPI first and
+# PyPI prod after it succeeds. Both uploads use OIDC trusted publishing, so no
+# API tokens are stored. See the trusted-publisher registration steps in
+# .github/workflows/README.md.
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.1.0
+      - run: uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  testpypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/stint
+    permissions:
+      id-token: write
+    steps:
+      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - run: >-
+          uv publish
+          --publish-url https://test.pypi.org/legacy/
+          --check-url https://test.pypi.org/simple/
+          --trusted-publishing always
+
+  pypi:
+    needs: testpypi
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/stint
+    permissions:
+      id-token: write
+    steps:
+      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - run: >-
+          uv publish
+          --check-url https://pypi.org/simple/
+          --trusted-publishing always
