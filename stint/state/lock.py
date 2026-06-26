@@ -16,7 +16,7 @@ Limitations:
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 
@@ -49,7 +49,7 @@ class StateLock:
                 f"state file {self.state_path!s} is locked by {holder}. "
                 f"If the holder is gone, delete {self.lock_path!s} manually."
             ) from None
-        body = (f"pid={os.getpid()}\nacquired_at={datetime.now(timezone.utc).isoformat(timespec='seconds')}\n").encode()
+        body = (f"pid={os.getpid()}\nacquired_at={datetime.now(UTC).isoformat(timespec='seconds')}\n").encode()
         try:
             os.write(self._fd, body)
         finally:

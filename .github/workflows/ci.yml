@@ -15,7 +15,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # stint requires Python 3.14+ for PEP 649 deferred annotation
+        # evaluation. Add newer stable releases here as they ship; do not
+        # add < 3.14.
+        python-version: ["3.14"]
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.1.0

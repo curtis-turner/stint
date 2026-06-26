@@ -7,6 +7,12 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- **Require Python 3.14+** (`requires-python = ">=3.14"`). stint depends on
+  PEP 649 deferred annotation evaluation — the default from 3.14 — so the
+  schema metaclass can inspect `Annotated` field metadata reliably (e.g.
+  detecting a CustomField that shadows its attribute name). On 3.10–3.13 that
+  same code path raised a raw `NameError` at class-definition time. CI now
+  tests 3.14 only.
 - `__lead__` now takes a project-lead **email** that stint resolves to the
   backend user id at apply time (DC username, Cloud `accountId`) via the
   user-search API. This fixes project create/update on Cloud, which rejects

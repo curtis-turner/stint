@@ -55,9 +55,13 @@ backends, like Linear, through the dialect protocol.
 pip install stint
 ```
 
-Python 3.10 or newer. Runtime deps are `pydantic` (with the `email`
-extra), `pydantic-settings`, `httpx`, `pyyaml`, and `cyclopts` for the
-CLI. `cyclopts` pulls in `rich` for terminal output.
+Python 3.14 or newer. stint relies on [PEP 649](https://peps.python.org/pep-0649/)
+deferred annotation evaluation, the default from 3.14, so the schema metaclass
+can inspect `Annotated` field metadata (and catch mistakes like a CustomField
+that shadows its attribute name) without eagerly resolving every type. Runtime
+deps are `pydantic` (with the `email` extra), `pydantic-settings`, `httpx`,
+`pyyaml`, and `cyclopts` for the CLI. `cyclopts` pulls in `rich` for terminal
+output.
 
 ## Why
 
