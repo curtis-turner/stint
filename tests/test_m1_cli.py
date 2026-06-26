@@ -34,6 +34,7 @@ def _stub_empty(mock: respx.MockRouter) -> None:
     ):
         mock.get(path).mock(return_value=httpx.Response(200, json=[]))
     for path in (
+        f"{CLOUD_ROOT}/field/search",
         f"{CLOUD_ROOT}/project/search",
         f"{CLOUD_ROOT}/screens",
         f"{CLOUD_ROOT}/screenscheme",

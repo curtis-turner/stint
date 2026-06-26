@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import warnings
+from collections.abc import AsyncIterator
 from typing import Any, ClassVar
 
 from stint.client.http import JiraHTTPClient
@@ -81,12 +82,22 @@ class JiraDialectBase:
         )
 
     # ── Custom fields ────────────────────────────────────────────────
-    async def _reflect_custom_fields(self) -> dict[str, CustomFieldSnapshot]:
+    async def _iter_custom_field_payloads(self) -> AsyncIterator[dict[str, Any]]:
+        """Yield raw field payloads to scan for custom fields.
+
+        Base (DC): ``GET /field`` returns a bare list of every field. Cloud
+        overrides this because ``GET /field`` there returns only a subset of
+        custom fields; see the Cloud dialect for the paginated search. (#9)
+        """
         raw_fields = await self.client.get_json(f"{self.api_root}/field")
         if not isinstance(raw_fields, list):
             raise ReflectionError(f"{self.api_root}/field returned non-list: {type(raw_fields)}")
-        result: dict[str, CustomFieldSnapshot] = {}
         for entry in raw_fields:
+            yield entry
+
+    async def _reflect_custom_fields(self) -> dict[str, CustomFieldSnapshot]:
+        result: dict[str, CustomFieldSnapshot] = {}
+        async for entry in self._iter_custom_field_payloads():
             if not common.is_custom_field(entry):
                 continue
             cf = common.parse_custom_field(entry)

@@ -40,6 +40,7 @@ def _stub_empty_jira(mock):
         )
     )
     mock.get(f"{CLOUD_ROOT}/field").mock(return_value=httpx.Response(200, json=[]))
+    mock.get(f"{CLOUD_ROOT}/field/search").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{CLOUD_ROOT}/issuetype").mock(return_value=httpx.Response(200, json=[]))
     for path in (
         "/project/search",

@@ -646,6 +646,7 @@ def test_cli_reflect_reads_connection_from_env_config(tmp_path, monkeypatch, cap
         for path in (f"{dc_root}/field", f"{dc_root}/issuetype"):
             mock.get(path).mock(return_value=httpx.Response(200, json=[]))
         for path in (
+            f"{dc_root}/field/search",
             f"{dc_root}/project/search",
             f"{dc_root}/screens",
             f"{dc_root}/screenscheme",
@@ -707,6 +708,7 @@ def test_cli_stamp_reads_connection_from_env_config(tmp_path, monkeypatch):
         for path in (f"{dc_root}/field", f"{dc_root}/issuetype"):
             mock.get(path).mock(return_value=httpx.Response(200, json=[]))
         for path in (
+            f"{dc_root}/field/search",
             f"{dc_root}/project/search",
             f"{dc_root}/screens",
             f"{dc_root}/screenscheme",
@@ -766,6 +768,7 @@ def test_cli_revision_autogenerate_reads_connection_from_env_config(tmp_path, mo
         for path in (f"{dc_root}/field", f"{dc_root}/issuetype"):
             mock.get(path).mock(return_value=httpx.Response(200, json=[]))
         for path in (
+            f"{dc_root}/field/search",
             f"{dc_root}/project/search",
             f"{dc_root}/screens",
             f"{dc_root}/screenscheme",
