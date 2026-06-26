@@ -39,7 +39,7 @@ async def upgrade():
 
 The same model classes double as a typed query layer for reads and writes. It compiles to JQL, not SQL, so think of it as a query builder over Jira search rather than a full relational ORM. The point is that a custom field is `cf[10042]` in raw JQL, and that id differs in every environment. `Bug.c.severity == "S1"` resolves the right id from the same state file the migrations use, so one expression runs against dev and prod with no hardcoded ids.
 
-Jira is the first backend, not the only one. The migration and query layers route through a dialect, so other work-management tools can drop in without changing your schemas or queries. Linear is the next target. If you left Jira for Linear and still want as-code discipline over your config, that is exactly where this is headed.
+Jira is the first backend, not the only one. The migration and query layers route through a dialect, so other work-management tools can drop in without changing your schemas or queries. Linear is the candidate I'm eyeing next. Linear already has a Terraform provider, so the bet there is not "first to exist" but a different model: an ordered migration history instead of state reconciliation, plus a typed ORM over your issues that Terraform does not give you. Whether that trade is worth it to Linear users is exactly what I want to find out.
 
 Status is alpha (0.1.0a0). Honest about the edges:
 
