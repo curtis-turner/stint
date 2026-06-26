@@ -39,6 +39,8 @@ async def upgrade():
 
 The same model classes double as a typed query layer for reads and writes. It compiles to JQL, not SQL, so think of it as a query builder over Jira search rather than a full relational ORM. The point is that a custom field is `cf[10042]` in raw JQL, and that id differs in every environment. `Bug.c.severity == "S1"` resolves the right id from the same state file the migrations use, so one expression runs against dev and prod with no hardcoded ids.
 
+Jira is the first backend, not the only one. The migration and query layers route through a dialect, so other work-management tools can drop in without changing your schemas or queries. Linear is the next target. If you left Jira for Linear and still want as-code discipline over your config, that is exactly where this is headed.
+
 Status is alpha (0.1.0a0). Honest about the edges:
 
 - Jira Cloud only. Company-managed and team-managed projects.
@@ -50,6 +52,8 @@ Status is alpha (0.1.0a0). Honest about the edges:
 I built this because I have reconciled two Jira instances by hand more than once and wanted the change to be a commit my teammate could review instead of a memory of what I clicked.
 
 Feedback I'd most value: whether the migration model holds up against how your org actually mutates Jira, and where the typed query layer falls short of what you query today.
+
+If you have managed Jira config by hand across environments, I want to hear how you do it today and what would make a tool like this worth adopting. And if you are on Linear or another work-management tool and would want the same schema-as-code workflow, say so. That demand shapes which backend comes next.
 
 Repo: https://github.com/curtis-turner/stint
 Write-up: [link]
