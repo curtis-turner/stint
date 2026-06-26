@@ -57,3 +57,37 @@ If you have managed Jira config by hand across environments, I want to hear how 
 
 Repo: https://github.com/curtis-turner/stint
 Write-up: https://github.com/curtis-turner/stint/blob/main/blog_why_stint.md
+
+---
+
+## Appetite threshold (decide before posting, do not edit after)
+
+Window: 7 days from the first post, measured across HN, r/jira, the
+Atlassian community, and r/Python combined. Weight the can't-leave-Jira
+venues (r/jira, Atlassian) higher than HN, which skews toward people who
+resent Jira and is venue-biased against this idea.
+
+Vanity metrics do not count. Upvotes and stars are noise.
+
+GO (invest further, build a real roadmap) if any one of these holds:
+
+- 5+ unprompted comments from people describing this exact pain, e.g. "we
+  document our Jira config by hand," "our envs have drifted and nobody
+  knows how."
+- 2+ people actually run it against a live instance (issues filed, or
+  questions that only make sense if they ran `stint reflect`/`validate`).
+- 1+ person asking, with real intent, how to adopt it for their org or
+  when Linear lands.
+
+NO-GO (shelve, or rethink the premise) if the response is:
+
+- Mostly "why not just use the UI / Terraform / a script," or
+- polite interest with zero pain descriptions and zero trials.
+
+AMBIGUOUS (moderate curiosity, no trials): do not decide on HN alone.
+Post to r/jira and the Atlassian community first, because those are the
+people with the actual pain, then read the combined signal.
+
+Founder-bias check: "I would have loved this for years" is not a data
+point. It says the pain is real for one experienced engineer. It says
+nothing about how many others would adopt a tool this large.
