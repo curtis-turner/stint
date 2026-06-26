@@ -12,6 +12,9 @@ dist/
 venv/
 .env
 
+# Per-developer stint env connection config (url/auth; secrets stay in env vars)
+.stint/
+
 # Caches
 .pytest_cache/
 .ruff_cache/
