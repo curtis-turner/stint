@@ -3,8 +3,7 @@ title: "Your Jira config is production infrastructure. You manage it like a whit
 published: false
 description: "Jira admin lives in a web UI: no diff, no review, no rollback. stint treats Jira config as code with versioned migrations and a typed query layer, the way Alembic and SQLAlchemy treat a database."
 tags: jira, python, devtools, opensource
-cover_image: https://raw.githubusercontent.com/curtis-turner/stint/main/assets/readme-hero.png
-canonical_url:
+cover_image: https://raw.githubusercontent.com/curtis-turner/stint/main/assets/devto-cover.png
 ---
 
 A teammate pings you on a Friday afternoon.

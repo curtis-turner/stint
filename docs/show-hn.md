@@ -56,7 +56,7 @@ Feedback I'd most value: whether the migration model holds up against how your o
 If you have managed Jira config by hand across environments, I want to hear how you do it today and what would make a tool like this worth adopting. And if you are on Linear or another work-management tool and would want the same schema-as-code workflow, say so. That demand shapes which backend comes next.
 
 Repo: https://github.com/curtis-turner/stint
-Write-up: https://github.com/curtis-turner/stint/blob/main/blog_why_stint.md
+Write-up: https://dev.to/curtisturner_63/your-jira-config-is-production-infrastructure-you-manage-it-like-a-whiteboard-32dn
 
 ---
 
