@@ -10,6 +10,7 @@ into ProjectSnapshot.style. Apply-side TMP partial support lands in M8.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 from stint.dialects.jira import common
@@ -24,6 +25,23 @@ class JiraCloudDialect(JiraDialectBase):
     # Cloud's field-configuration items endpoint is /fieldconfiguration/{id}/fields
     # (per the Cloud Platform OpenAPI). DC keeps the inherited /items default.
     field_config_items_segment = "fields"
+
+    async def _iter_custom_field_payloads(self) -> AsyncIterator[dict[str, Any]]:
+        """Cloud: page ``GET /field/search`` (``type=custom``).
+
+        The non-paginated ``GET /field`` returns only a subset of custom
+        fields on Cloud (it omits fields not yet associated with a screen,
+        including freshly created ones), so reflect missed fields stint had
+        just created. The paginated field-search endpoint returns the full
+        custom-field set and includes the ``schema`` needed for type
+        detection. (#9)
+        """
+        async for entry in common.paginate(
+            self.client,
+            f"{self.api_root}/field/search",
+            extra_params={"type": "custom"},
+        ):
+            yield entry
 
     async def _reflect_field_options(self, field_id: str) -> dict[str, str]:
         """Cloud option fetch goes through the field context.

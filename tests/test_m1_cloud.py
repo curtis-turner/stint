@@ -35,6 +35,7 @@ def _stub_empty(mock: respx.MockRouter) -> None:
         )
     )
     mock.get(f"{CLOUD_ROOT}/field").mock(return_value=httpx.Response(200, json=[]))
+    mock.get(f"{CLOUD_ROOT}/field/search").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{CLOUD_ROOT}/issuetype").mock(return_value=httpx.Response(200, json=[]))
     mock.get(f"{CLOUD_ROOT}/project/search").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{CLOUD_ROOT}/screens").mock(return_value=httpx.Response(200, json=_paginated([])))
@@ -92,16 +93,18 @@ async def test_cloud_detect_false_for_dc_server():
 async def test_cloud_select_options_fetched_via_default_context():
     """Cloud option lookup: list contexts, take the first, list its options."""
     _stub_empty(respx.mock)
-    respx.get(f"{CLOUD_ROOT}/field").mock(
+    respx.get(f"{CLOUD_ROOT}/field/search").mock(
         return_value=httpx.Response(
             200,
-            json=[
-                {
-                    "id": "customfield_10501",
-                    "name": "Severity",
-                    "schema": {"custom": "com.atlassian.jira.plugin.system.customfieldtypes:select"},
-                },
-            ],
+            json=_paginated(
+                [
+                    {
+                        "id": "customfield_10501",
+                        "name": "Severity",
+                        "schema": {"custom": "com.atlassian.jira.plugin.system.customfieldtypes:select"},
+                    },
+                ]
+            ),
         )
     )
     respx.get(f"{CLOUD_ROOT}/field/customfield_10501/context").mock(
@@ -136,16 +139,18 @@ async def test_cloud_select_options_fetched_via_default_context():
 async def test_cloud_select_field_without_context_yields_empty_options():
     """Defensive: a select field with no contexts at all (edge case) is allowed."""
     _stub_empty(respx.mock)
-    respx.get(f"{CLOUD_ROOT}/field").mock(
+    respx.get(f"{CLOUD_ROOT}/field/search").mock(
         return_value=httpx.Response(
             200,
-            json=[
-                {
-                    "id": "customfield_10502",
-                    "name": "Empty Select",
-                    "schema": {"custom": "com.atlassian.jira.plugin.system.customfieldtypes:select"},
-                },
-            ],
+            json=_paginated(
+                [
+                    {
+                        "id": "customfield_10502",
+                        "name": "Empty Select",
+                        "schema": {"custom": "com.atlassian.jira.plugin.system.customfieldtypes:select"},
+                    },
+                ]
+            ),
         )
     )
     respx.get(f"{CLOUD_ROOT}/field/customfield_10502/context").mock(

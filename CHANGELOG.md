@@ -31,6 +31,14 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   test/lint tooling into `pip install stint[dev]`. `uv sync --dev` only
   read the dependency group anyway.
 
+### Fixed
+- Cloud reflect now reads custom fields from the paginated
+  `GET /rest/api/3/field/search`, not `GET /rest/api/3/field`. The latter
+  returns only a subset of custom fields on Cloud (omitting fields not yet
+  on a screen, including freshly created ones), so reflect missed fields
+  stint had just created, which broke create-then-reflect round-trips
+  (`autogenerate`/`stamp` reporting created fields as missing). (#9)
+
 ## [0.1.0a0]
 
 Initial alpha. The schema plane and the data plane are both shippable

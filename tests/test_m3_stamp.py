@@ -187,13 +187,15 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
             },
         )
     )
-    respx.get(f"{CLOUD_ROOT}/field").mock(
+    respx.get(f"{CLOUD_ROOT}/field/search").mock(
         return_value=httpx.Response(
             200,
-            json=[
-                {"id": "customfield_10042", "name": "Severity", "schema": {"custom": SelectField.jira_type_id}},
-                {"id": "customfield_10043", "name": "Root Cause", "schema": {"custom": TextField.jira_type_id}},
-            ],
+            json=_paginated(
+                [
+                    {"id": "customfield_10042", "name": "Severity", "schema": {"custom": SelectField.jira_type_id}},
+                    {"id": "customfield_10043", "name": "Root Cause", "schema": {"custom": TextField.jira_type_id}},
+                ]
+            ),
         )
     )
     respx.get(f"{CLOUD_ROOT}/field/customfield_10042/context").mock(

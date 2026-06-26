@@ -46,6 +46,7 @@ def _stub_empty_admin(mock: respx.MockRouter, root: str = CLOUD_ROOT) -> None:
         )
     )
     mock.get(f"{root}/field").mock(return_value=httpx.Response(200, json=[]))
+    mock.get(f"{root}/field/search").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{root}/issuetype").mock(return_value=httpx.Response(200, json=[]))
     mock.get(f"{root}/project/search").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{root}/screens").mock(return_value=httpx.Response(200, json=_paginated([])))
@@ -75,14 +76,16 @@ async def test_reflect_captures_server_info():
 @respx.mock
 async def test_reflect_filters_out_system_fields():
     _stub_empty_admin(respx.mock)
-    respx.get(f"{CLOUD_ROOT}/field").mock(
+    respx.get(f"{CLOUD_ROOT}/field/search").mock(
         return_value=httpx.Response(
             200,
-            json=[
-                {"id": "summary", "name": "Summary"},
-                {"id": "description", "name": "Description"},
-                {"id": "assignee", "name": "Assignee"},
-            ],
+            json=_paginated(
+                [
+                    {"id": "summary", "name": "Summary"},
+                    {"id": "description", "name": "Description"},
+                    {"id": "assignee", "name": "Assignee"},
+                ]
+            ),
         )
     )
     async with _cloud_engine() as eng:
@@ -94,22 +97,24 @@ async def test_reflect_filters_out_system_fields():
 @respx.mock
 async def test_reflect_captures_custom_fields_with_options():
     _stub_empty_admin(respx.mock)
-    respx.get(f"{CLOUD_ROOT}/field").mock(
+    respx.get(f"{CLOUD_ROOT}/field/search").mock(
         return_value=httpx.Response(
             200,
-            json=[
-                {"id": "summary", "name": "Summary"},
-                {
-                    "id": "customfield_10042",
-                    "name": "Severity",
-                    "schema": {"custom": "com.atlassian.jira.plugin.system.customfieldtypes:select"},
-                },
-                {
-                    "id": "customfield_10043",
-                    "name": "Root Cause",
-                    "schema": {"custom": "com.atlassian.jira.plugin.system.customfieldtypes:textfield"},
-                },
-            ],
+            json=_paginated(
+                [
+                    {"id": "summary", "name": "Summary"},
+                    {
+                        "id": "customfield_10042",
+                        "name": "Severity",
+                        "schema": {"custom": "com.atlassian.jira.plugin.system.customfieldtypes:select"},
+                    },
+                    {
+                        "id": "customfield_10043",
+                        "name": "Root Cause",
+                        "schema": {"custom": "com.atlassian.jira.plugin.system.customfieldtypes:textfield"},
+                    },
+                ]
+            ),
         )
     )
     # Select-field options are fetched per field through the default context.
@@ -426,7 +431,7 @@ async def test_401_raises_authentication_error():
 @respx.mock
 async def test_403_raises_permission_error():
     _stub_empty_admin(respx.mock)
-    respx.get(f"{CLOUD_ROOT}/field").mock(
+    respx.get(f"{CLOUD_ROOT}/field/search").mock(
         return_value=httpx.Response(403, json={"errorMessages": ["Site Admin required"]})
     )
     async with _cloud_engine() as eng:
