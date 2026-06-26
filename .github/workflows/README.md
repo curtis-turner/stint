@@ -10,12 +10,20 @@ Runs on every push to `main` and every pull request:
 
 ## `publish.yml`
 
-Runs when a GitHub **release** is published. Pipeline:
+Runs when a GitHub **release** is published. Builds once, then routes by
+channel:
 
-1. `build` — `uv build` produces the sdist + wheel, uploaded as an artifact.
-2. `testpypi` — downloads the artifact and publishes to TestPyPI.
-3. `pypi` — runs only after `testpypi` succeeds, publishes the same artifacts
-   to PyPI prod.
+1. `classify` — decides the channel. A release is a **pre-release** when its
+   tag carries a PEP 440 pre-release/dev marker (`a1`, `b2`, `rc1`, `.dev3`)
+   **or** the GitHub "Set as a pre-release" checkbox is ticked.
+2. `build` — `uv build` produces the sdist + wheel, uploaded as an artifact.
+3. `testpypi` — runs **only for pre-releases**. A dry run to validate the
+   publish path before cutting a prod release.
+4. `pypi` — runs **only for final releases**. Publishes to PyPI prod.
+
+`testpypi` and `pypi` are mutually exclusive: a single release goes to exactly
+one index. Validate on TestPyPI with an alpha tag, then cut a final tag for
+prod.
 
 Both uploads use OIDC **trusted publishing** (`uv publish --trusted-publishing
 always`). No API tokens are stored anywhere.
@@ -55,7 +63,16 @@ giving you a chance to verify the TestPyPI upload first.
 
 ## Cutting a release
 
-1. Bump `version` in `pyproject.toml` and update `CHANGELOG.md`.
-2. Tag and publish a GitHub release for that version.
-3. The pipeline builds, publishes to TestPyPI, then (after approval, if
-   configured) to PyPI.
+**Dry run on TestPyPI** (pre-release):
+
+1. Bump `version` to a pre-release in `pyproject.toml` (e.g. `0.2.0a1`).
+2. Publish a GitHub release for that tag with **"Set as a pre-release"**
+   ticked (the PEP 440 marker alone also triggers it).
+3. The pipeline builds and publishes to TestPyPI only.
+
+**Prod release** (final):
+
+1. Bump `version` to a final version (e.g. `0.2.0`) and update `CHANGELOG.md`.
+2. Publish a GitHub release for that tag as a normal (non-pre-release) release.
+3. The pipeline builds and publishes to PyPI prod (after approval, if the
+   `pypi` environment has a required-reviewer rule).

@@ -1,15 +1,33 @@
 name: Publish
 
-# Build once on a published GitHub release, then ship to TestPyPI first and
-# PyPI prod after it succeeds. Both uploads use OIDC trusted publishing, so no
-# API tokens are stored. See the trusted-publisher registration steps in
-# .github/workflows/README.md.
+# Build once on a published GitHub release, then route by channel:
+#   - pre-release (PEP 440 aN/bN/rcN/.devN tag, or the GitHub "pre-release"
+#     checkbox) -> TestPyPI dry run only.
+#   - final release -> PyPI prod only.
+# Both uploads use OIDC trusted publishing, so no API tokens are stored. See
+# the trusted-publisher registration steps in .github/workflows/README.md.
 
 on:
   release:
     types: [published]
 
 jobs:
+  classify:
+    runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - id: check
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          FLAG: ${{ github.event.release.prerelease }}
+        run: |
+          if [[ "$FLAG" == "true" || "$TAG" =~ (a|b|rc|\.dev)[0-9]+$ ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -22,7 +40,8 @@ jobs:
           path: dist/
 
   testpypi:
-    needs: build
+    needs: [classify, build]
+    if: needs.classify.outputs.prerelease == 'true'
     runs-on: ubuntu-latest
     environment:
       name: testpypi
@@ -42,7 +61,8 @@ jobs:
           --trusted-publishing always
 
   pypi:
-    needs: testpypi
+    needs: [classify, build]
+    if: needs.classify.outputs.prerelease == 'false'
     runs-on: ubuntu-latest
     environment:
       name: pypi
