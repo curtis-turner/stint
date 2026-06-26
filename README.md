@@ -120,7 +120,7 @@ class Bug(IssueType):
 
 class Platform(Project):
     __key__ = "PLAT"
-    __lead__ = "cturner"
+    __lead__ = "cturner@example.com"
     __style__ = "company-managed"
     __issuetypes__ = [Bug]
 ```
@@ -251,6 +251,12 @@ stint validate   Run schema-level checks on a Python schema module.
   per-instance breakdown so callers can decide what to do.
 - **Drift is not auto-reverted.** UI edits land in the live instance and
   stay there until you reflect, diff, and absorb them into the schema.
+- **Project lead resolution needs user-search access.** `__lead__` takes an
+  email, which stint resolves to a backend user id (DC username, Cloud
+  accountId) via the user-search API at apply time. That call requires the
+  "Browse users and groups" global permission. Without it the create/update
+  fails with guidance; set `__lead__` to an already-resolved username or
+  accountId to skip resolution.
 
 ## License
 

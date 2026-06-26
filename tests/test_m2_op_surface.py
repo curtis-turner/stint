@@ -598,6 +598,107 @@ async def test_delete_project_cloud_uses_id():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_create_project_resolves_email_lead_to_account_id():
+    """An email __lead__ is resolved via /user/search before create on Cloud."""
+    search = respx.get(f"{CLOUD_ROOT}/user/search", params={"query": "lead@acme.com"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"accountId": "acc-999", "emailAddress": "lead@acme.com"}],
+        )
+    )
+    respx.post(
+        f"{CLOUD_ROOT}/project",
+        json__eq={
+            "key": "BUG",
+            "name": "Bug Tracker",
+            "projectTypeKey": "software",
+            "leadAccountId": "acc-999",
+            "description": "",
+        },
+    ).mock(return_value=httpx.Response(201, json={"id": "p-1"}))
+    state = StateFile(env="dev", jira_url=BASE)
+    engine = _cloud_engine()
+    try:
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.create_project(
+                alias="bug_tracker",
+                key="BUG",
+                name="Bug Tracker",
+                project_type_key="software",
+                lead="lead@acme.com",
+            ),
+        )
+    finally:
+        await engine.close()
+    assert search.called
+    assert state.projects["bug_tracker"].id == "p-1"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_resolve_lead_picks_exact_email_among_many():
+    """User search may return several fuzzy matches; the exact email wins."""
+    respx.get(f"{CLOUD_ROOT}/user/search", params={"query": "lead@acme.com"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"accountId": "acc-other", "emailAddress": "leader@acme.com"},
+                {"accountId": "acc-999", "emailAddress": "lead@acme.com"},
+            ],
+        )
+    )
+    engine = _cloud_engine()
+    try:
+        resolved = await engine.dialect.resolve_lead("lead@acme.com")
+    finally:
+        await engine.close()
+    assert resolved == "acc-999"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_resolve_lead_passes_through_non_email():
+    """A raw accountId/username (no @) is not sent through user search."""
+    route = respx.get(f"{CLOUD_ROOT}/user/search")
+    engine = _cloud_engine()
+    try:
+        resolved = await engine.dialect.resolve_lead("acc-123")
+    finally:
+        await engine.close()
+    assert resolved == "acc-123"
+    assert not route.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_resolve_lead_no_user_raises_configuration_error():
+    respx.get(f"{CLOUD_ROOT}/user/search").mock(return_value=httpx.Response(200, json=[]))
+    engine = _cloud_engine()
+    try:
+        with pytest.raises(ConfigurationError, match="No Jira user found"):
+            await engine.dialect.resolve_lead("missing@acme.com")
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_resolve_lead_permission_denied_raises_configuration_error():
+    respx.get(f"{CLOUD_ROOT}/user/search").mock(
+        return_value=httpx.Response(403, json={"errorMessages": ["nope"], "errors": {}})
+    )
+    engine = _cloud_engine()
+    try:
+        with pytest.raises(ConfigurationError, match="Browse users and groups"):
+            await engine.dialect.resolve_lead("lead@acme.com")
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_set_project_issuetype_screen_scheme():
     respx.put(
         f"{CLOUD_ROOT}/issuetypescreenscheme/project",

@@ -116,6 +116,6 @@ class Bug(IssueType):
 # ── Project ───────────────────────────────────────────────────────────
 class Platform(Project):
     __key__ = "PLAT"
-    __lead__ = "cturner"
+    __lead__ = "cturner@example.com"
     __style__ = "company-managed"
     __issuetypes__ = [Bug]

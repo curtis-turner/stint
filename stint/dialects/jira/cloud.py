@@ -25,6 +25,10 @@ class JiraCloudDialect(JiraDialectBase):
     # Cloud's field-configuration items endpoint is /fieldconfiguration/{id}/fields
     # (per the Cloud Platform OpenAPI). DC keeps the inherited /items default.
     field_config_items_segment = "fields"
+    # Cloud's user search matches on ``query`` and returns an ``accountId``;
+    # the inherited DC defaults (``username`` / ``name``) do not apply.
+    user_search_param = "query"
+    user_search_id_field = "accountId"
 
     async def _iter_custom_field_payloads(self) -> AsyncIterator[dict[str, Any]]:
         """Cloud: page ``GET /field/search`` (``type=custom``).

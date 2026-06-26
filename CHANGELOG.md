@@ -6,6 +6,14 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- `__lead__` now takes a project-lead **email** that stint resolves to the
+  backend user id at apply time (DC username, Cloud `accountId`) via the
+  user-search API. This fixes project create/update on Cloud, which rejects
+  a username as `leadAccountId`. A raw username/accountId (no `@`) is passed
+  through unchanged. Resolution requires the "Browse users and groups"
+  permission; a 403 surfaces as a `ConfigurationError` with guidance. (#7)
+
 ## [0.1.0a1] - 2026-06-26
 
 ### Added

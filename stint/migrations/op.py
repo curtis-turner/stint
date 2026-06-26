@@ -599,11 +599,12 @@ async def create_project(
     if style == "team-managed" and project_template_key is None:
         # Atlassian's default TMP Kanban template
         project_template_key = "com.pyxis.greenhopper.jira:gh-simplified-agility-kanban"
+    resolved_lead = await ctx.engine.dialect.resolve_lead(lead)
     proj_id = await ctx.engine.dialect.create_project(
         key=key,
         name=name,
         project_type_key=project_type_key,
-        lead=lead,
+        lead=resolved_lead,
         description=description,
         project_template_key=project_template_key,
     )
@@ -621,10 +622,11 @@ async def update_project(
     """Rename or re-describe an existing project, or change its lead."""
     ctx = get_context()
     mapping = _require_existing("update_project", alias, ctx.state.projects)
+    resolved_lead = await ctx.engine.dialect.resolve_lead(lead) if lead is not None else None
     await ctx.engine.dialect.update_project(
         mapping.id,
         name=name,
-        lead=lead,
+        lead=resolved_lead,
         description=description,
     )
 
