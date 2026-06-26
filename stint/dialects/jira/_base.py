@@ -755,6 +755,19 @@ class JiraDialectBase:
         )
 
     # ── Issue types ──────────────────────────────────────────────────
+    async def find_issuetype_id_by_name(self, name: str) -> str | None:
+        """Return the id of an existing issue type with this exact name, else None.
+
+        Jira issue-type names are globally unique, so a name match is an
+        unambiguous identity. ``create_issuetype`` uses this to adopt Jira's
+        built-in types (Bug, Task, Story, Epic, Subtask) instead of 409-ing on
+        a duplicate create against any real tenant (#8).
+        """
+        for it in (await self._reflect_issuetypes()).values():
+            if it.name == name:
+                return it.id
+        return None
+
     async def create_issuetype(
         self,
         *,

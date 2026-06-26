@@ -536,6 +536,13 @@ async def create_issuetype(
     existing = _existing_id_or_none(ctx.state.issuetypes, alias)
     if existing is not None:
         return existing
+    # Every Jira tenant ships built-in issue types (Bug, Task, Story, ...) and
+    # enforces globally-unique names, so POSTing a duplicate 409s. Adopt the
+    # existing type by name into state instead of recreating it (#8).
+    adopted = await ctx.engine.dialect.find_issuetype_id_by_name(name)
+    if adopted is not None:
+        ctx.state.issuetypes[alias] = SimpleMapping(id=adopted)
+        return adopted
     it_id = await ctx.engine.dialect.create_issuetype(
         name=name,
         description=description,

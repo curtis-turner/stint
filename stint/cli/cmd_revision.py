@@ -78,6 +78,13 @@ def revision(
             help="Permit autogenerate to emit destructive ops (delete_*, remove_custom_field_option).",
         ),
     ] = False,
+    force: Annotated[
+        bool,
+        Parameter(
+            negative=(),
+            help="Autogenerate even when unapplied migrations are pending (stacks a duplicate-prone migration).",
+        ),
+    ] = False,
 ) -> int:
     """Create a new migration file."""
     if autogenerate and merge:
@@ -97,6 +104,7 @@ def revision(
             no_verify_ssl=no_verify_ssl,
             env=env,
             allow_delete=allow_delete,
+            force=force,
         )
     if merge:
         return _run_merge(migrations_dir=migrations_dir, message=message, merge=merge)
@@ -145,6 +153,7 @@ def _run_autogenerate(
     no_verify_ssl: bool,
     env: str | None,
     allow_delete: bool,
+    force: bool = False,
 ) -> int:
     from stint.autogen.desired import build_desired_snapshot
     from stint.autogen.diff import diff
@@ -172,6 +181,24 @@ def _run_autogenerate(
     mig_dir = Path(migrations_dir)
     state_path = Path(state)  # checked above
     state_file = StateFile.load(state_path) if state_path.exists() else StateFile(env=env, jira_url=url)
+
+    # Guard against stacking duplicates (#6): autogenerate diffs against the
+    # state file, which only advances on `stint upgrade`/`stamp`. If migrations
+    # are already written but not applied, the tenant is unchanged and the diff
+    # repeats them. Refuse unless --force. Checked before reflect so it fails
+    # fast with no network call.
+    pending = _pending_migrations(mig_dir, state_file.revision)
+    if pending and not force:
+        head = pending[-1].revision
+        at = state_file.revision[:8] if state_file.revision else "base"
+        print(
+            f"ERROR: {len(pending)} pending migration(s) not yet applied "
+            f"(head {head[:8]}, state at {at}). They likely already create "
+            f"these objects. Apply them with `stint upgrade` first, or pass "
+            f"--force to stack anyway."
+        )
+        return 1
+
     load_schema_module(schema)
     desired = build_desired_snapshot()
     parents = _current_head_parents(mig_dir)
@@ -203,6 +230,15 @@ def _run_autogenerate(
     if rc == 0:
         print(f"  {len(result.changes)} operation(s) emitted")
     return rc
+
+
+def _pending_migrations(mig_dir: Path, applied_revision: str | None) -> list:
+    """Migrations written but not yet applied, in apply order. Empty when the
+    state's revision is already at head or there are no migrations."""
+    if not mig_dir.exists() or not any(mig_dir.glob("*.py")):
+        return []
+    graph = load_migrations(mig_dir)
+    return graph.chain_from(applied_revision)
 
 
 def _current_head_parents(mig_dir: Path) -> tuple[str, ...] | None:

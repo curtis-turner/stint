@@ -6,6 +6,18 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- `create_issuetype` now adopts an existing same-named issue type instead of
+  POSTing a duplicate. Every Jira tenant ships built-in types (Bug, Task,
+  Story, Epic, Subtask) and enforces globally-unique names, so a greenfield
+  `upgrade` against a real tenant used to 409 on the first `create_issuetype`.
+  The op reflects issue types, and on a name match records the existing id in
+  state and skips the create. (#8)
+- `revision --autogenerate` refuses to run when migrations are written but not
+  yet applied, instead of stacking a duplicate migration that recreates the
+  same objects. Apply the pending migrations with `stint upgrade` first, or
+  pass `--force` to stack anyway. (#6)
+
 ## [0.1.0a2] - 2026-06-26
 
 ### Changed

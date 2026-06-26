@@ -120,6 +120,53 @@ def test_autogenerate_greenfield_writes_full_migration(tmp_path, monkeypatch, ca
 
 
 @respx.mock
+def test_autogenerate_refuses_to_stack_pending_migrations(tmp_path, monkeypatch, capsys):
+    """Running autogenerate twice without applying must not stack a duplicate
+    migration. The second run refuses (#6); --force overrides."""
+    _stub_empty_jira(respx.mock)
+    mig_dir = tmp_path / "migrations"
+    state_path = tmp_path / "state.yaml"
+    monkeypatch.setenv("STINT_TOKEN", "tok")
+
+    def run(message, *extra):
+        return main(
+            [
+                "revision",
+                "--migrations-dir",
+                str(mig_dir),
+                "-m",
+                message,
+                "--autogenerate",
+                "--schema",
+                "examples.platform",
+                "--state",
+                str(state_path),
+                "--env",
+                "dev",
+                "--url",
+                f"jira_cloud+{BASE}",
+                "--auth",
+                "pat",
+                *extra,
+            ]
+        )
+
+    assert run("initial platform schema") == 0
+    capsys.readouterr()
+    assert len(list(mig_dir.glob("*.py"))) == 1
+
+    # Second run: migration pending, state never advanced -> refuse, no new file.
+    assert run("second pass") == 1
+    out = capsys.readouterr().out
+    assert "pending migration" in out
+    assert len(list(mig_dir.glob("*.py"))) == 1
+
+    # --force stacks anyway (distinct message avoids the same-minute filename clash).
+    assert run("forced stack", "--force") == 0
+    assert len(list(mig_dir.glob("*.py"))) == 2
+
+
+@respx.mock
 def test_autogenerate_in_sync_writes_nothing(tmp_path, monkeypatch, capsys):
     """If state already matches schema (or schema is empty), no file is written."""
     _stub_empty_jira(respx.mock)

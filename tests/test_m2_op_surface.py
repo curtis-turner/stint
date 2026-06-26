@@ -467,6 +467,8 @@ async def test_delete_field_configuration_scheme():
 @pytest.mark.asyncio
 @respx.mock
 async def test_create_issuetype():
+    # No same-named type exists, so create proceeds (adopt lookup returns none).
+    respx.get(f"{CLOUD_ROOT}/issuetype").mock(return_value=httpx.Response(200, json=[]))
     respx.post(
         f"{CLOUD_ROOT}/issuetype",
         json__eq={
@@ -495,6 +497,7 @@ async def test_create_issuetype():
 @pytest.mark.asyncio
 @respx.mock
 async def test_create_issuetype_subtask_sends_subtask_type():
+    respx.get(f"{CLOUD_ROOT}/issuetype").mock(return_value=httpx.Response(200, json=[]))
     respx.post(
         f"{CLOUD_ROOT}/issuetype",
         json__eq={
@@ -517,6 +520,35 @@ async def test_create_issuetype_subtask_sends_subtask_type():
         )
     finally:
         await engine.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_issuetype_adopts_existing_by_name():
+    """When Jira already has a same-named issue type (e.g. the built-in 'Bug'),
+    create_issuetype adopts its id into state instead of POSTing a 409 (#8)."""
+    respx.get(f"{CLOUD_ROOT}/issuetype").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"id": "10001", "name": "Bug", "description": "default", "subtask": False},
+                {"id": "10002", "name": "Task", "description": "", "subtask": False},
+            ],
+        )
+    )
+    create_route = respx.post(f"{CLOUD_ROOT}/issuetype").mock(return_value=httpx.Response(201, json={"id": "nope"}))
+    state = StateFile(env="dev", jira_url=BASE)
+    engine = _cloud_engine()
+    try:
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.create_issuetype(alias="bug", name="Bug", description="a bug"),
+        )
+    finally:
+        await engine.close()
+    assert state.issuetypes["bug"].id == "10001"
+    assert not create_route.called  # adopted, no POST
 
 
 @pytest.mark.asyncio

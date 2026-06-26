@@ -261,6 +261,15 @@ stint validate   Run schema-level checks on a Python schema module.
   "Browse users and groups" global permission. Without it the create/update
   fails with guidance; set `__lead__` to an already-resolved username or
   accountId to skip resolution.
+- **Built-in issue types are adopted, not recreated.** Every Jira tenant ships
+  Bug, Task, Story, Epic, and Subtask. A schema declaring one of those names
+  (the quickstart's `Bug` does) adopts the existing type into state on
+  `upgrade` rather than failing on a duplicate-name create. Names are matched
+  exactly, so `Bug` and `bug` are distinct.
+- **Autogenerate needs a clean migration head.** `revision --autogenerate`
+  diffs against the state file, which only advances on `upgrade`/`stamp`. With
+  unapplied migrations pending it refuses rather than restating them; apply
+  first, or pass `--force`.
 
 ## License
 
