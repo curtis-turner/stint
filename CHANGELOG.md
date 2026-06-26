@@ -6,6 +6,8 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0a2] - 2026-06-26
+
 ### Changed
 - **Require Python 3.14+** (`requires-python = ">=3.14"`). stint depends on
   PEP 649 deferred annotation evaluation — the default from 3.14 — so the
