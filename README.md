@@ -244,6 +244,27 @@ stint history    List migrations in revision order.
 stint validate   Run schema-level checks on a Python schema module.
 ```
 
+## State files
+
+Each env has a state file (`state/<env>.yaml`) mapping schema aliases to Jira
+object IDs, plus the current migration revision. **Commit it.** It is the
+shared source of truth for a tenant, and it is not sensitive: it holds object
+IDs, the tenant URL, and a revision pointer — no credentials, tokens, issue
+data, or PII. Secrets stay in environment variables (`STINT_TOKEN` /
+`STINT_USER`); they never touch the state file. This is unlike Terraform state,
+which can embed secrets and warrants an encrypted backend.
+
+- **Rebuildable.** Lose or corrupt a state file and `stint stamp` reflects the
+  tenant and reconstructs the ID mapping by name/key. Only the revision pointer
+  is not auto-derived; set it with `stamp --revision <rev>`.
+- **The lock is local.** `stint upgrade` takes an advisory `<state>.lock` on
+  the local filesystem. It serializes applies on one machine, not across
+  teammates or CI on different machines.
+- **Coordinate writers.** Two people running `upgrade` against the same tenant
+  at once can double-apply ops and diverge the state file. The simplest safe
+  pattern is to **apply from CI on `main`**, so applies serialize and the
+  committed state stays canonical. Cross-machine locking is tracked in #12.
+
 ## Caveats
 
 - **No transactions across or within migrations.** Jira admin REST does
