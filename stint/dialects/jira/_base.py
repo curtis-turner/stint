@@ -210,6 +210,7 @@ class JiraDialectBase:
     # ── Screens ──────────────────────────────────────────────────────
     async def _reflect_screens(self) -> dict[str, ScreenSnapshot]:
         screens: dict[str, ScreenSnapshot] = {}
+        skipped: list[str] = []
         async for entry in common.paginate(self.client, f"{self.api_root}/screens"):
             header = common.parse_screen_header(entry)
             try:
@@ -218,14 +219,11 @@ class JiraDialectBase:
                 # Cloud tenants with team-managed projects expose synthetic
                 # screens in /screens whose /tabs endpoint returns 400
                 # "Screen with id N does not exist". TMP does not use the
-                # screens system; skip and warn.
+                # screens system, and these are never stint-managed. Collect
+                # them and emit one summary instead of a per-screen warning
+                # that buries the real output (a busy tenant has dozens).
                 if e.status_code == 400:
-                    warnings.warn(
-                        f"skipping screen {header.id} ({header.name!r}): "
-                        f"tabs lookup returned 400. Likely a team-managed "
-                        f"project's synthetic screen.",
-                        stacklevel=2,
-                    )
+                    skipped.append(f"{header.id} ({header.name!r})")
                     continue
                 raise
             screens[header.id] = ScreenSnapshot(
@@ -233,6 +231,13 @@ class JiraDialectBase:
                 name=header.name,
                 description=header.description,
                 tabs=tuple(tabs),
+            )
+        if skipped:
+            warnings.warn(
+                f"reflection skipped {len(skipped)} team-managed synthetic "
+                f"screen(s) (their /tabs endpoint returns 400; not "
+                f"stint-managed): {', '.join(skipped)}",
+                stacklevel=2,
             )
         return screens
 
@@ -758,13 +763,13 @@ class JiraDialectBase:
     async def find_issuetype_id_by_name(self, name: str) -> str | None:
         """Return the id of an existing issue type with this exact name, else None.
 
-        Jira issue-type names are globally unique, so a name match is an
-        unambiguous identity. ``create_issuetype`` uses this to adopt Jira's
-        built-in types (Bug, Task, Story, Epic, Subtask) instead of 409-ing on
-        a duplicate create against any real tenant (#8).
+        Only global issue types are considered. Names are unique among global
+        types, but a tenant with team-managed projects also exposes same-named
+        project-scoped types in ``/issuetype``; those cannot be managed through
+        the global endpoints, so matching one would 400 at apply time. (#8)
         """
         for it in (await self._reflect_issuetypes()).values():
-            if it.name == name:
+            if it.name == name and not it.project_scoped:
                 return it.id
         return None
 

@@ -31,12 +31,20 @@ class CustomFieldSnapshot:
 
 @dataclass(frozen=True)
 class IssueTypeSnapshot:
-    """A Jira global issuetype (DC/CMP) or project-scoped issuetype (TMP)."""
+    """A Jira global issuetype (DC/CMP) or project-scoped issuetype (TMP).
+
+    ``project_scoped`` is True for team-managed (next-gen) issue types, which
+    Jira's ``scope`` field marks ``PROJECT``. They cannot be managed through the
+    global ``/issuetype`` endpoints, and a tenant can hold several same-named
+    project-scoped types (one per TMP project) alongside the global one, so
+    name-matching must ignore them.
+    """
 
     id: str
     name: str
     description: str = ""
     subtask: bool = False
+    project_scoped: bool = False
 
 
 @dataclass(frozen=True)

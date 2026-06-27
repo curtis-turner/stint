@@ -6,7 +6,33 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `examples/README.md`: a runnable end-to-end walkthrough (validate → stamp →
+  autogenerate → upgrade) against a real Jira Cloud tenant, plus a committed
+  env-config template `examples/devel.env.example.yaml` to copy into `.stint/`.
+
 ### Fixed
+- Issue-type matching now considers **only global** issue types. A tenant with
+  team-managed projects exposes same-named project-scoped types in
+  `/issuetype`; `stamp` and `create_issuetype` could record one of those, and a
+  later global update failed with `not a global issue type`. The reflected
+  snapshot now carries `project_scoped` (from Jira's `scope`), and matching
+  ignores project-scoped types. (Full CMP/TMP style-aware scoping tracked in
+  #11.)
+- `stamp` now adopts **issue type schemes** (it previously skipped them), so a
+  clean stamp no longer leaves autogenerate re-emitting `create_issuetype_scheme`.
+- `revision --autogenerate` no longer emits an `update_project` lead change on
+  every run. The schema declares `__lead__` as an email but the snapshot
+  reports an accountId, so the two were never comparable. Lead drift on an
+  existing project is not auto-detected; set it on create or via a hand-written
+  migration. (#7 follow-up)
+- The CLI prints domain errors (transport, auth, config) as a single `ERROR:`
+  line on stderr with exit 1, instead of dumping a Python traceback.
+- Reflection collapses skipped team-managed synthetic screens into **one**
+  consolidated warning instead of one per screen (a busy tenant produced dozens).
+- A dotted `--schema` path (e.g. `schemas.platform`) now resolves from the
+  working directory under the installed `stint` console script, matching the
+  documented quickstart.
 - `create_issuetype` now adopts an existing same-named issue type instead of
   POSTing a duplicate. Every Jira tenant ships built-in types (Bug, Task,
   Story, Epic, Subtask) and enforces globally-unique names, so a greenfield

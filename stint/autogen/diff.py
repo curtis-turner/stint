@@ -846,15 +846,15 @@ def _diff_projects(
                 f"conversion via REST; align the schema or recreate the project."
             )
         name_change = want.name if actual.name != want.name else None
-        lead_change = want.lead if want.lead and actual.lead != want.lead else None
-        if name_change is not None or lead_change is not None:
-            r.changes.append(
-                UpdateProject(
-                    alias=alias,
-                    name=name_change,
-                    lead=lead_change,
-                )
-            )
+        # Lead drift is intentionally NOT auto-detected on existing projects.
+        # The schema declares __lead__ as an email, but the reflected snapshot
+        # reports the backend identity (accountId on Cloud, username on DC).
+        # The two are never directly comparable, so comparing them would emit an
+        # UpdateProject lead change on every autogenerate run forever. Lead is
+        # still applied on project creation; change an existing project's lead
+        # with a hand-written migration. (#7 follow-up)
+        if name_change is not None:
+            r.changes.append(UpdateProject(alias=alias, name=name_change))
         # Scheme rebinds when the project's actual binding drifts from desired.
         # Skip when the desired scheme alias isn't yet in state — the create-
         # side change emits the binding for newly-created schemes.

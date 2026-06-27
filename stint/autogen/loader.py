@@ -29,6 +29,13 @@ def load_schema_module(target: str) -> ModuleType:
     p = Path(target)
     if p.exists() and p.is_file():
         return _import_file(p)
+    # The installed `stint` console script puts the venv bin dir on sys.path[0],
+    # not the working directory, so a dotted path like "schemas.platform" fails
+    # to import even when run from the project root. Add cwd so dotted schema
+    # paths resolve the way the docs show them.
+    cwd = str(Path.cwd())
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
     try:
         return importlib.import_module(target)
     except ImportError as e:

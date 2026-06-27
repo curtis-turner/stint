@@ -94,6 +94,19 @@ def test_reflect_json_output(monkeypatch, capsys):
     assert parsed["server_info"]["deployment_type"] == "Server"
 
 
+@respx.mock
+def test_domain_error_prints_clean_message_not_traceback(monkeypatch, capsys):
+    """A backend error surfaces as one 'ERROR:' line with exit 1, not a Python
+    traceback dumped at the user."""
+    respx.get(f"{CLOUD_ROOT}/serverInfo").mock(return_value=httpx.Response(500, text="kaboom"))
+    monkeypatch.setenv("STINT_TOKEN", "test-pat")
+    rc = main(["reflect", "--url", f"jira_cloud+{BASE}", "--auth", "pat"])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert captured.err.startswith("ERROR: ")
+    assert "Traceback" not in captured.err and "Traceback" not in captured.out
+
+
 def test_reflect_missing_pat_env_exits(monkeypatch):
     monkeypatch.delenv("STINT_TOKEN", raising=False)
     with pytest.raises(SystemExit) as exc:

@@ -483,7 +483,7 @@ async def test_reflect_skips_screens_whose_tabs_endpoint_returns_400():
     cumulusec.atlassian.net: screen 10000 ("EMAL: Simple Default Issue
     Screen") is listed but its tabs lookup returns
     {"errorMessages":["Screen with id 10000 does not exist"]}. The reflect
-    must not crash; the bad screen is skipped with a warning."""
+    must not crash; the bad screen is skipped with one consolidated warning."""
     _stub_empty_admin(respx.mock)
     respx.get(f"{CLOUD_ROOT}/screens").mock(
         return_value=httpx.Response(
@@ -500,10 +500,14 @@ async def test_reflect_skips_screens_whose_tabs_endpoint_returns_400():
     respx.get(f"{CLOUD_ROOT}/screens/10000/tabs").mock(
         return_value=httpx.Response(400, json={"errorMessages": ["Screen with id 10000 does not exist"], "errors": {}})
     )
-    with pytest.warns(UserWarning, match="skipping screen 10000"):
+    with pytest.warns(UserWarning, match="synthetic screen") as record:
         async with _cloud_engine() as eng:
             snap = await eng.reflect()
     assert set(snap.screens) == {"1"}
+    # One consolidated warning naming the skipped screen, not one per screen.
+    messages = [str(w.message) for w in record if "synthetic screen" in str(w.message)]
+    assert len(messages) == 1
+    assert "10000" in messages[0]
 
 
 # ── reflect(): issuetype schemes ─────────────────────────────────────

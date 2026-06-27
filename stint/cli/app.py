@@ -9,9 +9,12 @@ as plain ints rather than triggering ``sys.exit``.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Sequence
 
 from cyclopts import App
+
+from stint.exceptions import StintError
 
 app = App(
     name="stint",
@@ -20,6 +23,17 @@ app = App(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Entry point. Returns the command's int exit code."""
-    rc = app(argv, result_action="return_value")
+    """Entry point. Returns the command's int exit code.
+
+    Domain errors (StintError and subclasses — transport, auth, config,
+    reflection, ...) are reported as a single clean line on stderr instead of a
+    Python traceback. Unexpected errors still propagate with a traceback so
+    bugs stay debuggable. A migration that fails mid-apply leaves Jira in a
+    partial state (no transactions); re-running resumes where it stopped.
+    """
+    try:
+        rc = app(argv, result_action="return_value")
+    except StintError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
     return int(rc) if rc is not None else 0

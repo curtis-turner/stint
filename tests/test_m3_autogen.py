@@ -381,6 +381,40 @@ def test_diff_skips_set_scheme_when_desired_alias_not_yet_in_state():
     assert "SetProjectFieldConfigurationScheme" not in kinds
 
 
+def test_diff_does_not_emit_lead_update_for_existing_project():
+    """Lead drift on an existing project is not auto-detected: the schema lead
+    is an email, the snapshot lead is an accountId, so comparing them would emit
+    an UpdateProject on every run forever. (#7 follow-up)"""
+    import examples.platform  # noqa: F401
+    from stint.state.file import ProjectMapping, SimpleMapping
+    from stint.state.snapshot import ProjectSnapshot
+
+    desired = build_desired_snapshot()
+    state = StateFile(env="dev", jira_url="x")
+    state.projects["PLAT"] = ProjectMapping(id="p-1", key="PLAT")
+    state.issuetype_schemes["PLAT_its"] = SimpleMapping(id="its-1")
+    state.issuetype_screen_schemes["PLAT_itss"] = SimpleMapping(id="itss-1")
+    state.field_configuration_schemes["PLAT_fcs"] = SimpleMapping(id="fcs-1")
+    snapshot = Snapshot(
+        server_info=ServerInfoSnapshot(deployment_type="Server", version="9", base_url="x"),
+        projects={
+            "PLAT": ProjectSnapshot(
+                id="p-1",
+                key="PLAT",
+                name="Platform",
+                lead="557058:0000-aaaa",  # accountId, not the schema's email
+                project_type_key="software",
+                style="classic",
+                issuetype_scheme_id="its-1",
+                issuetype_screen_scheme_id="itss-1",
+                field_configuration_scheme_id="fcs-1",
+            ),
+        },
+    )
+    result = diff(desired=desired, snapshot=snapshot, state=state, allow_delete=False)
+    assert "UpdateProject" not in {type(c).__name__ for c in result.changes}
+
+
 # ── Sort ─────────────────────────────────────────────────────────────
 def test_sort_orders_phases_correctly():
     """A jumbled change list comes out phase-ordered: fields before screens,

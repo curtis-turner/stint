@@ -64,6 +64,7 @@ def stamp(
     _stamp_screens(state, snapshot, desired, report)
     _stamp_screen_schemes(state, snapshot, desired, report)
     _stamp_field_configurations(state, snapshot, desired, report)
+    _stamp_issuetype_schemes(state, snapshot, desired, report)
     _stamp_itss(state, snapshot, desired, report)
     _stamp_fcs(state, snapshot, desired, report)
     _stamp_projects(state, snapshot, desired, report)
@@ -96,7 +97,10 @@ def _stamp_custom_fields(state, snapshot, desired, report) -> None:
 
 # ── Issue types ──────────────────────────────────────────────────────
 def _stamp_issuetypes(state, snapshot, desired, report) -> None:
-    by_name = {it.name: it for it in snapshot.issuetypes.values()}
+    # Only global issue types are adoptable. A tenant with team-managed projects
+    # also lists same-named project-scoped types in the snapshot; matching one
+    # would record an id that 400s on any global update. (#8)
+    by_name = {it.name: it for it in snapshot.issuetypes.values() if not it.project_scoped}
     for alias, want in desired.issuetypes.items():
         match = by_name.get(want.name)
         if match is None:
@@ -185,6 +189,29 @@ def _stamp_field_configurations(state, snapshot, desired, report) -> None:
             continue
         state.field_configurations[alias] = SimpleMapping(id=match.id)
         report.matched.append(("field_configuration", alias, match.id))
+
+
+# ── Issue type schemes ───────────────────────────────────────────────
+def _stamp_issuetype_schemes(state, snapshot, desired, report) -> None:
+    by_name = {s.name: s for s in snapshot.issuetype_schemes.values()}
+    for alias, want in desired.issuetype_schemes.items():
+        match = by_name.get(want.name)
+        if match is None:
+            report.unmatched.append(("issuetype_scheme", alias))
+            continue
+        if alias in state.issuetype_schemes:
+            existing = state.issuetype_schemes[alias]
+            if existing.id != match.id:
+                report.skipped.append(
+                    (
+                        "issuetype_scheme",
+                        alias,
+                        f"state already maps to {existing.id!r}, Jira has {match.id!r}",
+                    )
+                )
+            continue
+        state.issuetype_schemes[alias] = SimpleMapping(id=match.id)
+        report.matched.append(("issuetype_scheme", alias, match.id))
 
 
 # ── ITSS ─────────────────────────────────────────────────────────────

@@ -107,11 +107,13 @@ def parse_field_options(payloads: list[dict[str, Any]]) -> dict[str, str]:
 
 # ── Issue types ───────────────────────────────────────────────────────
 def parse_issuetype(payload: dict[str, Any]) -> IssueTypeSnapshot:
+    scope = payload.get("scope") or {}
     return IssueTypeSnapshot(
         id=str(payload["id"]),
         name=str(payload.get("name", "")),
         description=str(payload.get("description", "")),
         subtask=bool(payload.get("subtask", False)),
+        project_scoped=scope.get("type") == "PROJECT",
     )
 
 

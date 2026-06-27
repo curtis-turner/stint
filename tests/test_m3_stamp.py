@@ -165,6 +165,44 @@ def test_stamp_matches_derived_itss_by_synthesized_name():
     assert ("issuetype_screen_scheme", "PLAT_itss", "itss-1") in report.matched
 
 
+def test_stamp_issuetype_ignores_project_scoped_same_name():
+    """A team-managed project-scoped issue type with the schema's name must be
+    ignored; stamp records the global one so later global updates don't 400. (#8)"""
+    from stint.schema.issuetype import IssueType
+    from stint.state.snapshot import IssueTypeSnapshot
+
+    class Bug(IssueType):
+        __alias__ = "bug"
+
+    state = StateFile(env="dev", jira_url="x")
+    snap = _empty_snapshot()
+    # Global Bug first, project-scoped Bug second (dict-overwrite would pick the
+    # project-scoped one without the scope filter).
+    snap.issuetypes["10010"] = IssueTypeSnapshot(id="10010", name="Bug")
+    snap.issuetypes["10008"] = IssueTypeSnapshot(id="10008", name="Bug", project_scoped=True)
+    report = stamp(state, snap)
+    assert state.issuetypes["bug"].id == "10010"
+    assert ("issuetype", "bug", "10010") in report.matched
+
+
+def test_stamp_matches_derived_issuetype_scheme_by_synthesized_name():
+    """The derived IssueTypeScheme must be stamped too, else autogenerate keeps
+    re-emitting create_issuetype_scheme after a clean stamp."""
+    import examples.platform  # noqa: F401
+
+    state = StateFile(env="dev", jira_url="x")
+    snap = _empty_snapshot()
+    from stint.state.snapshot import IssueTypeSchemeSnapshot
+
+    snap.issuetype_schemes["its-1"] = IssueTypeSchemeSnapshot(
+        id="its-1",
+        name="PLAT Issue Type Scheme",
+    )
+    report = stamp(state, snap)
+    assert ("issuetype_scheme", "PLAT_its", "its-1") in report.matched
+    assert state.issuetype_schemes["PLAT_its"].id == "its-1"
+
+
 # ── CLI smoke ────────────────────────────────────────────────────────
 BASE = "https://jira.example.com"
 CLOUD_ROOT = f"{BASE}/rest/api/3"

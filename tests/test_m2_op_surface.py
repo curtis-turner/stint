@@ -553,6 +553,40 @@ async def test_create_issuetype_adopts_existing_by_name():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_create_issuetype_ignores_project_scoped_same_name():
+    """A team-managed (project-scoped) issue type with the same name must be
+    ignored; only the global type is adopted. Otherwise apply 400s on the
+    global endpoint with 'not a global issue type'. (#8)"""
+    respx.get(f"{CLOUD_ROOT}/issuetype").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                # Project-scoped Bug listed first, to prove order does not matter.
+                {
+                    "id": "10008",
+                    "name": "Bug",
+                    "subtask": False,
+                    "scope": {"type": "PROJECT", "project": {"id": "10001"}},
+                },
+                {"id": "10010", "name": "Bug", "subtask": False},  # global
+            ],
+        )
+    )
+    state = StateFile(env="dev", jira_url=BASE)
+    engine = _cloud_engine()
+    try:
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.create_issuetype(alias="bug", name="Bug"),
+        )
+    finally:
+        await engine.close()
+    assert state.issuetypes["bug"].id == "10010"  # global, not the project-scoped 10008
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_delete_issuetype():
     respx.delete(f"{CLOUD_ROOT}/issuetype/10010").mock(return_value=httpx.Response(204))
     state = StateFile(env="dev", jira_url=BASE)
