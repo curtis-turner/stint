@@ -77,7 +77,7 @@ async def reflect(
         user_env=user_env,
         no_verify_ssl=no_verify_ssl,
     )
-    require_resolved_connection(env=env, url=url, auth=auth)
+    url, auth = require_resolved_connection(env=env, url=url, auth=auth)
     auth_obj = _build_auth(auth, token_env, user_env)
     eng = create_engine(url, auth=auth_obj, dialect=dialect, verify_ssl=not no_verify_ssl)
     try:

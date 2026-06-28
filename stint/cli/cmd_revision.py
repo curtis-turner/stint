@@ -146,8 +146,8 @@ def _run_autogenerate(
     schema: str | None,
     state: str | None,
     url: str | None,
-    dialect: str | None,
-    auth: str | None,
+    dialect: DialectName | None,
+    auth: AuthMode | None,
     token_env: str | None,
     user_env: str | None,
     no_verify_ssl: bool,
@@ -162,11 +162,12 @@ def _run_autogenerate(
     from stint.engine import create_engine
     from stint.state.file import StateFile
 
-    required = {"schema": schema, "state": state, "env": env}
-    for name, value in required.items():
+    for name, value in (("schema", schema), ("state", state), ("env", env)):
         if not value:
             print(f"ERROR: --autogenerate requires --{name}")
             return 2
+    # Narrow for the type checker; the loop above already guaranteed each is set.
+    assert schema is not None and state is not None and env is not None
     url, auth, dialect, token_env, user_env, no_verify_ssl = resolve_connection(
         env=env,
         url=url,
@@ -176,7 +177,7 @@ def _run_autogenerate(
         user_env=user_env,
         no_verify_ssl=no_verify_ssl,
     )
-    require_resolved_connection(env=env, url=url, auth=auth)
+    url, auth = require_resolved_connection(env=env, url=url, auth=auth)
 
     mig_dir = Path(migrations_dir)
     state_path = Path(state)  # checked above

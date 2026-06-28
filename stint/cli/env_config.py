@@ -16,13 +16,32 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import yaml
 
 from stint.exceptions import ConfigurationError
 
 CONFIG_KEYS = ("url", "dialect", "auth", "token_env", "user_env", "verify_ssl")
+
+# Connection enums. Defined once here; CLI modules import these so the param
+# annotations and the resolved values share a single source of truth.
+AuthMode = Literal["pat", "basic", "api-token"]
+DialectName = Literal["jira_cloud"]
+
+_AUTH_MODES: tuple[AuthMode, ...] = ("pat", "basic", "api-token")
+_DIALECT_NAMES: tuple[DialectName, ...] = ("jira_cloud",)
+
+
+def _validate_literal[LiteralStr: str](
+    value: str | None, allowed: tuple[LiteralStr, ...], field: str
+) -> LiteralStr | None:
+    """Confirm a config-sourced string is one of `allowed`, narrowing to its type, else raise."""
+    if value is None:
+        return None
+    if value not in allowed:
+        raise ConfigurationError(f"invalid {field} {value!r}; expected one of {sorted(allowed)}")
+    return cast("LiteralStr", value)
 
 
 def find_env_config(env_name: str) -> Path | None:
@@ -69,13 +88,16 @@ def resolve_connection(
     *,
     env: str | None,
     url: str | None,
-    auth: str | None,
-    dialect: str | None,
+    auth: AuthMode | None,
+    dialect: DialectName | None,
     token_env: str | None,
     user_env: str | None,
     no_verify_ssl: bool,
-) -> tuple[str | None, str | None, str | None, str, str, bool]:
+) -> tuple[str | None, AuthMode | None, DialectName | None, str, str, bool]:
     """Merge env-config values for any connection params the caller did not set.
+
+    ``auth`` / ``dialect`` sourced from YAML are validated against their allowed
+    values, so a config typo raises instead of leaking an invalid string.
 
     ``token_env`` / ``user_env`` are returned as concrete strings (never None):
     the YAML value wins over the default when no CLI flag is set, but
@@ -87,9 +109,9 @@ def resolve_connection(
     if not url:
         url = cfg.get("url")
     if not auth:
-        auth = cfg.get("auth")
+        auth = _validate_literal(cfg.get("auth"), _AUTH_MODES, "auth")
     if not dialect:
-        dialect = cfg.get("dialect")
+        dialect = _validate_literal(cfg.get("dialect"), _DIALECT_NAMES, "dialect")
     if token_env is None:
         token_env = cfg.get("token_env") or "STINT_TOKEN"
     if user_env is None:
@@ -99,11 +121,16 @@ def resolve_connection(
     return url, auth, dialect, token_env, user_env, no_verify_ssl
 
 
-def require_resolved_connection(*, env: str | None, url: str | None, auth: str | None) -> None:
-    """Raise SystemExit listing the connection params that are still missing."""
+def require_resolved_connection(*, env: str | None, url: str | None, auth: AuthMode | None) -> tuple[str, AuthMode]:
+    """Return (url, auth) once both are present; raise SystemExit listing what is missing.
+
+    Returning the values lets callers rebind ``url, auth`` to their non-optional
+    types, so the connection params flow into ``create_engine`` / ``_build_auth``
+    without a separate None-check at each call site.
+    """
+    if url and auth:
+        return url, auth
     missing = [k for k, v in (("url", url), ("auth", auth)) if not v]
-    if not missing:
-        return
     label = env or "<env>"
     raise SystemExit(
         f"missing required connection params: {missing}. "

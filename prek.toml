@@ -1,4 +1,53 @@
+# prek config (https://prek.j178.dev). Drop-in for pre-commit, native Rust hooks.
+# Install the git hook once with: uv run prek install
+# Run against everything with:    uv run prek run --all-files
+
 [[repos]]
 repo = "https://github.com/pre-commit/pre-commit-hooks"
 rev = "v6.0.0"
-hooks = [{ id = "check-yaml" }, { id = "end-of-file-fixer" }]
+hooks = [
+  { id = "check-yaml" },
+  { id = "check-toml" },
+  { id = "check-merge-conflict" },
+  { id = "check-added-large-files" },
+  { id = "end-of-file-fixer" },
+  { id = "trailing-whitespace" },
+]
+
+# Local hooks run the project's own locked tools via uv, so the versions that
+# gate commits are exactly the ones in pyproject.toml / uv.lock. No drift
+# between the hook and `uv run ruff` / `uv run ty`.
+[[repos]]
+repo = "local"
+
+# Style: format Python with ruff.
+[[repos.hooks]]
+id = "ruff-format"
+name = "ruff format"
+language = "system"
+entry = "uv run ruff format"
+types = ["python"]
+require_serial = true
+
+# Lint: ruff check with autofix.
+[[repos.hooks]]
+id = "ruff-check"
+name = "ruff check"
+language = "system"
+entry = "uv run ruff check --fix"
+types = ["python"]
+require_serial = true
+
+# Strong typing: ty checks the stint/ package as a whole, so an edit in one
+# module catches breakage in another. Scoped to source (not tests/) because the
+# dynamic schema-as-code models in tests produce false unresolved-attribute
+# noise. pass_filenames = false keeps it package-wide; files limits the trigger
+# to source edits.
+[[repos.hooks]]
+id = "ty"
+name = "ty type check"
+language = "system"
+entry = "uv run ty check stint"
+files = "^stint/.*\\.py$"
+pass_filenames = false
+require_serial = true

@@ -39,10 +39,9 @@ from stint.query.payload import (
 )
 
 if TYPE_CHECKING:
-    from pydantic import BaseModel
-
     from stint.engine import Engine
     from stint.query.select import Select
+    from stint.schema.issuetype import IssueType
     from stint.state.file import StateFile
 
 
@@ -62,11 +61,11 @@ class AsyncSession:
     def __init__(self, engine: Engine, state: StateFile) -> None:
         self.engine = engine
         self.state = state
-        self._identity: dict[tuple[type, str], BaseModel] = {}
+        self._identity: dict[tuple[type, str], IssueType] = {}
         self._originals: dict[tuple[type, str], dict[str, Any]] = {}
-        self._pending_inserts: list[tuple[BaseModel, str]] = []
+        self._pending_inserts: list[tuple[IssueType, str]] = []
         # (instance, project_key) — project resolved at add time
-        self._pending_deletes: list[BaseModel] = []
+        self._pending_deletes: list[IssueType] = []
 
     async def __aenter__(self) -> AsyncSession:
         return self
@@ -76,10 +75,10 @@ class AsyncSession:
         return None
 
     # ── Reads ────────────────────────────────────────────────────────
-    async def scalars(self, stmt: Select) -> list[BaseModel]:
+    async def scalars(self, stmt: Select) -> list[IssueType]:
         jql = stmt.compile(self.state)
         fields = field_keys_for_model(stmt.model, self.state)
-        results: list[BaseModel] = []
+        results: list[IssueType] = []
         async for issue in self.engine.dialect.search(
             jql=jql,
             fields=fields,
@@ -92,9 +91,9 @@ class AsyncSession:
 
     async def get(
         self,
-        model: type[BaseModel],
+        model: type[IssueType],
         key: str,
-    ) -> BaseModel | None:
+    ) -> IssueType | None:
         cached = self._identity.get((model, key))
         if cached is not None:
             return cached
@@ -108,7 +107,7 @@ class AsyncSession:
         return self._hydrate_with_identity(model, issue)
 
     # ── Writes ───────────────────────────────────────────────────────
-    def add(self, instance: BaseModel, *, project: str | None = None) -> None:
+    def add(self, instance: IssueType, *, project: str | None = None) -> None:
         """Stage `instance` for insertion on the next commit.
 
         ``project`` is the Jira project key. If omitted, inferred from
@@ -124,7 +123,7 @@ class AsyncSession:
         project_key = project or _infer_project(instance)
         self._pending_inserts.append((instance, project_key))
 
-    def delete(self, instance: BaseModel) -> None:
+    def delete(self, instance: IssueType) -> None:
         """Stage `instance` for deletion on commit. Requires `instance.key`."""
         if not getattr(instance, "key", None):
             raise ConfigurationError("delete: instance has no `key`; cannot delete an unsaved issue.")
@@ -184,7 +183,7 @@ class AsyncSession:
                     is_cloud=is_cloud,
                     dirty=dirty,
                 )
-                await self.engine.dialect.update_issue(instance.key, body)
+                await self.engine.dialect.update_issue(key_tuple[1], body)
                 self._originals[key_tuple] = instance.model_dump()
                 results.append(
                     CommitResult(
@@ -205,9 +204,12 @@ class AsyncSession:
 
         # 3. Deletes
         for instance in self._pending_deletes:
+            key = instance.key
+            if key is None:  # guarded at delete(); defensive
+                continue
             try:
-                await self.engine.dialect.delete_issue(instance.key)
-                key_tuple = (type(instance), instance.key)
+                await self.engine.dialect.delete_issue(key)
+                key_tuple = (type(instance), key)
                 self._identity.pop(key_tuple, None)
                 self._originals.pop(key_tuple, None)
                 results.append(
@@ -235,9 +237,9 @@ class AsyncSession:
     # ── Helpers ──────────────────────────────────────────────────────
     def _hydrate_with_identity(
         self,
-        model: type[BaseModel],
+        model: type[IssueType],
         issue: dict[str, Any],
-    ) -> BaseModel:
+    ) -> IssueType:
         key = issue.get("key")
         if key is not None:
             cached = self._identity.get((model, key))
@@ -251,7 +253,7 @@ class AsyncSession:
 
     def _dirty_fields(
         self,
-        instance: BaseModel,
+        instance: IssueType,
         key_tuple: tuple[type, str],
     ) -> set[str]:
         baseline = self._originals.get(key_tuple)
@@ -264,7 +266,7 @@ class AsyncSession:
         return self.engine.dialect.name == "jira_cloud"
 
 
-def _infer_project(instance: BaseModel) -> str:
+def _infer_project(instance: IssueType) -> str:
     """Look up `instance.__class__.__projects__` set by ProjectMeta."""
     model = type(instance)
     projects = getattr(model, "__projects__", ())

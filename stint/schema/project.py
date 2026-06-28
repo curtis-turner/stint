@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel
 
@@ -24,8 +24,8 @@ class ProjectMeta(StintMeta):
         bases: tuple[type, ...],
         namespace: dict[str, Any],
         **kwargs: Any,
-    ) -> type:
-        cls = super().__new__(mcs, name, bases, namespace, **kwargs)
+    ) -> type[Project]:
+        cls = cast("type[Project]", super().__new__(mcs, name, bases, namespace, **kwargs))
         if name == "Project":
             return cls
 
@@ -90,5 +90,8 @@ class Project(BaseModel, metaclass=ProjectMeta):
     Cloud, TMP projects cannot reference reusable schemes (ScreenScheme,
     FieldConfiguration); stint rejects this combination at class-definition time.
     """
+
+    # Set by ProjectMeta after class creation; declared for the type checker.
+    __title__: ClassVar[str]
 
     _ALLOWED_STYLES: ClassVar[tuple[str, ...]] = _ALLOWED_STYLES

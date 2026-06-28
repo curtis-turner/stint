@@ -28,10 +28,9 @@ from typing import TYPE_CHECKING
 from stint.query.session import AsyncSession, CommitResult
 
 if TYPE_CHECKING:
-    from pydantic import BaseModel
-
     from stint.engine import Engine
     from stint.query.select import Select
+    from stint.schema.issuetype import IssueType
     from stint.state.file import StateFile
 
 
@@ -69,17 +68,17 @@ class Session:
         return self._async.state
 
     # ── Reads ────────────────────────────────────────────────────────
-    def get(self, model: type[BaseModel], key: str) -> BaseModel | None:
+    def get(self, model: type[IssueType], key: str) -> IssueType | None:
         return self._loop.run_until_complete(self._async.get(model, key))
 
-    def scalars(self, stmt: Select) -> list[BaseModel]:
+    def scalars(self, stmt: Select) -> list[IssueType]:
         return self._loop.run_until_complete(self._async.scalars(stmt))
 
     # ── Writes ───────────────────────────────────────────────────────
-    def add(self, instance: BaseModel, *, project: str | None = None) -> None:
+    def add(self, instance: IssueType, *, project: str | None = None) -> None:
         self._async.add(instance, project=project)
 
-    def delete(self, instance: BaseModel) -> None:
+    def delete(self, instance: IssueType) -> None:
         self._async.delete(instance)
 
     def commit(self) -> list[CommitResult]:

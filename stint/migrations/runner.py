@@ -17,11 +17,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from stint.engine import Engine
 from stint.migrations.base import Migration, RevisionGraph
 from stint.migrations.context import MigrationContext, reset_context, set_context
 from stint.state.file import StateFile
+
+Direction = Literal["upgrade", "downgrade"]
 
 
 async def upgrade(
@@ -146,13 +149,13 @@ async def _run_one(
     state: StateFile,
     migration: Migration,
     *,
-    direction: str,
+    direction: Direction,
     state_path: str | Path | None = None,
 ) -> None:
     ctx = MigrationContext(
         engine=engine,
         state=state,
-        direction=direction,  # type: ignore[arg-type]
+        direction=direction,
         state_path=state_path,
     )
     token = set_context(ctx)

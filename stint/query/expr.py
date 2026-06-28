@@ -65,10 +65,10 @@ class Column:
         return mapping.id
 
     # Comparison operators produce Expression nodes
-    def __eq__(self, other: Any) -> Expression:  # type: ignore[override]
+    def __eq__(self, other: Any) -> Expression:  # ty: ignore[invalid-method-override]
         return _Cmp(self, "=", other)
 
-    def __ne__(self, other: Any) -> Expression:  # type: ignore[override]
+    def __ne__(self, other: Any) -> Expression:  # ty: ignore[invalid-method-override]
         return _Cmp(self, "!=", other)
 
     def __lt__(self, other: Any) -> Expression:

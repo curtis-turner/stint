@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from stint.query.expr import Expression, _And
+from stint.query.expr import Column, Expression, _And
 
 if TYPE_CHECKING:
+    from stint.schema.issuetype import IssueType
     from stint.state.file import StateFile
 
 
@@ -15,11 +16,11 @@ if TYPE_CHECKING:
 class Select:
     """Buildable query. Compose with ``.where()``, run via ``session.scalars()``."""
 
-    model: type
+    model: type[IssueType]
     filters: list[Expression] = field(default_factory=list)
     limit_n: int | None = None
-    order_by_attrs: list[tuple[str, str]] = field(default_factory=list)
-    # [(jql_field_name, "ASC"|"DESC")] populated by order_by()
+    order_by_attrs: list[tuple[Column, str]] = field(default_factory=list)
+    # [(column, "ASC"|"DESC")] populated by order_by(); resolved to JQL at compile()
 
     def where(self, *exprs: Expression) -> Select:
         """Add AND-combined filters."""
@@ -30,17 +31,15 @@ class Select:
         self.limit_n = int(n)
         return self
 
-    def order_by(self, column, direction: str = "ASC") -> Select:
+    def order_by(self, column: Column, direction: str = "ASC") -> Select:
         """Sort. Direction is `ASC` or `DESC`. Multiple calls append."""
-        from stint.query.expr import Column
-
         if not isinstance(column, Column):
             raise TypeError(f"order_by expects a Column (e.g. Bug.c.created), got {type(column).__name__}")
         direction = direction.upper()
         if direction not in ("ASC", "DESC"):
             raise ValueError(f"order_by direction must be ASC or DESC, got {direction!r}")
         # Stash the column itself; resolution happens at compile time.
-        self.order_by_attrs.append((column, direction))  # type: ignore[arg-type]
+        self.order_by_attrs.append((column, direction))
         return self
 
     def compile(self, state: StateFile) -> str:
@@ -54,11 +53,11 @@ class Select:
         if self.order_by_attrs:
             obs = []
             for col, direction in self.order_by_attrs:
-                obs.append(f"{col.resolve_jql_field(state)} {direction}")  # type: ignore[union-attr]
+                obs.append(f"{col.resolve_jql_field(state)} {direction}")
             jql_parts.append("ORDER BY " + ", ".join(obs))
         return " ".join(jql_parts)
 
 
-def select(model: type) -> Select:
+def select(model: type[IssueType]) -> Select:
     """Begin a query against `model`."""
     return Select(model=model)

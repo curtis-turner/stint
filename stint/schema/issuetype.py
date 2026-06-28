@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import typing
 from types import NoneType, UnionType
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 
@@ -12,6 +12,9 @@ from stint.exceptions import ConfigurationError
 from stint.fields import CustomField, MultiSelectField, SelectField
 from stint.registry import registry
 from stint.schema._meta import StintMeta
+
+if typing.TYPE_CHECKING:
+    from stint.query.columns import Columns
 
 _SELECT_FIELD_TYPES: tuple[type, ...] = (SelectField, MultiSelectField)
 
@@ -25,8 +28,8 @@ class IssueTypeMeta(StintMeta):
         bases: tuple[type, ...],
         namespace: dict[str, Any],
         **kwargs: Any,
-    ) -> type:
-        cls = super().__new__(mcs, name, bases, namespace, **kwargs)
+    ) -> type[IssueType]:
+        cls = cast("type[IssueType]", super().__new__(mcs, name, bases, namespace, **kwargs))
         if name == "IssueType":
             return cls
         if not getattr(cls, "__alias__", None):
@@ -175,3 +178,14 @@ class IssueType(BaseModel, metaclass=IssueTypeMeta):
     Attributes without a CustomField in their Annotated metadata are treated
     as Jira system fields (``summary``, ``description``, ``reporter``, etc.).
     """
+
+    # Jira's issue key (e.g. "PROJ-123"). None until the issue is created;
+    # set on hydrate (reads) and after insert (writes). Skipped by payload
+    # builders and dirty tracking — Jira assigns it, never the client.
+    key: str | None = None
+
+    # Set by IssueTypeMeta after class creation. Declared so the type checker
+    # sees them; the metaclass populates the values.
+    __title__: typing.ClassVar[str]
+    __custom_field_map__: typing.ClassVar[dict[str, CustomField]]
+    c: typing.ClassVar[Columns]

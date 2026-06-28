@@ -54,7 +54,7 @@ async def upgrade(
         user_env=user_env,
         no_verify_ssl=no_verify_ssl,
     )
-    require_resolved_connection(env=env, url=url, auth=auth)
+    url, auth = require_resolved_connection(env=env, url=url, auth=auth)
     graph = load_migrations(migrations_dir)
     state_file = _load_or_init_state(state, env=env, jira_url=url)
     auth_obj = _build_auth(auth, token_env, user_env)
@@ -108,7 +108,7 @@ async def downgrade(
         user_env=user_env,
         no_verify_ssl=no_verify_ssl,
     )
-    require_resolved_connection(env=env, url=url, auth=auth)
+    url, auth = require_resolved_connection(env=env, url=url, auth=auth)
     graph = load_migrations(migrations_dir)
     state_file = _load_or_init_state(state, env=env, jira_url=url)
     auth_obj = _build_auth(auth, token_env, user_env)

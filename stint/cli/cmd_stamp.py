@@ -62,7 +62,7 @@ async def stamp(
         user_env=user_env,
         no_verify_ssl=no_verify_ssl,
     )
-    require_resolved_connection(env=env, url=url, auth=auth)
+    url, auth = require_resolved_connection(env=env, url=url, auth=auth)
     load_schema_module(schema)
     state_path = Path(state)
     state_file = StateFile.load(state_path) if state_path.exists() else StateFile(env=env, jira_url=url)

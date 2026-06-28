@@ -27,13 +27,12 @@ from stint.fields import (
 )
 
 if TYPE_CHECKING:
-    from pydantic import BaseModel
-
     from stint.fields import CustomField
+    from stint.schema.issuetype import IssueType
     from stint.state.file import StateFile
 
 
-def field_keys_for_model(model: type[BaseModel], state: StateFile) -> list[str]:
+def field_keys_for_model(model: type[IssueType], state: StateFile) -> list[str]:
     """Compute the Jira field keys to request when fetching this model.
 
     For each Pydantic attribute, returns either the Jira system field name
@@ -58,10 +57,10 @@ def field_keys_for_model(model: type[BaseModel], state: StateFile) -> list[str]:
 
 
 def hydrate(
-    model: type[BaseModel],
+    model: type[IssueType],
     issue: dict[str, Any],
     state: StateFile,
-) -> BaseModel:
+) -> IssueType:
     """Construct a model instance from a Jira issue payload.
 
     Unknown fields and missing-in-payload fields fall back to the Pydantic
