@@ -73,7 +73,6 @@ dev = [
   "pytest-cov>=4.0",
   "respx>=0.20",
   "ruff>=0.15.14",
-  "mypy>=1.0",
   "types-PyYAML>=6.0",
   "ty>=0.0.55",
 ]
