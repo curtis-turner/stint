@@ -117,7 +117,6 @@ class Bug(IssueType):
     __screen_scheme__ = bug_screens
     __field_configuration__ = bug_fields
 
-    key: str | None = None
     summary: str
     reporter: str
     severity: Annotated[Literal["S1", "S2", "S3", "S4"], severity_field]
