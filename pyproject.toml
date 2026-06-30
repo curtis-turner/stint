@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stint"
-version = "0.1.0a2"
+version = "0.1.0"
 description = "Declarative schema-as-code and ORM for work-management systems. Jira first, dialect protocol for the rest."
 readme = "README.md"
 license = { text = "MIT" }
