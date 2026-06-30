@@ -1,17 +1,37 @@
 name: Publish
 
-# Build once on a published GitHub release, then route by channel:
+# Re-run the full quality gate against the tagged commit, then build once on a
+# published GitHub release and route by channel:
 #   - pre-release (PEP 440 aN/bN/rcN/.devN tag, or the GitHub "pre-release"
 #     checkbox) -> TestPyPI dry run only.
 #   - final release -> PyPI prod only.
-# Both uploads use OIDC trusted publishing, so no API tokens are stored. See
-# the trusted-publisher registration steps in .github/workflows/README.md.
+# Both uploads use OIDC trusted publishing, so no API tokens are stored. Prod
+# PyPI additionally goes through the `pypi` environment, which requires a manual
+# approval before upload. See the trusted-publisher registration steps in
+# .github/workflows/README.md.
 
 on:
   release:
     types: [published]
 
 jobs:
+  # Gate the release on the same checks CI runs, against the tagged commit, so
+  # a release cut from a red commit never ships. build depends on it, so both
+  # publish jobs inherit the dependency.
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --all-extras --dev
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - run: uv run ty check
+      - run: uv run pytest
+
   classify:
     runs-on: ubuntu-latest
     outputs:
@@ -29,6 +49,7 @@ jobs:
           fi
 
   build:
+    needs: [gate]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

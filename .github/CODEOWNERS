@@ -1,0 +1,4 @@
+# Default owner for everything in the repo. Auto-requests review on PRs.
+# Branch protection does not require approval (solo maintainer), but this
+# keeps ownership explicit and ready if more maintainers join.
+* @curtis-turner
