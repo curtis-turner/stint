@@ -64,7 +64,6 @@ def test_validate_by_file_path_works(tmp_path, capsys):
             __screen_scheme__ = scheme
             __field_configuration__ = fc
 
-            key: str | None = None
             summary: str
             sev: Annotated[Literal["A", "B"], sev]
 
@@ -133,7 +132,6 @@ def test_validate_surfaces_metaclass_configuration_error(tmp_path, capsys):
             __screen_scheme__ = scheme
             __field_configuration__ = fc
 
-            key: str | None = None
             summary: str
             sev: Annotated[Literal["A"], sev]
 

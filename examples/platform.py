@@ -102,7 +102,6 @@ class Bug(IssueType):
 
     # Pydantic-typed fields. System fields are bare annotations. Custom fields
     # use Annotated[T, custom_field_obj] so the schema plane can find them.
-    key: str | None = None
     summary: str
     description: str | None = None
     reporter: str
