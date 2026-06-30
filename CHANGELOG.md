@@ -6,6 +6,8 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-06-30
+
 ### Added
 - `examples/README.md`: a runnable end-to-end walkthrough (validate → stamp →
   autogenerate → upgrade) against a real Jira Cloud tenant, plus a committed

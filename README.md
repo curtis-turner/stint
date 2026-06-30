@@ -36,11 +36,11 @@ CI applies that file to staging, then production, from the same source. A
 bad change rolls back to a known revision. The schema lives in your repo
 next to the code that depends on it.
 
-Status: alpha (`0.1.0a0`). API may shift before `0.1.0` final.
+Status: `0.1.0`, the first release. Validated against a live Jira Cloud
+tenant. The API may still change within `0.x`.
 
 **Primary target: Jira Cloud**, covering both company-managed and
-team-managed projects. Live-instance validation against a real Cloud
-tenant is the gating work for `0.1.0` final.
+team-managed projects, validated against a real Cloud tenant for `0.1.0`.
 
 **Jira Data Center is out of scope, not on the roadmap.** An audit against
 Atlassian's official OpenAPI specs found that ~17 of the admin endpoints
@@ -211,7 +211,7 @@ plus `await` on the I/O methods.
 ## What ships in 0.1
 
 - **Jira Cloud (only target in 0.1)**: company-managed and team-managed
-  projects. Live-tenant smoke is the gating work for `0.1.0` final.
+  projects, validated against a live Cloud tenant.
 - Schema plane: custom fields, screens, screen schemes, issue type
   screen schemes, field configurations, field configuration schemes,
   issue types, projects.
