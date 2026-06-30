@@ -421,7 +421,7 @@ def test_shadowed_customfield_name_raises_helpful_error():
         class ShadowIT(IssueType):
             __alias__ = "sev_shadow_it"
 
-            sev: Annotated[Literal["A", "B"], sev]
+            sev: Annotated[Literal["A", "B"], sev]  # ty: ignore[unresolved-reference]
 
     msg = str(excinfo.value)
     assert "shadow" in msg.lower() or "forwardref" in msg.lower() or "_field" in msg or "_cf" in msg

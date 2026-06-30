@@ -29,7 +29,7 @@ def _cloud_engine() -> Engine:
 async def _run_in_ctx(
     engine: Engine,
     state: StateFile,
-    body: Callable[[], Awaitable[None]],
+    body: Callable[[], Awaitable[object]],
     *,
     state_path: Path | None = None,
 ) -> None:

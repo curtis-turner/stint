@@ -189,3 +189,5 @@ class IssueType(BaseModel, metaclass=IssueTypeMeta):
     __title__: typing.ClassVar[str]
     __custom_field_map__: typing.ClassVar[dict[str, CustomField]]
     c: typing.ClassVar[Columns]
+    # Project keys that include this issuetype; appended by ProjectMeta.
+    __projects__: typing.ClassVar[tuple[str, ...]] = ()

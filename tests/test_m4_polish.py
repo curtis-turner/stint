@@ -45,7 +45,7 @@ def _engine() -> Engine:
 async def _in_ctx(
     engine: Engine,
     state: StateFile,
-    body: Callable[[], Awaitable[None]],
+    body: Callable[[], Awaitable[object]],
 ) -> None:
     ctx = MigrationContext(engine=engine, state=state, direction="upgrade")
     token = set_context(ctx)

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from stint import StateFile, StateFileCorruptError
-from stint.state.file import CustomFieldMapping, ScreenMapping, SimpleMapping
+from stint.state.file import CustomFieldMapping, ProjectMapping, ScreenMapping, SimpleMapping
 
 
 def test_state_file_roundtrip_yaml():
@@ -88,7 +88,7 @@ def test_full_state_file_roundtrip():
             ),
         },
         issuetypes={"bug": SimpleMapping(id="10001")},
-        projects={"PLAT": SimpleMapping(id="10000")},
+        projects={"PLAT": ProjectMapping(id="10000")},
         screens={
             "bug_create": ScreenMapping(id="10100", tab_ids={"Field Tab": "11000"}),
         },

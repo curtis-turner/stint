@@ -68,10 +68,10 @@ class Session:
         return self._async.state
 
     # ── Reads ────────────────────────────────────────────────────────
-    def get(self, model: type[IssueType], key: str) -> IssueType | None:
+    def get[M: IssueType](self, model: type[M], key: str) -> M | None:
         return self._loop.run_until_complete(self._async.get(model, key))
 
-    def scalars(self, stmt: Select) -> list[IssueType]:
+    def scalars[M: IssueType](self, stmt: Select[M]) -> list[M]:
         return self._loop.run_until_complete(self._async.scalars(stmt))
 
     # ── Writes ───────────────────────────────────────────────────────

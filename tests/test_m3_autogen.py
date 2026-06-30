@@ -8,6 +8,7 @@ from stint import StateFile
 from stint.autogen.desired import build_desired_snapshot
 from stint.autogen.diff import (
     AddCustomFieldOption,
+    Change,
     CreateCustomField,
     CreateIssueTypeScreenScheme,
     CreateProject,
@@ -419,7 +420,7 @@ def test_diff_does_not_emit_lead_update_for_existing_project():
 def test_sort_orders_phases_correctly():
     """A jumbled change list comes out phase-ordered: fields before screens,
     screens before screen schemes, schemes before projects, project bindings last."""
-    changes = [
+    changes: list[Change] = [
         SetProjectIssueTypeScreenScheme(project_alias="p", scheme_alias="i"),
         CreateProject(
             alias="p",
@@ -466,7 +467,7 @@ def test_sort_orders_phases_correctly():
 # ── Emit: generated file is loadable ─────────────────────────────────
 def test_emit_generated_file_loads_via_migration_loader(tmp_path):
     """The full pipeline produces a file the migration loader accepts."""
-    changes = [
+    changes: list[Change] = [
         CreateCustomField(
             alias="bug_severity",
             name="Severity",

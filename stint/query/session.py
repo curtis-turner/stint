@@ -29,7 +29,7 @@ Successful work is NOT rolled back (Jira admin REST has no transactions).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from stint.exceptions import ConfigurationError, PartialCommitError
 from stint.query.hydrate import field_keys_for_model, hydrate
@@ -75,10 +75,10 @@ class AsyncSession:
         return None
 
     # ── Reads ────────────────────────────────────────────────────────
-    async def scalars(self, stmt: Select) -> list[IssueType]:
+    async def scalars[M: IssueType](self, stmt: Select[M]) -> list[M]:
         jql = stmt.compile(self.state)
         fields = field_keys_for_model(stmt.model, self.state)
-        results: list[IssueType] = []
+        results: list[M] = []
         async for issue in self.engine.dialect.search(
             jql=jql,
             fields=fields,
@@ -89,12 +89,12 @@ class AsyncSession:
                 break
         return results
 
-    async def get(
+    async def get[M: IssueType](
         self,
-        model: type[IssueType],
+        model: type[M],
         key: str,
-    ) -> IssueType | None:
-        cached = self._identity.get((model, key))
+    ) -> M | None:
+        cached = cast("M | None", self._identity.get((model, key)))
         if cached is not None:
             return cached
         from stint.exceptions import NotFoundError
@@ -235,14 +235,14 @@ class AsyncSession:
         return results
 
     # ── Helpers ──────────────────────────────────────────────────────
-    def _hydrate_with_identity(
+    def _hydrate_with_identity[M: IssueType](
         self,
-        model: type[IssueType],
+        model: type[M],
         issue: dict[str, Any],
-    ) -> IssueType:
+    ) -> M:
         key = issue.get("key")
         if key is not None:
-            cached = self._identity.get((model, key))
+            cached = cast("M | None", self._identity.get((model, key)))
             if cached is not None:
                 return cached
         instance = hydrate(model, issue, self.state)

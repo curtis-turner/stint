@@ -97,6 +97,7 @@ def test_revision_merge_writes_tuple_down_revision(tmp_path, capsys):
     assert rc == 0
     graph = load_migrations(mig_dir)
     merge = next(m for m in graph.by_revision.values() if m.down_revision and isinstance(m.down_revision, tuple))
+    assert isinstance(merge.down_revision, tuple)
     assert set(merge.down_revision) == {"a_rev", "b_rev"}
 
 

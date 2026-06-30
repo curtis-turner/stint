@@ -223,6 +223,7 @@ def test_session_dirty_update_commits_only_changed_fields():
 
     with Session(_cloud_engine(), _platform_state()) as session:
         bug = session.get(p.Bug, "PLAT-1")
+        assert bug is not None
         bug.severity = "S1"
         session.commit()
 

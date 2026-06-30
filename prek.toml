@@ -38,16 +38,14 @@ entry = "uv run ruff check --fix"
 types = ["python"]
 require_serial = true
 
-# Strong typing: ty checks the stint/ package as a whole, so an edit in one
-# module catches breakage in another. Scoped to source (not tests/) because the
-# dynamic schema-as-code models in tests produce false unresolved-attribute
-# noise. pass_filenames = false keeps it package-wide; files limits the trigger
-# to source edits.
+# Strong typing: ty checks the whole project (stint/ + tests/), so an edit in
+# one module catches breakage in another. pass_filenames = false keeps it
+# project-wide; any .py edit triggers it.
 [[repos.hooks]]
 id = "ty"
 name = "ty type check"
 language = "system"
-entry = "uv run ty check stint"
-files = "^stint/.*\\.py$"
+entry = "uv run ty check"
+files = "\\.py$"
 pass_filenames = false
 require_serial = true

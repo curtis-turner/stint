@@ -322,6 +322,7 @@ async def test_dirty_tracking_emits_minimal_put():
     async with AsyncSession(engine, state) as session:
         try:
             bug = await session.get(p.Bug, "PLAT-1")
+            assert bug is not None
             bug.severity = "S3"
             await session.commit()
         finally:
@@ -389,6 +390,7 @@ async def test_commit_delete_calls_dialect():
     async with AsyncSession(engine, state) as session:
         try:
             bug = await session.get(p.Bug, "PLAT-1")
+            assert bug is not None
             session.delete(bug)
             results = await session.commit()
         finally:

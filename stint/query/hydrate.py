@@ -56,11 +56,11 @@ def field_keys_for_model(model: type[IssueType], state: StateFile) -> list[str]:
     return keys
 
 
-def hydrate(
-    model: type[IssueType],
+def hydrate[M: IssueType](
+    model: type[M],
     issue: dict[str, Any],
     state: StateFile,
-) -> IssueType:
+) -> M:
     """Construct a model instance from a Jira issue payload.
 
     Unknown fields and missing-in-payload fields fall back to the Pydantic
