@@ -409,19 +409,27 @@ def test_text_field_skips_options_check():
 
 def test_shadowed_customfield_name_raises_helpful_error():
     """When the CustomField shares a Python name with the class attribute, the
-    metaclass detects the resulting ForwardRef metadata and explains the fix."""
+    definition is rejected.
+
+    On Python 3.14+ (PEP 649 deferred annotations) pydantic hands the metaclass
+    a ForwardRef, so stint raises a curated ConfigurationError pointing at the
+    fix. On < 3.14 the unresolved name surfaces as a NameError during model
+    construction instead -- still rejected, just without the tailored guidance.
+    """
     sev = CustomField(  # noqa: F841 - intentionally same name as the attr
         alias="sev_shadow",
         name="Sev",
         type=SelectField,
         options=["A", "B"],
     )
-    with pytest.raises(ConfigurationError) as excinfo:
+    curated = sys.version_info >= (3, 14)
+    with pytest.raises(ConfigurationError if curated else NameError) as excinfo:
 
         class ShadowIT(IssueType):
             __alias__ = "sev_shadow_it"
 
             sev: Annotated[Literal["A", "B"], sev]  # ty: ignore[unresolved-reference]
 
-    msg = str(excinfo.value)
-    assert "shadow" in msg.lower() or "forwardref" in msg.lower() or "_field" in msg or "_cf" in msg
+    if curated:
+        msg = str(excinfo.value)
+        assert "shadow" in msg.lower() or "forwardref" in msg.lower() or "_field" in msg or "_cf" in msg
