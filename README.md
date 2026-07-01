@@ -55,13 +55,13 @@ backends, like Linear, through the dialect protocol.
 pip install stint
 ```
 
-Python 3.14 or newer. stint relies on [PEP 649](https://peps.python.org/pep-0649/)
-deferred annotation evaluation, the default from 3.14, so the schema metaclass
-can inspect `Annotated` field metadata (and catch mistakes like a CustomField
-that shadows its attribute name) without eagerly resolving every type. Runtime
-deps are `pydantic` (with the `email` extra), `pydantic-settings`, `httpx`,
-`pyyaml`, and `cyclopts` for the CLI. `cyclopts` pulls in `rich` for terminal
-output.
+Python 3.10 or newer. On 3.14+, stint uses [PEP 649](https://peps.python.org/pep-0649/)
+deferred annotation evaluation (the default from 3.14) so the schema metaclass
+can catch mistakes like a CustomField that shadows its attribute name with a
+tailored error. That specific diagnostic degrades to a plain `NameError` on
+3.10–3.13; everything else behaves identically. Runtime deps are `pydantic`
+(with the `email` extra), `pydantic-settings`, `httpx`, `pyyaml`, and
+`cyclopts` for the CLI. `cyclopts` pulls in `rich` for terminal output.
 
 ## Why
 

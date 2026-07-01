@@ -29,7 +29,7 @@ Successful work is NOT rolled back (Jira admin REST has no transactions).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 from stint.exceptions import ConfigurationError, PartialCommitError
 from stint.query.hydrate import field_keys_for_model, hydrate
@@ -43,6 +43,8 @@ if TYPE_CHECKING:
     from stint.query.select import Select
     from stint.schema.issuetype import IssueType
     from stint.state.file import StateFile
+
+M = TypeVar("M", bound="IssueType")
 
 
 @dataclass
@@ -75,7 +77,7 @@ class AsyncSession:
         return None
 
     # ── Reads ────────────────────────────────────────────────────────
-    async def scalars[M: IssueType](self, stmt: Select[M]) -> list[M]:
+    async def scalars(self, stmt: Select[M]) -> list[M]:
         jql = stmt.compile(self.state)
         fields = field_keys_for_model(stmt.model, self.state)
         results: list[M] = []
@@ -89,7 +91,7 @@ class AsyncSession:
                 break
         return results
 
-    async def get[M: IssueType](
+    async def get(
         self,
         model: type[M],
         key: str,
@@ -235,7 +237,7 @@ class AsyncSession:
         return results
 
     # ── Helpers ──────────────────────────────────────────────────────
-    def _hydrate_with_identity[M: IssueType](
+    def _hydrate_with_identity(
         self,
         model: type[M],
         issue: dict[str, Any],

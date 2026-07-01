@@ -15,10 +15,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # stint requires Python 3.14+ for PEP 649 deferred annotation
-        # evaluation. Add newer stable releases here as they ship; do not
-        # add < 3.14.
-        python-version: ["3.14"]
+        # stint supports Python 3.10+. On < 3.14 the shadowed-CustomField
+        # diagnostic degrades to a plain NameError (see the version guard in
+        # tests/test_m0_spike.py); everything else runs identically.
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.1.0

@@ -23,7 +23,7 @@ AsyncSession directly.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from stint.query.session import AsyncSession, CommitResult
 
@@ -32,6 +32,8 @@ if TYPE_CHECKING:
     from stint.query.select import Select
     from stint.schema.issuetype import IssueType
     from stint.state.file import StateFile
+
+M = TypeVar("M", bound="IssueType")
 
 
 class Session:
@@ -68,10 +70,10 @@ class Session:
         return self._async.state
 
     # ── Reads ────────────────────────────────────────────────────────
-    def get[M: IssueType](self, model: type[M], key: str) -> M | None:
+    def get(self, model: type[M], key: str) -> M | None:
         return self._loop.run_until_complete(self._async.get(model, key))
 
-    def scalars[M: IssueType](self, stmt: Select[M]) -> list[M]:
+    def scalars(self, stmt: Select[M]) -> list[M]:
         return self._loop.run_until_complete(self._async.scalars(stmt))
 
     # ── Writes ───────────────────────────────────────────────────────

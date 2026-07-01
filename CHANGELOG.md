@@ -6,6 +6,16 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Lowered the minimum Python version from 3.14 to **3.10**, so users on
+  distro-shipped interpreters (RHEL, Ubuntu LTS) can install stint. PEP 695
+  generics were rewritten as `TypeVar`/`Generic` and `datetime.UTC` as
+  `timezone.utc`; behaviour is identical across 3.10–3.14. The one exception:
+  the shadowed-CustomField diagnostic needs PEP 649 (3.14+); on older versions
+  the same mistake surfaces as a `NameError` instead of stint's tailored
+  message. CI now runs the full matrix, and `scripts/test-all.sh` reproduces it
+  locally via uv.
+
 ## [0.1.0] - 2026-06-30
 
 ### Added
