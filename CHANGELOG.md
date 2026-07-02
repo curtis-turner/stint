@@ -15,6 +15,11 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the same mistake surfaces as a `NameError` instead of stint's tailored
   message. CI now runs the full matrix, and `scripts/test-all.sh` reproduces it
   locally via uv.
+- Corrected dependency floors that were too low to actually work: `pydantic`
+  now requires `>=2.7` (older versions cannot resolve the schema models'
+  deferred annotations) and `cyclopts` requires `>=4.0` (the CLI uses
+  `result_action`, added in 4.0). A new CI `floors` job installs the declared
+  minimums on Python 3.10 and runs the suite, so the `>=` bounds stay honest.
 
 ## [0.1.0] - 2026-06-30
 

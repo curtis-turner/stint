@@ -30,3 +30,18 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ty check
       - run: uv run pytest
+
+  floors:
+    # Guards that the declared dependency minimums actually install and pass, so
+    # users on older distro-shipped libraries get a working install. Resolves
+    # every direct dependency to its lowest declared version on the oldest
+    # supported Python. Without this, the `>=` floors drift into fiction.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.10"
+          enable-cache: true
+      - run: uv sync --resolution lowest-direct --all-extras --dev
+      - run: uv run --no-sync pytest
