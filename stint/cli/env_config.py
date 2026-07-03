@@ -16,13 +16,15 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, TypeVar, cast
 
 import yaml
 
 from stint.exceptions import ConfigurationError
 
 CONFIG_KEYS = ("url", "dialect", "auth", "token_env", "user_env", "verify_ssl")
+
+LiteralStr = TypeVar("LiteralStr", bound=str)
 
 # Connection enums. Defined once here; CLI modules import these so the param
 # annotations and the resolved values share a single source of truth.
@@ -33,9 +35,7 @@ _AUTH_MODES: tuple[AuthMode, ...] = ("pat", "basic", "api-token")
 _DIALECT_NAMES: tuple[DialectName, ...] = ("jira_cloud",)
 
 
-def _validate_literal[LiteralStr: str](
-    value: str | None, allowed: tuple[LiteralStr, ...], field: str
-) -> LiteralStr | None:
+def _validate_literal(value: str | None, allowed: tuple[LiteralStr, ...], field: str) -> LiteralStr | None:
     """Confirm a config-sourced string is one of `allowed`, narrowing to its type, else raise."""
     if value is None:
         return None

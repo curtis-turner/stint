@@ -17,7 +17,7 @@ parsing are M6 territory.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from stint.fields import (
     MultiSelectField,
@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     from stint.fields import CustomField
     from stint.schema.issuetype import IssueType
     from stint.state.file import StateFile
+
+M = TypeVar("M", bound="IssueType")
 
 
 def field_keys_for_model(model: type[IssueType], state: StateFile) -> list[str]:
@@ -56,7 +58,7 @@ def field_keys_for_model(model: type[IssueType], state: StateFile) -> list[str]:
     return keys
 
 
-def hydrate[M: IssueType](
+def hydrate(
     model: type[M],
     issue: dict[str, Any],
     state: StateFile,

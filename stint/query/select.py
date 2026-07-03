@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 from stint.query.expr import Column, Expression, _And
 
@@ -11,9 +11,11 @@ if TYPE_CHECKING:
     from stint.schema.issuetype import IssueType
     from stint.state.file import StateFile
 
+M = TypeVar("M", bound="IssueType")
+
 
 @dataclass
-class Select[M: IssueType]:
+class Select(Generic[M]):
     """Buildable query. Compose with ``.where()``, run via ``session.scalars()``."""
 
     model: type[M]
@@ -58,6 +60,6 @@ class Select[M: IssueType]:
         return " ".join(jql_parts)
 
 
-def select[M: IssueType](model: type[M]) -> Select[M]:
+def select(model: type[M]) -> Select[M]:
     """Begin a query against `model`."""
     return Select(model=model)

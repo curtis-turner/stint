@@ -15,10 +15,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # stint requires Python 3.14+ for PEP 649 deferred annotation
-        # evaluation. Add newer stable releases here as they ship; do not
-        # add < 3.14.
-        python-version: ["3.14"]
+        # stint supports Python 3.10+. On < 3.14 the shadowed-CustomField
+        # diagnostic degrades to a plain NameError (see the version guard in
+        # tests/test_m0_spike.py); everything else runs identically.
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.1.0
@@ -30,3 +30,18 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ty check
       - run: uv run pytest
+
+  floors:
+    # Guards that the declared dependency minimums actually install and pass, so
+    # users on older distro-shipped libraries get a working install. Resolves
+    # every direct dependency to its lowest declared version on the oldest
+    # supported Python. Without this, the `>=` floors drift into fiction.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.10"
+          enable-cache: true
+      - run: uv sync --resolution lowest-direct --all-extras --dev
+      - run: uv run --no-sync pytest

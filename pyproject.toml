@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stint"
-version = "0.1.0"
+version = "0.2.0"
 description = "Declarative schema-as-code and ORM for work-management systems. Jira first, dialect protocol for the rest."
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.14"
+requires-python = ">=3.10"
 authors = [{ name = "Curtis Turner" }]
 keywords = [
   "jira",
@@ -23,18 +23,22 @@ classifiers = [
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Topic :: Database",
   "Typing :: Typed",
 ]
 dependencies = [
-  "pydantic>=2.0",
+  "pydantic>=2.7",
   "pydantic-settings>=2.0",
   "httpx>=0.25",
   "pyyaml>=6.0",
   "pydantic[email]",
-  "cyclopts>=3.0",
+  "cyclopts>=4.0",
 ]
 
 [project.urls]
@@ -57,7 +61,7 @@ stint = ["py.typed"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py314"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["B", "E", "F", "I", "N", "W", "UP"]
@@ -71,7 +75,7 @@ dev = [
   "pytest>=9.0.3",
   "pytest-asyncio>=0.21",
   "pytest-cov>=4.0",
-  "respx>=0.20",
+  "respx>=0.21.1",
   "ruff>=0.15.14",
   "types-PyYAML>=6.0",
   "ty>=0.0.55",
