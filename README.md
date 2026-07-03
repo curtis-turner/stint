@@ -36,8 +36,8 @@ CI applies that file to staging, then production, from the same source. A
 bad change rolls back to a known revision. The schema lives in your repo
 next to the code that depends on it.
 
-Status: `0.1.0`, the first release. Validated against a live Jira Cloud
-tenant. The API may still change within `0.x`.
+Status: `0.2.0`. Runs on Python 3.10 through 3.14. Validated against a live
+Jira Cloud tenant for `0.1.0`. The API may still change within `0.x`.
 
 **Primary target: Jira Cloud**, covering both company-managed and
 team-managed projects, validated against a real Cloud tenant for `0.1.0`.
@@ -60,8 +60,8 @@ deferred annotation evaluation (the default from 3.14) so the schema metaclass
 can catch mistakes like a CustomField that shadows its attribute name with a
 tailored error. That specific diagnostic degrades to a plain `NameError` on
 3.10–3.13; everything else behaves identically. Runtime deps are `pydantic`
-(with the `email` extra), `pydantic-settings`, `httpx`, `pyyaml`, and
-`cyclopts` for the CLI. `cyclopts` pulls in `rich` for terminal output.
+(2.7+, with the `email` extra), `pydantic-settings`, `httpx`, `pyyaml`, and
+`cyclopts` (4.0+) for the CLI. `cyclopts` pulls in `rich` for terminal output.
 
 ## Why
 

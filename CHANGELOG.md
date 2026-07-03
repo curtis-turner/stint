@@ -6,6 +6,8 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-02
+
 ### Changed
 - Lowered the minimum Python version from 3.14 to **3.10**, so users on
   distro-shipped interpreters (RHEL, Ubuntu LTS) can install stint. PEP 695
