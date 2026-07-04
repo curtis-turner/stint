@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from stint.client.auth import Auth
 from stint.client.http import JiraHTTPClient
-from stint.dialects.base import Dialect
+from stint.dialects.base import CmpDialect
 from stint.dialects.jira.cloud import JiraCloudDialect
 from stint.exceptions import ConfigurationError
 from stint.state.snapshot import Snapshot
@@ -22,7 +22,7 @@ class Engine:
     """Holds a configured client + dialect. Lifecycle: create -> use -> close."""
 
     base_url: str
-    dialect: Dialect
+    dialect: CmpDialect
     client: JiraHTTPClient
 
     async def reflect(self) -> Snapshot:
@@ -42,7 +42,7 @@ class Engine:
         await self.close()
 
 
-_DIALECT_REGISTRY: dict[str, type[Dialect]] = {
+_DIALECT_REGISTRY: dict[str, type[CmpDialect]] = {
     "jira_cloud": JiraCloudDialect,
 }
 
