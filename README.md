@@ -52,8 +52,17 @@ backends, like Linear, through the dialect protocol.
 ## Install
 
 ```bash
+uv add stint
+```
+
+<details>
+<summary>Not using uv? <code>pip install stint</code></summary>
+
+```bash
 pip install stint
 ```
+
+</details>
 
 Python 3.10 or newer. On 3.14+, stint uses [PEP 649](https://peps.python.org/pep-0649/)
 deferred annotation evaluation (the default from 3.14) so the schema metaclass
@@ -208,6 +217,21 @@ with Session(engine, state) as session:
 The async version is `AsyncSession(engine, state)` with the same surface
 plus `await` on the I/O methods.
 
+## Examples
+
+[`examples/`](examples/) has two full, runnable walkthroughs against a real
+Jira Cloud tenant, each about 10 minutes:
+
+- **Company-managed**: [`examples/platform.py`](examples/platform.py) — the
+  migration-based path above, end to end (`stint validate` → `stamp` →
+  `revision --autogenerate` → `upgrade`).
+- **Team-managed**: [`examples/vuln_management.py`](examples/vuln_management.py) —
+  the experimental, opt-in team-managed (TMP) dialect, which uses a different
+  write model (full-replacement, no migration files) and a different command
+  (`stint apply`, terraform-style plan + confirm).
+
+See [`examples/README.md`](examples/README.md) for both, step by step.
+
 ## What ships in 0.1
 
 - **Jira Cloud (only target in 0.1)**: company-managed and team-managed
@@ -238,6 +262,7 @@ stint revision   Create a migration (empty, --merge, or --autogenerate).
 stint stamp      Brownfield: match aliases against existing Jira, populate state.
 stint upgrade    Apply pending migrations to head (or --to <rev>).
 stint downgrade  Roll back to a specific revision.
+stint apply      Reflect + diff + write in one run (team-managed / jira_cloud_tmp only).
 stint current    Show the env's current revision.
 stint history    List migrations in revision order.
 stint validate   Run schema-level checks on a Python schema module.
