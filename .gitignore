@@ -16,8 +16,9 @@ venv/
 .stint/
 
 # Local autogenerate scratch output from the examples/ playground
-examples/migrations/
-examples/*.state
+examples/company_managed/migrations/
+examples/company_managed/*.state
+examples/team_managed/*.state
 # Clean-room probe tenant scratch (schema, state, migrations) — never committed
 examples/cleanroom/
 

@@ -1,9 +1,18 @@
-"""Dialect protocol. Every backend must satisfy this contract.
+"""Dialect protocols. Every backend must satisfy one of these contracts.
 
-The read side (detect/reflect) and the write side (the create/update/delete
-surface the migration runner and session drive) are both declared here so that
-callers typed against ``Dialect`` see the full method set. Concrete dialects
-(see ``stint.dialects.jira``) satisfy this structurally.
+``BaseDialect`` is the subset every backend style supports identically: detect/
+reflect, project CRUD, lead resolution, and the issue data plane. This is
+exactly the set of operations that work against a Jira team-managed project
+today (see ``tmp_capability_matrix.md``) as well as company-managed.
+
+``CmpDialect`` extends it with the company-managed scheme surface (custom
+fields, screens, screen schemes, issue-type screen schemes, issue-type
+schemes, field configurations, issue types) -- concepts team-managed projects
+don't have, or that Jira exposes no public write API for on team-managed
+projects. A future ``TmpDialect`` would extend ``BaseDialect`` with its own,
+differently-shaped write surface instead of implementing this one.
+
+Concrete dialects (see ``stint.dialects.jira``) satisfy these structurally.
 """
 
 from __future__ import annotations
@@ -14,8 +23,8 @@ from typing import Any, Protocol
 from stint.state.snapshot import Snapshot
 
 
-class Dialect(Protocol):
-    """The contract a backend dialect must satisfy."""
+class BaseDialect(Protocol):
+    """The subset of the contract every backend style satisfies identically."""
 
     name: str
 
@@ -34,6 +43,34 @@ class Dialect(Protocol):
         The Snapshot is dialect-agnostic. The planner consumes it without
         needing to know which backend produced it.
         """
+
+    # ── Projects ─────────────────────────────────────────────────────
+    async def resolve_lead(self, lead: str) -> str: ...
+    async def create_project(
+        self,
+        *,
+        key: str,
+        name: str,
+        project_type_key: str,
+        lead: str,
+        description: str = "",
+        project_template_key: str | None = None,
+    ) -> str: ...
+    async def delete_project(self, *, project_id: str, project_key: str) -> None: ...
+    async def update_project(
+        self, project_id: str, *, name: str | None = None, lead: str | None = None, description: str | None = None
+    ) -> None: ...
+
+    # ── Issues (data plane) ──────────────────────────────────────────
+    def search(self, *, jql: str, fields: list[str], page_size: int = 50) -> AsyncIterator[dict[str, Any]]: ...
+    async def get_issue(self, key: str, *, fields: list[str]) -> dict: ...
+    async def create_issue(self, body: dict[str, Any]) -> dict[str, Any]: ...
+    async def update_issue(self, key: str, body: dict[str, Any]) -> None: ...
+    async def delete_issue(self, key: str) -> None: ...
+
+
+class CmpDialect(BaseDialect, Protocol):
+    """Adds the company-managed scheme surface on top of ``BaseDialect``."""
 
     # ── Custom fields ────────────────────────────────────────────────
     async def create_custom_field(
@@ -116,27 +153,3 @@ class Dialect(Protocol):
     async def update_issuetype(
         self, issuetype_id: str, *, name: str | None = None, description: str | None = None
     ) -> None: ...
-
-    # ── Projects ─────────────────────────────────────────────────────
-    async def resolve_lead(self, lead: str) -> str: ...
-    async def create_project(
-        self,
-        *,
-        key: str,
-        name: str,
-        project_type_key: str,
-        lead: str,
-        description: str = "",
-        project_template_key: str | None = None,
-    ) -> str: ...
-    async def delete_project(self, *, project_id: str, project_key: str) -> None: ...
-    async def update_project(
-        self, project_id: str, *, name: str | None = None, lead: str | None = None, description: str | None = None
-    ) -> None: ...
-
-    # ── Issues (data plane) ──────────────────────────────────────────
-    def search(self, *, jql: str, fields: list[str], page_size: int = 50) -> AsyncIterator[dict[str, Any]]: ...
-    async def get_issue(self, key: str, *, fields: list[str]) -> dict: ...
-    async def create_issue(self, body: dict[str, Any]) -> dict[str, Any]: ...
-    async def update_issue(self, key: str, body: dict[str, Any]) -> None: ...
-    async def delete_issue(self, key: str) -> None: ...

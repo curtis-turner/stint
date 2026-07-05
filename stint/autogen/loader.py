@@ -23,7 +23,7 @@ def load_schema_module(target: str) -> ModuleType:
     """Import `target` as a Python module.
 
     `target` may be:
-      - a dotted module path: "examples.platform"
+      - a dotted module path: "examples.company_managed.platform"
       - a filesystem path: "./schemas/platform.py"
     """
     p = Path(target)

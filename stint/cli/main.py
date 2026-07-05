@@ -6,6 +6,7 @@ Subcommands:
   stamp      - brownfield: match aliases against an existing Jira and populate state
   upgrade    - run pending migrations against an env
   downgrade  - roll back to a prior revision
+  apply      - reflect + diff + write in one run, for reconcile-style dialects (jira_cloud_tmp)
   current    - show the current migration revision recorded in a state file
   history    - list all migrations in revision order
   validate   - run stint.validate() on a Python schema module (no network calls)
@@ -16,6 +17,7 @@ from __future__ import annotations
 import sys
 
 from stint.cli import (  # noqa: F401 — side-effect: registers @app.command
+    cmd_apply,
     cmd_reflect,
     cmd_revision,
     cmd_stamp,

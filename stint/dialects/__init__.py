@@ -1,8 +1,8 @@
 """Dialect registry. Per-backend protocol implementations live below this.
 
-The dialect protocol is the only extension point a new backend must satisfy.
+The dialect protocols are the only extension point a new backend must satisfy.
 """
 
-from stint.dialects.base import Dialect
+from stint.dialects.base import BaseDialect, CmpDialect
 
-__all__ = ["Dialect"]
+__all__ = ["BaseDialect", "CmpDialect"]

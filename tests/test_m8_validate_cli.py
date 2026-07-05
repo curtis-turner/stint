@@ -30,11 +30,11 @@ def _write_schema(tmp_path: Path, body: str) -> Path:
 
 
 def test_validate_clean_schema_exits_zero(capsys):
-    rc = main(["validate", "--schema", "examples.platform"])
+    rc = main(["validate", "--schema", "examples.company_managed.platform"])
     out = capsys.readouterr().out
     assert rc == 0
     assert "OK" in out
-    assert "examples.platform" in out
+    assert "examples.company_managed.platform" in out
 
 
 def test_validate_by_file_path_works(tmp_path, capsys):

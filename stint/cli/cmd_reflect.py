@@ -20,10 +20,10 @@ from cyclopts import Parameter
 from stint.cli.app import app
 from stint.cli.env_config import require_resolved_connection, resolve_connection
 from stint.client.auth import APITokenAuth, BasicAuth, PATAuth
-from stint.engine import create_engine
+from stint.engine import create_engine, create_tmp_engine, resolve_dialect_name
 
 AuthMode = Literal["pat", "basic", "api-token"]
-DialectName = Literal["jira_cloud"]
+DialectName = Literal["jira_cloud", "jira_cloud_tmp"]
 
 
 @app.command
@@ -49,6 +49,13 @@ async def reflect(
     dialect: Annotated[
         DialectName | None,
         Parameter(help="Dialect to use. Overrides any prefix in --url. Required if --url has no prefix."),
+    ] = None,
+    project_key: Annotated[
+        str | None,
+        Parameter(
+            help="Project key. Required for --dialect jira_cloud_tmp (team-managed "
+            "projects are reflected one at a time); rejected for jira_cloud."
+        ),
     ] = None,
     token_env: Annotated[
         str | None,
@@ -79,11 +86,23 @@ async def reflect(
     )
     url, auth = require_resolved_connection(env=env, url=url, auth=auth)
     auth_obj = _build_auth(auth, token_env, user_env)
-    eng = create_engine(url, auth=auth_obj, dialect=dialect, verify_ssl=not no_verify_ssl)
-    try:
-        snapshot = await eng.reflect()
-    finally:
-        await eng.close()
+    base_url, chosen_dialect = resolve_dialect_name(url, dialect)
+    if chosen_dialect == "jira_cloud_tmp":
+        if project_key is None:
+            raise SystemExit("--project-key is required for --dialect jira_cloud_tmp")
+        tmp_eng = create_tmp_engine(base_url, auth=auth_obj, dialect=chosen_dialect, verify_ssl=not no_verify_ssl)
+        try:
+            snapshot = await tmp_eng.reflect(project_key=project_key)
+        finally:
+            await tmp_eng.close()
+    else:
+        if project_key is not None:
+            raise SystemExit("--project-key is only valid for --dialect jira_cloud_tmp")
+        eng = create_engine(base_url, auth=auth_obj, dialect=chosen_dialect, verify_ssl=not no_verify_ssl)
+        try:
+            snapshot = await eng.reflect()
+        finally:
+            await eng.close()
 
     serialized = _to_serializable(snapshot)
     if format == "yaml":

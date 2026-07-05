@@ -35,10 +35,10 @@ CLOUD_ROOT = f"{BASE}/rest/api/3"
 @pytest.fixture(autouse=True)
 def _isolate_registry():
     registry.reset()
-    sys.modules.pop("examples.platform", None)
+    sys.modules.pop("examples.company_managed.platform", None)
     yield
     registry.reset()
-    sys.modules.pop("examples.platform", None)
+    sys.modules.pop("examples.company_managed.platform", None)
 
 
 def _cloud_engine() -> Engine:
@@ -84,7 +84,7 @@ def test_wrap_plain_text_empty():
 
 # ── Payload construction ─────────────────────────────────────────────
 def test_payload_select_field_emitted_as_value_object():
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     state = _platform_state()
     bug = p.Bug(
@@ -99,7 +99,7 @@ def test_payload_select_field_emitted_as_value_object():
 
 
 def test_payload_reporter_dc_vs_cloud():
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="acc-123", severity="S1")
@@ -110,7 +110,7 @@ def test_payload_reporter_dc_vs_cloud():
 
 
 def test_payload_description_wrapped_in_adf_on_cloud():
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     state = _platform_state()
     bug = p.Bug(
@@ -129,7 +129,7 @@ def test_payload_description_wrapped_in_adf_on_cloud():
 def test_payload_omits_unset_optionals():
     """assignee is Optional[str] = None; description default None. Skipped
     so a PUT doesn't accidentally clear existing Jira data."""
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="alice", severity="S1")
@@ -139,7 +139,7 @@ def test_payload_omits_unset_optionals():
 
 
 def test_payload_only_filter_for_update():
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="alice", severity="S1")
@@ -153,7 +153,7 @@ def test_payload_only_filter_for_update():
 
 
 def test_payload_unmapped_custom_field_raises():
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     state = StateFile(env="dev", jira_url=BASE)  # empty state
     state.issuetypes["bug"] = SimpleMapping(id="10010")
@@ -164,7 +164,7 @@ def test_payload_unmapped_custom_field_raises():
 
 
 def test_insert_payload_includes_project_and_issuetype():
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="alice", severity="S1")
@@ -174,7 +174,7 @@ def test_insert_payload_includes_project_and_issuetype():
 
 
 def test_update_payload_only_dirty_fields():
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="alice", severity="S2")
@@ -184,14 +184,14 @@ def test_update_payload_only_dirty_fields():
 
 # ── Project inference / __projects__ linkage ─────────────────────────
 def test_project_meta_sets_projects_on_issuetype():
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     assert "PLAT" in p.Bug.__projects__
 
 
 # ── add / delete plumbing (no commit) ────────────────────────────────
 def test_add_rejects_instance_with_existing_key():
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     engine = _cloud_engine()
     session = AsyncSession(engine, _platform_state())
@@ -202,7 +202,7 @@ def test_add_rejects_instance_with_existing_key():
 
 
 def test_add_with_explicit_project_overrides_inferred():
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     engine = _cloud_engine()
     session = AsyncSession(engine, _platform_state())
@@ -213,7 +213,7 @@ def test_add_with_explicit_project_overrides_inferred():
 
 
 def test_delete_requires_key():
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     engine = _cloud_engine()
     session = AsyncSession(engine, _platform_state())
@@ -226,7 +226,7 @@ def test_delete_requires_key():
 @pytest.mark.asyncio
 @respx.mock
 async def test_commit_insert_posts_issue_and_sets_key():
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     respx.post(f"{CLOUD_ROOT}/issue").mock(
         return_value=httpx.Response(
@@ -255,7 +255,7 @@ async def test_commit_insert_posts_issue_and_sets_key():
 @pytest.mark.asyncio
 @respx.mock
 async def test_commit_insert_cloud_uses_adf_description():
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     captured: list[dict] = []
 
@@ -293,7 +293,7 @@ async def test_dirty_tracking_emits_minimal_put():
     """Hydrate via get(), mutate one field, commit → PUT with only that field."""
     import json
 
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
         return_value=httpx.Response(
@@ -335,7 +335,7 @@ async def test_dirty_tracking_emits_minimal_put():
 @pytest.mark.asyncio
 @respx.mock
 async def test_no_dirty_changes_means_no_put():
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
         return_value=httpx.Response(
@@ -368,7 +368,7 @@ async def test_no_dirty_changes_means_no_put():
 @pytest.mark.asyncio
 @respx.mock
 async def test_commit_delete_calls_dialect():
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
         return_value=httpx.Response(
@@ -405,7 +405,7 @@ async def test_commit_delete_calls_dialect():
 @respx.mock
 async def test_partial_commit_error_on_mixed_results():
     """First insert succeeds, second fails 400. Exception carries both results."""
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     respx.post(f"{CLOUD_ROOT}/issue").mock(
         side_effect=[
@@ -438,7 +438,7 @@ async def test_partial_commit_error_on_mixed_results():
 @pytest.mark.asyncio
 @respx.mock
 async def test_commit_clears_pending_inserts_and_deletes():
-    import examples.platform as p
+    import examples.company_managed.platform as p
 
     respx.post(f"{CLOUD_ROOT}/issue").mock(
         return_value=httpx.Response(

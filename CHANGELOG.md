@@ -6,6 +6,39 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Experimental, opt-in support for Jira Cloud team-managed ("next-gen")
+  projects via a new `jira_cloud_tmp` dialect (`stint.dialects.jira.tmp`).
+  The public Jira Cloud REST API cannot author team-managed project config
+  (fields, work types, layouts); this dialect drives Atlassian's
+  undocumented internal APIs instead, isolated from the company-managed
+  path so a CMP-only user's process never loads it. Covers project-scoped
+  custom fields (create/edit/delete, including select options), work types
+  (create/delete), and issue layouts (read/write field association), one
+  project at a time. (Closes #13.)
+  - `stint.engine.create_tmp_engine`/`TmpEngine`: a separate engine from
+    `Engine`/`create_engine`, selected via a `jira_cloud_tmp+https://...`
+    URL prefix or `dialect="jira_cloud_tmp"`.
+  - `stint reflect --dialect jira_cloud_tmp --project-key <KEY>` reflects
+    one team-managed project into a snapshot.
+  - New `stint apply` command: reflects, diffs against schema, and writes
+    in one run. Team-managed writes are full-replacement with no
+    migration-file or downgrade equivalent, so `apply` reconciles live
+    state directly against the schema on every run — terraform-style:
+    prints a plan, then requires typing `yes` to write (or
+    `--auto-approve`/`--dry-run`).
+  - `StateFile.tmp_projects` persists each team-managed project's
+    field/work-type/layout id mappings.
+  - Emits a `UserWarning` on first use noting the dialect is experimental
+    and unsupported.
+  - Two example walkthroughs, split by dialect: `examples/company_managed/`
+    (existing, moved) and `examples/team_managed/` (new), each with its
+    own README.
+
+### Changed
+- README install instructions now lead with `uv add stint`; `pip install
+  stint` is kept as a documented alternative.
+
 ## [0.2.0] - 2026-07-02
 
 ### Changed

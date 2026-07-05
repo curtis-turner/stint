@@ -26,7 +26,9 @@ def validate_cmd(
     *,
     schema: Annotated[
         str,
-        Parameter(help="Dotted module path (e.g. examples.platform) or file path (./schemas/platform.py)."),
+        Parameter(
+            help="Dotted module path (e.g. examples.company_managed.platform) or file path (./schemas/platform.py)."
+        ),
     ],
 ) -> int:
     """Run schema-level checks on a Python schema module (no network calls)."""

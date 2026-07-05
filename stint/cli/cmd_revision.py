@@ -22,7 +22,7 @@ from stint.migrations.exceptions import MigrationGraphError
 from stint.migrations.loader import load_migrations
 
 AuthMode = Literal["pat", "basic", "api-token"]
-DialectName = Literal["jira_cloud"]
+DialectName = Literal["jira_cloud", "jira_cloud_tmp"]
 
 
 @app.command

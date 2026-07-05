@@ -32,10 +32,10 @@ CLOUD_ROOT = f"{BASE}/rest/api/3"
 @pytest.fixture(autouse=True)
 def _isolate_registry():
     registry.reset()
-    sys.modules.pop("examples.platform", None)
+    sys.modules.pop("examples.company_managed.platform", None)
     yield
     registry.reset()
-    sys.modules.pop("examples.platform", None)
+    sys.modules.pop("examples.company_managed.platform", None)
 
 
 def _engine() -> Engine:
@@ -304,7 +304,7 @@ async def test_no_retry_on_non_retryable_status():
 # Diff: project rename
 # ──────────────────────────────────────────────────────────────────────
 def test_diff_emits_update_project_on_rename():
-    import examples.platform  # noqa: F401  -- imports trigger registration
+    import examples.company_managed.platform  # noqa: F401  -- imports trigger registration
     from stint.autogen.desired import build_desired_snapshot
     from stint.autogen.diff import UpdateProject, diff
     from stint.state.snapshot import (

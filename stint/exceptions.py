@@ -58,6 +58,16 @@ class UnsupportedTMPOpError(StintError):
     the user can complete the change there."""
 
 
+class TmpApiError(StintError):
+    """A TMP internal endpoint (the fields GraphQL gateway or the gira layout
+    reader) returned a GraphQL-level error, or a response shape that doesn't
+    match the captured contract. These endpoints are undocumented and
+    unsupported by Atlassian; this error means the shape moved -- see
+    tmp_spike_conclusion.md. Distinct from TransportError (HTTP-level
+    failures), since these calls often return HTTP 200 with a populated
+    `errors` array."""
+
+
 # ── Data plane (M6 writes) ────────────────────────────────────────────
 class PartialCommitError(StintError):
     """Raised by AsyncSession.commit when some operations succeeded and
