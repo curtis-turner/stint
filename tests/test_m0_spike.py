@@ -39,24 +39,24 @@ from stint import (
 
 
 def _load_example():
-    """Re-import examples.platform from scratch against the current registry."""
-    sys.modules.pop("examples.platform", None)
-    return importlib.import_module("examples.platform")
+    """Re-import examples.company_managed.platform from scratch against the current registry."""
+    sys.modules.pop("examples.company_managed.platform", None)
+    return importlib.import_module("examples.company_managed.platform")
 
 
 @pytest.fixture(autouse=True)
 def fresh_registry():
     """Each test starts with an empty registry."""
     registry.reset()
-    sys.modules.pop("examples.platform", None)
+    sys.modules.pop("examples.company_managed.platform", None)
     yield
     registry.reset()
-    sys.modules.pop("examples.platform", None)
+    sys.modules.pop("examples.company_managed.platform", None)
 
 
 # ── Gate 1: the example parses ────────────────────────────────────────
 def test_example_module_parses():
-    """examples/platform.py imports cleanly and populates the registry."""
+    """examples/company_managed/platform.py imports cleanly and populates the registry."""
     _load_example()
     assert "bug" in registry.issuetypes
     assert "PLAT" in registry.projects

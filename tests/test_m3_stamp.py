@@ -24,10 +24,10 @@ from stint.state.snapshot import (
 @pytest.fixture(autouse=True)
 def _isolate_registry():
     registry.reset()
-    sys.modules.pop("examples.platform", None)
+    sys.modules.pop("examples.company_managed.platform", None)
     yield
     registry.reset()
-    sys.modules.pop("examples.platform", None)
+    sys.modules.pop("examples.company_managed.platform", None)
 
 
 def _empty_snapshot() -> Snapshot:
@@ -98,7 +98,7 @@ def test_stamp_matches_screen_and_populates_tab_ids():
 
 
 def test_stamp_matches_project_by_key():
-    import examples.platform  # noqa: F401
+    import examples.company_managed.platform  # noqa: F401
 
     state = StateFile(env="dev", jira_url="x")
     snap = _empty_snapshot()
@@ -149,7 +149,7 @@ def test_stamp_skips_if_alias_already_mapped_to_different_id():
 
 # ── Derived schemes (ITSS/FCS by synthesized name) ──────────────────
 def test_stamp_matches_derived_itss_by_synthesized_name():
-    import examples.platform  # noqa: F401
+    import examples.company_managed.platform  # noqa: F401
 
     state = StateFile(env="dev", jira_url="x")
     snap = _empty_snapshot()
@@ -188,7 +188,7 @@ def test_stamp_issuetype_ignores_project_scoped_same_name():
 def test_stamp_matches_derived_issuetype_scheme_by_synthesized_name():
     """The derived IssueTypeScheme must be stamped too, else autogenerate keeps
     re-emitting create_issuetype_scheme after a clean stamp."""
-    import examples.platform  # noqa: F401
+    import examples.company_managed.platform  # noqa: F401
 
     state = StateFile(env="dev", jira_url="x")
     snap = _empty_snapshot()
@@ -330,7 +330,7 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
         [
             "stamp",
             "--schema",
-            "examples.platform",
+            "examples.company_managed.platform",
             "--state",
             str(state_path),
             "--env",

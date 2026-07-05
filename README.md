@@ -219,18 +219,16 @@ plus `await` on the I/O methods.
 
 ## Examples
 
-[`examples/`](examples/) has two full, runnable walkthroughs against a real
-Jira Cloud tenant, each about 10 minutes:
+Two full, runnable walkthroughs against a real Jira Cloud tenant, each about
+10 minutes, one per dialect:
 
-- **Company-managed**: [`examples/platform.py`](examples/platform.py) — the
+- **[`examples/company_managed/`](examples/company_managed/)** — the
   migration-based path above, end to end (`stint validate` → `stamp` →
   `revision --autogenerate` → `upgrade`).
-- **Team-managed**: [`examples/vuln_management.py`](examples/vuln_management.py) —
-  the experimental, opt-in team-managed (TMP) dialect, which uses a different
-  write model (full-replacement, no migration files) and a different command
-  (`stint apply`, terraform-style plan + confirm).
-
-See [`examples/README.md`](examples/README.md) for both, step by step.
+- **[`examples/team_managed/`](examples/team_managed/)** — the experimental,
+  opt-in team-managed (TMP) dialect, which uses a different write model
+  (full-replacement, no migration files) and a different command (`stint
+  apply`, terraform-style plan + confirm).
 
 ## What ships in 0.1
 

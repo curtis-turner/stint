@@ -39,10 +39,10 @@ def _isolate_registry():
     """Each test gets a clean registry. The platform example registers things
     at import time; tests that need it re-import after clearing."""
     registry.reset()
-    sys.modules.pop("examples.platform", None)
+    sys.modules.pop("examples.company_managed.platform", None)
     yield
     registry.reset()
-    sys.modules.pop("examples.platform", None)
+    sys.modules.pop("examples.company_managed.platform", None)
 
 
 def _empty_snapshot() -> Snapshot:
@@ -55,7 +55,7 @@ def _empty_snapshot() -> Snapshot:
 def test_desired_snapshot_derives_itss_and_fcs_per_project():
     """Importing the example schema produces a desired snapshot with a
     synthesized ITSS named `{key}_itss` and FCS named `{key}_fcs`."""
-    import examples.platform  # noqa: F401  -- import-for-side-effects
+    import examples.company_managed.platform  # noqa: F401  -- import-for-side-effects
 
     desired = build_desired_snapshot()
     assert "bug_severity" in desired.custom_fields
@@ -75,7 +75,7 @@ def test_desired_snapshot_derives_issuetype_scheme_per_project():
     """A project's __issuetypes__ feeds a per-project IssueTypeScheme.
     Default issuetype = first standard (non-subtask). Project records the
     binding via DesiredProject.issuetype_scheme."""
-    import examples.platform  # noqa: F401
+    import examples.company_managed.platform  # noqa: F401
 
     desired = build_desired_snapshot()
     assert "PLAT_its" in desired.issuetype_schemes
@@ -87,7 +87,7 @@ def test_desired_snapshot_derives_issuetype_scheme_per_project():
 
 
 def test_desired_screen_carries_one_tab_with_field_refs():
-    import examples.platform  # noqa: F401
+    import examples.company_managed.platform  # noqa: F401
 
     desired = build_desired_snapshot()
     edit = desired.screens["bug_edit"]
@@ -102,7 +102,7 @@ def test_desired_screen_carries_one_tab_with_field_refs():
 # ── Diff: greenfield (no state, no Jira) ─────────────────────────────
 def test_diff_greenfield_emits_create_for_every_declared_object():
     """State empty, Jira empty, schema has everything → all creates."""
-    import examples.platform  # noqa: F401
+    import examples.company_managed.platform  # noqa: F401
 
     desired = build_desired_snapshot()
     state = StateFile(env="dev", jira_url="x")
@@ -129,7 +129,7 @@ def test_diff_greenfield_emits_create_for_every_declared_object():
 
 
 def test_diff_greenfield_emits_no_deletes():
-    import examples.platform  # noqa: F401
+    import examples.company_managed.platform  # noqa: F401
 
     desired = build_desired_snapshot()
     state = StateFile(env="dev", jira_url="x")
@@ -301,7 +301,7 @@ def test_diff_emits_set_scheme_for_existing_project_with_drifted_binding():
     from what the schema declares should emit SetProject*Scheme. The desired
     schemes must already be in state — otherwise the create-side change owns
     the binding (and this code path skips them)."""
-    import examples.platform  # noqa: F401
+    import examples.company_managed.platform  # noqa: F401
     from stint.autogen.diff import (
         SetProjectFieldConfigurationScheme,
         SetProjectIssueTypeScheme,
@@ -354,7 +354,7 @@ def test_diff_skips_set_scheme_when_desired_alias_not_yet_in_state():
     binding. The existing-project rebind must not also fire — otherwise
     the migration would call set_project_*_scheme before state has the
     new scheme's id."""
-    import examples.platform  # noqa: F401
+    import examples.company_managed.platform  # noqa: F401
     from stint.state.file import ProjectMapping
     from stint.state.snapshot import ProjectSnapshot
 
@@ -386,7 +386,7 @@ def test_diff_does_not_emit_lead_update_for_existing_project():
     """Lead drift on an existing project is not auto-detected: the schema lead
     is an email, the snapshot lead is an accountId, so comparing them would emit
     an UpdateProject on every run forever. (#7 follow-up)"""
-    import examples.platform  # noqa: F401
+    import examples.company_managed.platform  # noqa: F401
     from stint.state.file import ProjectMapping, SimpleMapping
     from stint.state.snapshot import ProjectSnapshot
 
@@ -556,7 +556,7 @@ def test_emit_downgrade_always_op_unsupported():
 async def test_autogenerate_end_to_end_via_python_api(tmp_path):
     """Without going through CLI: load schema, build desired, diff against
     empty Jira, render — the output compiles and reloads cleanly."""
-    import examples.platform  # noqa: F401
+    import examples.company_managed.platform  # noqa: F401
 
     desired = build_desired_snapshot()
     state = StateFile(env="dev", jira_url="x")

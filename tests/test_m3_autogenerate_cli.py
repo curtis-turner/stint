@@ -17,10 +17,10 @@ CLOUD_ROOT = f"{BASE}/rest/api/3"
 @pytest.fixture(autouse=True)
 def _isolate_registry():
     registry.reset()
-    sys.modules.pop("examples.platform", None)
+    sys.modules.pop("examples.company_managed.platform", None)
     yield
     registry.reset()
-    sys.modules.pop("examples.platform", None)
+    sys.modules.pop("examples.company_managed.platform", None)
 
 
 def _paginated(values):
@@ -76,7 +76,7 @@ def test_autogenerate_greenfield_writes_full_migration(tmp_path, monkeypatch, ca
             "initial platform schema",
             "--autogenerate",
             "--schema",
-            "examples.platform",
+            "examples.company_managed.platform",
             "--state",
             str(state_path),
             "--env",
@@ -138,7 +138,7 @@ def test_autogenerate_refuses_to_stack_pending_migrations(tmp_path, monkeypatch,
                 message,
                 "--autogenerate",
                 "--schema",
-                "examples.platform",
+                "examples.company_managed.platform",
                 "--state",
                 str(state_path),
                 "--env",
