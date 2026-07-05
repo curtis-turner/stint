@@ -47,6 +47,21 @@ class TmpFieldAssociation:
 
 
 @dataclass(frozen=True)
+class TmpWorkType:
+    """A TMP project-scoped work type (issue type), as returned by create.
+
+    There is no separate update endpoint: renaming/re-describing a work type
+    happens through ``write_layout``'s owner data (see ``tmp_crud_surface.md``
+    -- the work-type edit screen IS the issue-layout screen).
+    """
+
+    id: str
+    name: str
+    avatar_id: str
+    hierarchy_level: int = 0
+
+
+@dataclass(frozen=True)
 class TmpLayoutOwner:
     """The work type (issue type) that owns a layout."""
 

@@ -1,4 +1,5 @@
-"""TMP dialect build phase 2: fields-gateway client, field CRUD, and reads.
+"""TMP dialect build phases 2-3: fields gateway, field CRUD, reads, work
+types, and the layout write.
 
 All HTTP is mocked via respx against the exact shapes captured from a live
 tenant and confirmed working over token auth 2026-07-05 (see
@@ -18,12 +19,15 @@ from stint.client.http import JiraHTTPClient
 from stint.dialects.jira.tmp import TmpDialect
 from stint.dialects.jira.tmp.dialect import _gql_enum, _gql_options, _gql_or_null, _gql_str
 from stint.dialects.jira.tmp.graphql import FIELDS_GATEWAY_PATH, LAYOUT_READ_PATH, GraphQLClient
-from stint.dialects.jira.tmp.models import TmpFieldOption
+from stint.dialects.jira.tmp.internal_rest import ISSUE_LAYOUTS_PATH, SIMPLIFIED_PATH
+from stint.dialects.jira.tmp.models import TmpFieldOption, TmpLayout, TmpLayoutItem, TmpLayoutOwner
 from stint.exceptions import TmpApiError
 
 BASE = "https://cumulusec.atlassian.net"
 GATEWAY_URL = f"{BASE}{FIELDS_GATEWAY_PATH}"
 GIRA_URL = f"{BASE}{LAYOUT_READ_PATH}"
+SIMPLIFIED_URL = f"{BASE}{SIMPLIFIED_PATH}"
+ISSUE_LAYOUTS_URL = f"{BASE}{ISSUE_LAYOUTS_PATH}"
 
 
 def _client() -> JiraHTTPClient:
@@ -457,3 +461,180 @@ async def test_read_layout_raises_when_no_current_project_owner():
     respx.post(GIRA_URL).mock(return_value=httpx.Response(200, json=resp))
     with pytest.raises(TmpApiError, match="no currentProject edge"):
         await _dialect().read_layout(project_id="10001", issuetype_id=10007)
+
+
+# ── create_worktype / delete_worktype ──────────────────────────────────
+ISSUETYPE_URL = f"{SIMPLIFIED_URL}/project/10001/settings/issuetype"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_worktype_parses_result_and_sends_expected_body():
+    route = respx.post(ISSUETYPE_URL).mock(
+        return_value=httpx.Response(
+            201,
+            json={"id": "10080", "name": "disco-type", "entityId": "abc", "hierarchyLevel": 0, "avatarId": 10321},
+        )
+    )
+    worktype = await _dialect().create_worktype(
+        project_id="10001", project_uuid="proj-uuid-1", name="disco-type", description="a work type"
+    )
+    assert worktype.id == "10080"
+    assert worktype.name == "disco-type"
+    assert worktype.hierarchy_level == 0
+    body = json.loads(route.calls.last.request.content)
+    assert body["projectUuid"] == "proj-uuid-1"
+    assert body["context"] == {"issueTypeKey": "custom"}
+    assert "externalUuid" in body
+    assert route.calls.last.request.headers["X-Atlassian-Token"] == "no-check"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_worktype_raises_when_no_id_in_response():
+    respx.post(ISSUETYPE_URL).mock(return_value=httpx.Response(201, json={"name": "disco-type"}))
+    with pytest.raises(TmpApiError, match="returned no id"):
+        await _dialect().create_worktype(project_id="10001", project_uuid="proj-uuid-1", name="disco-type")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_delete_worktype_checks_preflight_then_deletes():
+    check_route = respx.get(f"{ISSUETYPE_URL}/checkDelete/10080").mock(
+        return_value=httpx.Response(200, json={"safeToDelete": True, "issueCount": 0})
+    )
+    delete_route = respx.delete(f"{ISSUETYPE_URL}/10080").mock(return_value=httpx.Response(204))
+    await _dialect().delete_worktype(project_id="10001", worktype_id="10080")
+    assert check_route.called
+    assert delete_route.called
+    assert delete_route.calls.last.request.headers["X-Atlassian-Token"] == "no-check"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_delete_worktype_refuses_when_not_safe():
+    respx.get(f"{ISSUETYPE_URL}/checkDelete/10080").mock(
+        return_value=httpx.Response(200, json={"safeToDelete": False, "issueCount": 3})
+    )
+    delete_route = respx.delete(f"{ISSUETYPE_URL}/10080").mock(return_value=httpx.Response(204))
+    with pytest.raises(TmpApiError, match="not safe to delete"):
+        await _dialect().delete_worktype(project_id="10001", worktype_id="10080")
+    assert not delete_route.called
+
+
+# ── write_layout ─────────────────────────────────────────────────────────
+def _sample_layout() -> TmpLayout:
+    return TmpLayout(
+        layout_id="c6b31d04-d184-48ef-877e-a11908f07576",
+        owner=TmpLayoutOwner(
+            id="10007", name="Task", description="tasks tasks tasks", avatar_id="10318", icon_url="https://.../10318"
+        ),
+        items=(
+            TmpLayoutItem(
+                field_id="assignee",
+                key="assignee",
+                name="Assignee",
+                type_key="assignee",
+                custom=False,
+                global_=True,
+                required=False,
+                section="primary",
+                position=100,
+                external_uuid="76e94278-...",
+                description="",
+                operations={"editable": False},
+                provider={"key": "jira-platform", "name": "Jira"},
+            ),
+            TmpLayoutItem(
+                field_id="summary",
+                key="summary",
+                name="Summary",
+                type_key="summary",
+                custom=False,
+                global_=True,
+                required=True,
+                section="content",
+                position=50,  # earlier position than assignee -> must be sent first
+                external_uuid="1ddf370e-...",
+                description="",
+                operations={"editable": False},
+                provider={"key": "jira-platform", "name": "Jira"},
+            ),
+        ),
+    )
+
+
+def _write_layout_response(owner_description: str) -> dict:
+    return {
+        "projectId": 10001,
+        "extraDefinerId": 10007,
+        "issueLayoutType": "ISSUE_VIEW",
+        "owners": [
+            {
+                "type": "ISSUE_TYPE",
+                "data": {
+                    "id": 10007,
+                    "externalUuid": "Optional[476e9815-...]",
+                    "name": "Task",
+                    "description": owner_description,
+                    "avatarId": 10318,
+                    "iconUrl": "https://.../10318",
+                },
+            }
+        ],
+        "issueLayoutConfig": {
+            "items": [
+                {
+                    "type": "FIELD",
+                    "key": "summary",
+                    "sectionType": "CONTENT",
+                    "data": {"key": "summary", "name": "Summary", "type": "summary", "custom": False, "global": True},
+                },
+                {
+                    "type": "FIELD",
+                    "key": "assignee",
+                    "sectionType": "PRIMARY",
+                    "data": {
+                        "key": "assignee",
+                        "name": "Assignee",
+                        "type": "assignee",
+                        "custom": False,
+                        "global": True,
+                    },
+                },
+            ]
+        },
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_write_layout_sorts_items_by_position_and_parses_response():
+    layout = _sample_layout()
+    route = respx.put(f"{ISSUE_LAYOUTS_URL}/{layout.layout_id}").mock(
+        return_value=httpx.Response(200, json=_write_layout_response("tasks tasks tasks"))
+    )
+    written = await _dialect().write_layout(project_id="10001", issuetype_id=10007, layout=layout)
+
+    body = json.loads(route.calls.last.request.content)
+    sent_items = body["issueLayoutConfig"]["items"]
+    assert [i["key"] for i in sent_items] == ["summary", "assignee"]  # position 50 before 100
+    assert body["projectId"] == 10001
+    assert body["extraDefinerId"] == 10007
+    assert route.calls.last.request.headers["X-Atlassian-Token"] == "no-check"
+
+    assert written.owner.description == "tasks tasks tasks"
+    assert [i.field_id for i in written.items] == ["summary", "assignee"]
+    assert written.items[0].section == "content"
+    assert written.items[1].section == "primary"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_write_layout_raises_when_no_owners_in_response():
+    layout = _sample_layout()
+    respx.put(f"{ISSUE_LAYOUTS_URL}/{layout.layout_id}").mock(
+        return_value=httpx.Response(200, json={"issueLayoutConfig": {"items": []}})
+    )
+    with pytest.raises(TmpApiError, match="has no owners"):
+        await _dialect().write_layout(project_id="10001", issuetype_id=10007, layout=layout)

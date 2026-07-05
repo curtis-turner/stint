@@ -1,11 +1,17 @@
 """TmpDialect: the team-managed-project (TMP) write surface.
 
 Builds incrementally across the TMP dialect build phases (see
-``tmp_dialect_design.md``). This phase (2) adds: field create/edit/delete on
-the fields gateway, and two reads (field enumeration, work-type layout).
-Work types, the layout write, ``detect``/``reflect``, and reconcile land in
-later phases -- until then this class does not satisfy ``BaseDialect`` and
-must not be registered as a selectable dialect.
+``tmp_dialect_design.md``). Phase 2 added field create/edit/delete on the
+fields gateway plus two reads (field enumeration, work-type layout). Phase 3
+adds work-type create/delete (simplified REST) and the layout write (full-
+replacement PUT, needs the ``layoutId`` from ``read_layout``). There is no
+separate work-type *update*: renaming/re-describing a work type happens
+through ``write_layout``'s owner data -- in TMP the work-type edit screen IS
+the issue-layout screen (see ``tmp_crud_surface.md``).
+
+``detect``/``reflect`` and reconcile land in later phases -- until then this
+class does not satisfy ``BaseDialect`` and must not be registered as a
+selectable dialect.
 
 Every shape here was captured from a live tenant and confirmed working over
 stint's existing token auth (see ``tmp_internal_endpoints.md``); the query
@@ -30,6 +36,7 @@ from typing import Any
 
 from stint.client.http import JiraHTTPClient
 from stint.dialects.jira.tmp.graphql import FIELDS_GATEWAY_PATH, LAYOUT_READ_PATH, GraphQLClient
+from stint.dialects.jira.tmp.internal_rest import ISSUE_LAYOUTS_PATH, SIMPLIFIED_PATH, InternalRestClient
 from stint.dialects.jira.tmp.models import (
     TmpField,
     TmpFieldAssociation,
@@ -37,8 +44,12 @@ from stint.dialects.jira.tmp.models import (
     TmpLayout,
     TmpLayoutItem,
     TmpLayoutOwner,
+    TmpWorkType,
 )
 from stint.exceptions import TmpApiError
+
+# A standard system issue-type avatar id, used as create_worktype's default.
+_DEFAULT_WORKTYPE_AVATAR = 10321
 
 # Opt-in key convention: JiraProjectFieldsPage<Op>CustomField. The gateway
 # names the real key in an OptInException if a call is missing its directive
@@ -172,6 +183,48 @@ def _parse_field(assoc: dict[str, Any]) -> TmpField:
     )
 
 
+def _parse_written_layout(layout_id: str, body: dict[str, Any]) -> TmpLayout:
+    """Parse an issueLayouts PUT response.
+
+    A meaningfully different shape from the gira read response (flatter, and
+    `sectionType` comes back UPPERCASE where the read's `containerType` also
+    is -- both map through the same lowercase section names in TmpLayoutItem).
+    There is no explicit position field on write-back either; array order is
+    the position, so it's assigned from enumeration order here.
+    """
+    owners = body.get("owners") or []
+    if not owners:
+        raise TmpApiError(f"issueLayouts PUT response for {layout_id} has no owners: {body!r}")
+    owner_data = owners[0].get("data") or {}
+    owner = TmpLayoutOwner(
+        id=str(owner_data.get("id", "")),
+        name=str(owner_data.get("name", "")),
+        description=str(owner_data.get("description", "")),
+        avatar_id=str(owner_data.get("avatarId", "")),
+        icon_url=str(owner_data.get("iconUrl", "")),
+    )
+    items_payload = ((body.get("issueLayoutConfig") or {}).get("items")) or []
+    items = tuple(
+        TmpLayoutItem(
+            field_id=str(item.get("key", "")),
+            key=str((item.get("data") or {}).get("key", "")),
+            name=str((item.get("data") or {}).get("name", "")),
+            type_key=str((item.get("data") or {}).get("type", "")),
+            custom=bool((item.get("data") or {}).get("custom", False)),
+            global_=bool((item.get("data") or {}).get("global", False)),
+            required=bool((item.get("data") or {}).get("required", False)),
+            section=str(item.get("sectionType", "")).lower(),
+            position=position,
+            external_uuid=str((item.get("data") or {}).get("externalUuid") or ""),
+            description=str((item.get("data") or {}).get("description") or ""),
+            operations=dict((item.get("data") or {}).get("operations") or {}),
+            provider=dict((item.get("data") or {}).get("provider") or {}),
+        )
+        for position, item in enumerate(items_payload)
+    )
+    return TmpLayout(layout_id=layout_id, owner=owner, items=items)
+
+
 class TmpDialect:
     """Team-managed-project write surface. See module docstring for phase scope."""
 
@@ -180,6 +233,7 @@ class TmpDialect:
     def __init__(self, client: JiraHTTPClient) -> None:
         self._client = client
         self._graphql = GraphQLClient(client)
+        self._internal_rest = InternalRestClient(client)
 
     # ── Fields: create / edit / delete ───────────────────────────────
     async def create_field(
@@ -384,3 +438,103 @@ class TmpDialect:
             if fid in field_configs
         )
         return TmpLayout(layout_id=str(result["id"]), owner=owner, items=items)
+
+    # ── Work types: create / delete ──────────────────────────────────
+    async def create_worktype(
+        self,
+        *,
+        project_id: str,
+        project_uuid: str,
+        name: str,
+        description: str = "",
+        avatar_id: int = _DEFAULT_WORKTYPE_AVATAR,
+    ) -> TmpWorkType:
+        """POST .../settings/issuetype: a project-scoped work type.
+
+        No captured field controls hierarchy (subtask vs. standard vs. epic)
+        on this endpoint -- every capture created a standard work type, so
+        subtask/epic creation is not supported here pending a fresh capture.
+        """
+        body = {
+            "projectUuid": project_uuid,
+            "externalUuid": str(uuid.uuid4()),
+            "name": name,
+            "description": description,
+            "avatarId": avatar_id,
+            "properties": {},
+            "context": {"issueTypeKey": "custom"},
+        }
+        result = await self._internal_rest.post(f"{SIMPLIFIED_PATH}/project/{project_id}/settings/issuetype", json=body)
+        if not isinstance(result, dict) or "id" not in result:
+            raise TmpApiError(f"work-type create for {name!r} returned no id: {result!r}")
+        return TmpWorkType(
+            id=str(result["id"]),
+            name=str(result.get("name", name)),
+            avatar_id=str(result.get("avatarId", avatar_id)),
+            hierarchy_level=int(result.get("hierarchyLevel", 0)),
+        )
+
+    async def delete_worktype(self, *, project_id: str, worktype_id: str) -> None:
+        """Runs the checkDelete preflight before DELETE, refusing to delete a
+        work type that still has issues on it rather than doing so silently."""
+        base = f"{SIMPLIFIED_PATH}/project/{project_id}/settings/issuetype"
+        check = await self._internal_rest.get(f"{base}/checkDelete/{worktype_id}")
+        if isinstance(check, dict) and check.get("safeToDelete") is False:
+            raise TmpApiError(
+                f"work type {worktype_id} is not safe to delete: {check.get('issueCount', '?')} issue(s) reference it"
+            )
+        await self._internal_rest.delete(f"{base}/{worktype_id}")
+
+    # ── Layout write ──────────────────────────────────────────────────
+    async def write_layout(self, *, project_id: str, issuetype_id: int, layout: TmpLayout) -> TmpLayout:
+        """PUT .../issueLayouts/{layoutId}: full-replacement declarative write.
+
+        Carries both the work-type metadata (rename/description, via
+        `layout.owner`) and the complete field list (association, order,
+        required flags, via `layout.items`) in one call. Order is conveyed by
+        array position, not an explicit field -- items are sorted by
+        `position` before being sent.
+        """
+        items_payload = [
+            {
+                "type": "FIELD",
+                "sectionType": item.section,
+                "key": item.key,
+                "data": {
+                    "key": item.key,
+                    "externalUuid": item.external_uuid,
+                    "name": item.name,
+                    "description": item.description,
+                    "type": item.type_key,
+                    "custom": item.custom,
+                    "global": item.global_,
+                    "required": item.required,
+                    "operations": item.operations,
+                    "provider": item.provider,
+                    "properties": {},
+                },
+            }
+            for item in sorted(layout.items, key=lambda i: i.position)
+        ]
+        body = {
+            "projectId": int(project_id),
+            "extraDefinerId": int(issuetype_id),
+            "owners": [
+                {
+                    "type": "ISSUE_TYPE",
+                    "data": {
+                        "id": layout.owner.id,
+                        "name": layout.owner.name,
+                        "description": layout.owner.description,
+                        "avatarId": layout.owner.avatar_id,
+                        "iconUrl": layout.owner.icon_url,
+                    },
+                }
+            ],
+            "issueLayoutType": "ISSUE_VIEW",
+            "issueLayoutConfig": {"items": items_payload},
+        }
+        response = await self._internal_rest.put(f"{ISSUE_LAYOUTS_PATH}/{layout.layout_id}", json=body)
+        if not isinstance(response, dict):
+            raise TmpApiError(f"issueLayouts PUT for {layout.layout_id} returned unexpected body: {response!r}")
+        return _parse_written_layout(layout.layout_id, response)
