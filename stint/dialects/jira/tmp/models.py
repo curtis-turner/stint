@@ -137,3 +137,29 @@ class TmpSnapshot:
 
     snapshot: Snapshot
     layouts: dict[str, TmpLayout] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TmpCapabilityCheck:
+    """One read-only pre-flight check's result."""
+
+    name: str
+    ok: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class TmpCapabilityReport:
+    """The result of ``TmpDialect.check_capabilities``.
+
+    Covers only read-only surfaces (auth, the fields gateway, the gira layout
+    reader) -- it cannot confirm the mutating surfaces' ``@optIn`` keys are
+    still correct, since the only way to prove that is to attempt an actual
+    mutation. See ``check_capabilities``'s docstring for the full reasoning.
+    """
+
+    checks: tuple[TmpCapabilityCheck, ...]
+
+    @property
+    def ok(self) -> bool:
+        return all(c.ok for c in self.checks)

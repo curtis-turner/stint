@@ -1,5 +1,6 @@
-"""TMP dialect build phases 2-4: fields gateway, field CRUD, reads, work
-types, the layout write, and reflect.
+"""TMP dialect build phases 2-6: fields gateway, field CRUD, reads, work
+types, the layout write, reflect, and the capability probe / experimental
+warning.
 
 All HTTP is mocked via respx against the exact shapes captured from a live
 tenant and confirmed working over token auth 2026-07-05 (see
@@ -825,3 +826,107 @@ async def test_reflect_assembles_snapshot_and_layouts():
     assert snap.projects["VM"].id == "10001"
     assert snap.projects["VM"].style == "next-gen"
     assert tmp_snapshot.layouts["10007"].layout_id == "c6b31d04-d184-48ef-877e-a11908f07576"
+
+
+# ── Experimental warning + check_capabilities ───────────────────────────
+def test_tmp_dialect_emits_experimental_warning_on_construction():
+    with pytest.warns(UserWarning, match="experimental"):
+        TmpDialect(_client())
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_check_capabilities_all_ok():
+    respx.get(f"{API_ROOT}/myself").mock(return_value=httpx.Response(200, json={"accountId": "acc-1"}))
+    respx.get(TENANT_INFO_URL).mock(return_value=httpx.Response(200, json={"cloudId": "cloud-1"}))
+    respx.post(GATEWAY_URL).mock(
+        side_effect=_gateway_dispatch(
+            {
+                "StintTmpResolveProject": _project_by_key_response(
+                    10001, "proj-uuid-1", "VM", "Vulnerability Management", "TEAM_MANAGED_PROJECT"
+                ),
+                "StintTmpFieldEnumeration": _enumeration_response([]),
+            }
+        )
+    )
+    respx.get(ISSUETYPE_PROJECT_URL).mock(
+        return_value=httpx.Response(200, json=[{"id": "10007", "name": "Task", "description": "", "subtask": False}])
+    )
+    respx.post(GIRA_URL).mock(return_value=httpx.Response(200, json=_layout_response()))
+
+    report = await _dialect().check_capabilities(project_key="VM")
+    assert report.ok is True
+    assert {c.name for c in report.checks} == {"auth", "resolve_project", "field_enumeration", "layout_read"}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_check_capabilities_stops_early_on_auth_failure():
+    respx.get(f"{API_ROOT}/myself").mock(return_value=httpx.Response(401, json={}))
+    report = await _dialect().check_capabilities(project_key="VM")
+    assert report.ok is False
+    assert [c.name for c in report.checks] == ["auth"]
+    assert report.checks[0].ok is False
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_check_capabilities_stops_early_on_project_resolution_failure():
+    respx.get(f"{API_ROOT}/myself").mock(return_value=httpx.Response(200, json={"accountId": "acc-1"}))
+    respx.get(TENANT_INFO_URL).mock(return_value=httpx.Response(200, json={"cloudId": "cloud-1"}))
+    respx.post(GATEWAY_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_project_by_key_response(10002, "proj-uuid-2", "CMP", "Classic Project", "CLASSIC_PROJECT"),
+        )
+    )
+    report = await _dialect().check_capabilities(project_key="CMP")
+    assert report.ok is False
+    assert [c.name for c in report.checks] == ["auth", "resolve_project"]
+    assert report.checks[-1].ok is False
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_check_capabilities_reports_partial_failure_and_keeps_checking():
+    respx.get(f"{API_ROOT}/myself").mock(return_value=httpx.Response(200, json={"accountId": "acc-1"}))
+    respx.get(TENANT_INFO_URL).mock(return_value=httpx.Response(200, json={"cloudId": "cloud-1"}))
+    respx.post(GATEWAY_URL).mock(
+        side_effect=_gateway_dispatch(
+            {
+                "StintTmpResolveProject": _project_by_key_response(
+                    10001, "proj-uuid-1", "VM", "Vulnerability Management", "TEAM_MANAGED_PROJECT"
+                ),
+                "StintTmpFieldEnumeration": {"errors": [{"message": "boom"}]},
+            }
+        )
+    )
+    respx.get(ISSUETYPE_PROJECT_URL).mock(return_value=httpx.Response(200, json=[]))
+
+    report = await _dialect().check_capabilities(project_key="VM")
+    assert report.ok is False
+    by_name = {c.name: c.ok for c in report.checks}
+    assert by_name == {"auth": True, "resolve_project": True, "field_enumeration": False, "layout_read": True}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_check_capabilities_skips_layout_check_when_no_worktypes():
+    respx.get(f"{API_ROOT}/myself").mock(return_value=httpx.Response(200, json={"accountId": "acc-1"}))
+    respx.get(TENANT_INFO_URL).mock(return_value=httpx.Response(200, json={"cloudId": "cloud-1"}))
+    respx.post(GATEWAY_URL).mock(
+        side_effect=_gateway_dispatch(
+            {
+                "StintTmpResolveProject": _project_by_key_response(
+                    10001, "proj-uuid-1", "VM", "Vulnerability Management", "TEAM_MANAGED_PROJECT"
+                ),
+                "StintTmpFieldEnumeration": _enumeration_response([]),
+            }
+        )
+    )
+    respx.get(ISSUETYPE_PROJECT_URL).mock(return_value=httpx.Response(200, json=[]))
+
+    report = await _dialect().check_capabilities(project_key="VM")
+    assert report.ok is True
+    layout_check = next(c for c in report.checks if c.name == "layout_read")
+    assert "no work types yet" in layout_check.detail

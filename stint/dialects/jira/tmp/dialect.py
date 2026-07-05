@@ -35,6 +35,14 @@ unicode in user-supplied names and descriptions without needing to know the
 gateway's input-object type names (which aren't visible from any HAR capture,
 since the confirmed stable path uses inline literals, not `$variables`, for
 mutation inputs).
+
+Phase 5 (``desired.py``/``state.py``/``ops.py``/``reconcile.py``, siblings of
+this module) added reconcile and a TMP-local op set operating directly
+against this class. Phase 6 adds ``check_capabilities`` (a read-only
+pre-flight against a live tenant) and an experimental-use warning emitted on
+construction -- both self-contained here, since TmpDialect still has no real
+CLI/``Engine`` entry point to hook an automatic "first use" trigger into
+(that wiring remains deferred; see ``tmp_dialect_design.md``).
 """
 
 from __future__ import annotations
@@ -42,12 +50,15 @@ from __future__ import annotations
 import json
 import re
 import uuid
+import warnings
 from typing import Any
 
 from stint.client.http import JiraHTTPClient
 from stint.dialects.jira.tmp.graphql import FIELDS_GATEWAY_PATH, LAYOUT_READ_PATH, GraphQLClient
 from stint.dialects.jira.tmp.internal_rest import ISSUE_LAYOUTS_PATH, SIMPLIFIED_PATH, InternalRestClient
 from stint.dialects.jira.tmp.models import (
+    TmpCapabilityCheck,
+    TmpCapabilityReport,
     TmpField,
     TmpFieldAssociation,
     TmpFieldOption,
@@ -58,8 +69,15 @@ from stint.dialects.jira.tmp.models import (
     TmpSnapshot,
     TmpWorkType,
 )
-from stint.exceptions import TmpApiError
+from stint.exceptions import StintError, TmpApiError
 from stint.state.snapshot import CustomFieldSnapshot, IssueTypeSnapshot, ProjectSnapshot, ServerInfoSnapshot, Snapshot
+
+_EXPERIMENTAL_NOTICE = (
+    "TmpDialect (team-managed project support) is experimental: it drives "
+    "undocumented, unsupported Atlassian internal APIs that may change or "
+    "break without notice, and it is not registered as a selectable stint "
+    "dialect yet. See tmp_spike_conclusion.md for the full risk record."
+)
 
 # Public REST root. TMP is Cloud-only, so this is fixed (unlike JiraDialectBase's
 # ClassVar hook for DC/Cloud divergence -- not needed here, there is no TMP-on-DC).
@@ -248,6 +266,7 @@ class TmpDialect:
     name = "jira_cloud_tmp"
 
     def __init__(self, client: JiraHTTPClient) -> None:
+        warnings.warn(_EXPERIMENTAL_NOTICE, stacklevel=2)
         self._client = client
         self._graphql = GraphQLClient(client)
         self._internal_rest = InternalRestClient(client)
@@ -668,3 +687,56 @@ class TmpDialect:
             projects={ctx.key: ProjectSnapshot(id=ctx.project_id, key=ctx.key, name=ctx.name, style="next-gen")},
         )
         return TmpSnapshot(snapshot=snapshot, layouts=layouts)
+
+    # ── Capability probe ─────────────────────────────────────────────
+    async def check_capabilities(self, *, project_key: str) -> TmpCapabilityReport:
+        """Read-only pre-flight: confirms auth, the fields gateway, and the
+        gira layout reader still respond as expected for ``project_key``,
+        before a real apply run touches a live tenant.
+
+        Deliberately does NOT verify ``@optIn`` keys are still correct --
+        that can only be confirmed by attempting an actual mutation
+        (create/edit/delete), and doing that automatically against a real
+        user's project on every run would be wasteful and unsafe (visible
+        audit-log noise, rate-limit exposure, and for create, a real
+        throwaway object left behind). If Atlassian changes a required
+        ``@optIn`` key, the first real write fails loudly instead
+        (``TmpApiError``, naming the correct key, per the gateway's own
+        self-documenting ``OptInException``/``BetaHeaderOptInException``)
+        rather than being caught here. This probe only catches the class of
+        breakage visible without mutating: moved endpoints, changed response
+        shapes, and auth/permission failures.
+        """
+        checks: list[TmpCapabilityCheck] = []
+
+        try:
+            await self._client.get_json(f"{_API_ROOT}/myself")
+        except StintError as e:
+            checks.append(TmpCapabilityCheck("auth", False, f"{type(e).__name__}: {e}"))
+            return TmpCapabilityReport(checks=tuple(checks))
+        checks.append(TmpCapabilityCheck("auth", True, "token valid"))
+
+        try:
+            ctx = await self.resolve_project(project_key=project_key)
+        except StintError as e:
+            checks.append(TmpCapabilityCheck("resolve_project", False, f"{type(e).__name__}: {e}"))
+            return TmpCapabilityReport(checks=tuple(checks))
+        checks.append(TmpCapabilityCheck("resolve_project", True, f"resolved {project_key!r} -> {ctx.project_id}"))
+
+        try:
+            await self.enumerate_fields(cloud_id=ctx.cloud_id, project_key=project_key)
+            checks.append(TmpCapabilityCheck("field_enumeration", True, "fields gateway read OK"))
+        except StintError as e:
+            checks.append(TmpCapabilityCheck("field_enumeration", False, f"{type(e).__name__}: {e}"))
+
+        try:
+            worktypes = await self.list_worktypes(project_id=ctx.project_id)
+            if worktypes:
+                await self.read_layout(project_id=ctx.project_id, issuetype_id=int(worktypes[0].id))
+                checks.append(TmpCapabilityCheck("layout_read", True, "gira read OK"))
+            else:
+                checks.append(TmpCapabilityCheck("layout_read", True, "skipped: project has no work types yet"))
+        except StintError as e:
+            checks.append(TmpCapabilityCheck("layout_read", False, f"{type(e).__name__}: {e}"))
+
+        return TmpCapabilityReport(checks=tuple(checks))
