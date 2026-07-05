@@ -1,5 +1,5 @@
-"""TMP dialect build phases 2-3: fields gateway, field CRUD, reads, work
-types, and the layout write.
+"""TMP dialect build phases 2-4: fields gateway, field CRUD, reads, work
+types, the layout write, and reflect.
 
 All HTTP is mocked via respx against the exact shapes captured from a live
 tenant and confirmed working over token auth 2026-07-05 (see
@@ -28,6 +28,9 @@ GATEWAY_URL = f"{BASE}{FIELDS_GATEWAY_PATH}"
 GIRA_URL = f"{BASE}{LAYOUT_READ_PATH}"
 SIMPLIFIED_URL = f"{BASE}{SIMPLIFIED_PATH}"
 ISSUE_LAYOUTS_URL = f"{BASE}{ISSUE_LAYOUTS_PATH}"
+API_ROOT = f"{BASE}/rest/api/3"
+TENANT_INFO_URL = f"{BASE}/_edge/tenant_info"
+ISSUETYPE_PROJECT_URL = f"{API_ROOT}/issuetype/project"
 
 
 def _client() -> JiraHTTPClient:
@@ -268,8 +271,13 @@ async def test_delete_field_raises_when_success_false():
         await _dialect().delete_field(cloud_id="cid", project_id="10001", field_id="customfield_10179")
 
 
-def _field_node(field_id: str, name: str, scope: str, type_key: str) -> dict:
-    return {"node": {"field": {"fieldId": field_id, "name": name, "scope": scope, "typeKey": type_key}}}
+def _field_node(field_id: str, name: str, scope: str, type_key: str, options: list[dict] | None = None) -> dict:
+    return {
+        "node": {
+            "field": {"fieldId": field_id, "name": name, "scope": scope, "typeKey": type_key},
+            "fieldOptions": {"edges": [{"node": o} for o in (options or [])]},
+        }
+    }
 
 
 def _enumeration_response(edges: list[dict], *, has_next_page: bool = False) -> dict:
@@ -311,6 +319,30 @@ async def test_enumerate_fields_parses_edges_and_sends_experimental_header():
     assert fields[0].scope == "PROJECT"
     assert fields[1].scope == "GLOBAL"
     assert route.calls.last.request.headers["X-ExperimentalApi"] == "JiraProject"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_enumerate_fields_parses_options():
+    select_type = "com.atlassian.jira.plugin.system.customfieldtypes:select"
+    respx.post(GATEWAY_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_enumeration_response(
+                [
+                    _field_node(
+                        "customfield_10179",
+                        "test-options",
+                        "PROJECT",
+                        select_type,
+                        options=[{"optionId": 10094, "value": "test1", "color": None}],
+                    )
+                ]
+            ),
+        )
+    )
+    fields = await _dialect().enumerate_fields(cloud_id="cid", project_key="VM")
+    assert fields[0].options == (TmpFieldOption(value="test1", option_id="10094", color=None),)
 
 
 @pytest.mark.asyncio
@@ -638,3 +670,158 @@ async def test_write_layout_raises_when_no_owners_in_response():
     )
     with pytest.raises(TmpApiError, match="has no owners"):
         await _dialect().write_layout(project_id="10001", issuetype_id=10007, layout=layout)
+
+
+# ── resolve_project / list_worktypes / reflect ─────────────────────────
+def _project_by_key_response(project_id: int, uuid: str, key: str, name: str, style: str) -> dict:
+    return {
+        "data": {
+            "jira_projectByIdOrKey": {
+                "projectId": project_id,
+                "key": key,
+                "uuid": uuid,
+                "name": name,
+                "projectType": "software",
+                "projectStyle": style,
+            }
+        }
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_resolve_project_returns_context():
+    respx.get(TENANT_INFO_URL).mock(return_value=httpx.Response(200, json={"cloudId": "cloud-1"}))
+    respx.post(GATEWAY_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_project_by_key_response(
+                10001, "proj-uuid-1", "VM", "Vulnerability Management", "TEAM_MANAGED_PROJECT"
+            ),
+        )
+    )
+    ctx = await _dialect().resolve_project(project_key="VM")
+    assert ctx.cloud_id == "cloud-1"
+    assert ctx.project_id == "10001"
+    assert ctx.project_uuid == "proj-uuid-1"
+    assert ctx.key == "VM"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_resolve_project_rejects_non_team_managed():
+    respx.get(TENANT_INFO_URL).mock(return_value=httpx.Response(200, json={"cloudId": "cloud-1"}))
+    respx.post(GATEWAY_URL).mock(
+        return_value=httpx.Response(
+            200, json=_project_by_key_response(10002, "proj-uuid-2", "CMP", "Classic Project", "CLASSIC_PROJECT")
+        )
+    )
+    with pytest.raises(TmpApiError, match="not TEAM_MANAGED_PROJECT"):
+        await _dialect().resolve_project(project_key="CMP")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_resolve_project_caches_cloud_id_across_calls():
+    tenant_route = respx.get(TENANT_INFO_URL).mock(return_value=httpx.Response(200, json={"cloudId": "cloud-1"}))
+    respx.post(GATEWAY_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_project_by_key_response(
+                10001, "proj-uuid-1", "VM", "Vulnerability Management", "TEAM_MANAGED_PROJECT"
+            ),
+        )
+    )
+    dialect = _dialect()
+    await dialect.resolve_project(project_key="VM")
+    await dialect.resolve_project(project_key="VM")
+    assert tenant_route.call_count == 1
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_list_worktypes_parses_response():
+    respx.get(ISSUETYPE_PROJECT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"id": "10007", "name": "Task", "description": "Tasks track small pieces of work.", "subtask": False},
+                {"id": "10008", "name": "Subtask", "description": "", "subtask": True},
+            ],
+        )
+    )
+    worktypes = await _dialect().list_worktypes(project_id="10001")
+    assert [w.id for w in worktypes] == ["10007", "10008"]
+    assert worktypes[0].project_scoped is True
+    assert worktypes[1].subtask is True
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_list_worktypes_raises_on_non_list_response():
+    respx.get(ISSUETYPE_PROJECT_URL).mock(return_value=httpx.Response(200, json={"error": "nope"}))
+    with pytest.raises(TmpApiError, match="returned non-list"):
+        await _dialect().list_worktypes(project_id="10001")
+
+
+def _gateway_dispatch(responses: dict[str, dict]):
+    """respx side_effect: route by operationName, since resolve_project and
+    enumerate_fields both POST to the same gateway URL."""
+
+    def _respond(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        op = body.get("operationName")
+        if op not in responses:
+            raise AssertionError(f"no mocked response for operationName {op!r}")
+        return httpx.Response(200, json=responses[op])
+
+    return _respond
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_reflect_assembles_snapshot_and_layouts():
+    select_type = "com.atlassian.jira.plugin.system.customfieldtypes:select"
+    team_type = "com.atlassian.jira.plugin.system.customfieldtypes:atlassian-team"
+    respx.get(TENANT_INFO_URL).mock(return_value=httpx.Response(200, json={"cloudId": "cloud-1"}))
+    respx.get(f"{API_ROOT}/serverInfo").mock(
+        return_value=httpx.Response(200, json={"deploymentType": "Cloud", "version": "1001.0.0", "baseUrl": BASE})
+    )
+    respx.post(GATEWAY_URL).mock(
+        side_effect=_gateway_dispatch(
+            {
+                "StintTmpResolveProject": _project_by_key_response(
+                    10001, "proj-uuid-1", "VM", "Vulnerability Management", "TEAM_MANAGED_PROJECT"
+                ),
+                "StintTmpFieldEnumeration": _enumeration_response(
+                    [
+                        _field_node(
+                            "customfield_10179",
+                            "test-options",
+                            "PROJECT",
+                            select_type,
+                            options=[{"optionId": 10094, "value": "test1", "color": None}],
+                        ),
+                        # a GLOBAL (shared, CMP-visible) field: reflect must exclude it
+                        _field_node("customfield_10001", "Team", "GLOBAL", team_type),
+                    ]
+                ),
+            }
+        )
+    )
+    respx.get(ISSUETYPE_PROJECT_URL).mock(
+        return_value=httpx.Response(200, json=[{"id": "10007", "name": "Task", "description": "", "subtask": False}])
+    )
+    respx.post(GIRA_URL).mock(return_value=httpx.Response(200, json=_layout_response()))
+
+    tmp_snapshot = await _dialect().reflect(project_key="VM")
+
+    snap = tmp_snapshot.snapshot
+    assert snap.server_info.version == "1001.0.0"
+    assert list(snap.custom_fields) == ["customfield_10179"]  # GLOBAL field excluded
+    assert snap.custom_fields["customfield_10179"].options == {"test1": "10094"}
+    assert "10007" in snap.issuetypes
+    assert snap.issuetypes["10007"].project_scoped is True
+    assert snap.projects["VM"].id == "10001"
+    assert snap.projects["VM"].style == "next-gen"
+    assert tmp_snapshot.layouts["10007"].layout_id == "c6b31d04-d184-48ef-877e-a11908f07576"

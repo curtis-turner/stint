@@ -1,14 +1,20 @@
-"""Return shapes for the TMP fields-gateway and layout-read operations.
+"""Return shapes for the TMP fields-gateway, layout, and reflect operations.
 
 Kept inside the TMP module, not ``stint.state.snapshot``: TMP is project-local
-and scheme-less, so its shapes don't fit the CMP scheme-derived Snapshot
-classes. A future TMP reflect (build phase 4) will translate these into the
-dialect-agnostic ``Snapshot`` the planner consumes.
+and scheme-less, so most of its shapes don't fit the CMP scheme-derived
+Snapshot classes. ``TmpSnapshot`` is the one exception -- it wraps a genuine
+``Snapshot`` (reused as-is, imported one-directionally from core; the
+isolation rule is that core must never import from here, not the reverse)
+alongside the per-work-type layout data ``Snapshot`` has no room for, since
+CMP expresses field/issuetype association via screens and schemes, which TMP
+simply doesn't have.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from stint.state.snapshot import Snapshot
 
 
 @dataclass(frozen=True)
@@ -44,6 +50,7 @@ class TmpFieldAssociation:
     name: str
     scope: str
     type_key: str
+    options: tuple[TmpFieldOption, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -98,3 +105,35 @@ class TmpLayout:
     layout_id: str
     owner: TmpLayoutOwner
     items: tuple[TmpLayoutItem, ...] = ()
+
+
+@dataclass(frozen=True)
+class TmpProjectContext:
+    """Resolved identifiers for one team-managed project.
+
+    ``project_id`` (numeric) is what the layout read/write and work-type
+    endpoints key on; ``project_uuid`` is what work-type *creation* needs
+    instead (a separate identifier space, confirmed live). Resolving both
+    together means callers only need a project key.
+    """
+
+    cloud_id: str
+    project_id: str
+    project_uuid: str
+    key: str
+    name: str
+
+
+@dataclass(frozen=True)
+class TmpSnapshot:
+    """TMP's reflected state for one project.
+
+    ``snapshot`` is a genuine, dialect-agnostic ``Snapshot`` (server_info,
+    custom_fields, issuetypes, projects populated; screens/schemes left at
+    their empty defaults, since TMP has none). ``layouts`` carries the one
+    thing ``Snapshot`` has no room for: which fields are on which work type,
+    in what order, and whether they're required -- keyed by issuetype id.
+    """
+
+    snapshot: Snapshot
+    layouts: dict[str, TmpLayout] = field(default_factory=dict)

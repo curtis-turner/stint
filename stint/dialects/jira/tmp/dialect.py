@@ -3,15 +3,25 @@
 Builds incrementally across the TMP dialect build phases (see
 ``tmp_dialect_design.md``). Phase 2 added field create/edit/delete on the
 fields gateway plus two reads (field enumeration, work-type layout). Phase 3
-adds work-type create/delete (simplified REST) and the layout write (full-
+added work-type create/delete (simplified REST) and the layout write (full-
 replacement PUT, needs the ``layoutId`` from ``read_layout``). There is no
 separate work-type *update*: renaming/re-describing a work type happens
 through ``write_layout``'s owner data -- in TMP the work-type edit screen IS
 the issue-layout screen (see ``tmp_crud_surface.md``).
 
-``detect``/``reflect`` and reconcile land in later phases -- until then this
-class does not satisfy ``BaseDialect`` and must not be registered as a
-selectable dialect.
+Phase 4 adds ``reflect``: resolves a project by key (cloud id, numeric
+project id, and project uuid all live in different places), lists its work
+types via public REST, and assembles a ``TmpSnapshot`` -- a genuine,
+dialect-agnostic ``Snapshot`` plus the per-work-type layout data ``Snapshot``
+has no room for. ``reflect`` here takes a required ``project_key`` and
+returns ``TmpSnapshot`` rather than bare ``Snapshot``, which is a deliberate
+deviation from ``BaseDialect.reflect(self) -> Snapshot``: TMP objects are
+inherently project-scoped (unlike CMP's genuinely tenant-wide schemes), so a
+zero-arg, whole-tenant reflect would mean discovering and reflecting every
+team-managed project on the site on every call. Reconciling this signature
+gap (or deciding it's fine to leave it) is Phase 5's job when reflect/apply
+actually get wired up -- this class still does not satisfy ``BaseDialect``
+and must not be registered as a selectable dialect until then.
 
 Every shape here was captured from a live tenant and confirmed working over
 stint's existing token auth (see ``tmp_internal_endpoints.md``); the query
@@ -44,9 +54,16 @@ from stint.dialects.jira.tmp.models import (
     TmpLayout,
     TmpLayoutItem,
     TmpLayoutOwner,
+    TmpProjectContext,
+    TmpSnapshot,
     TmpWorkType,
 )
 from stint.exceptions import TmpApiError
+from stint.state.snapshot import CustomFieldSnapshot, IssueTypeSnapshot, ProjectSnapshot, ServerInfoSnapshot, Snapshot
+
+# Public REST root. TMP is Cloud-only, so this is fixed (unlike JiraDialectBase's
+# ClassVar hook for DC/Cloud divergence -- not needed here, there is no TMP-on-DC).
+_API_ROOT = "/rest/api/3"
 
 # A standard system issue-type avatar id, used as create_worktype's default.
 _DEFAULT_WORKTYPE_AVATAR = 10321
@@ -234,6 +251,7 @@ class TmpDialect:
         self._client = client
         self._graphql = GraphQLClient(client)
         self._internal_rest = InternalRestClient(client)
+        self._cloud_id: str | None = None
 
     # ── Fields: create / edit / delete ───────────────────────────────
     async def create_field(
@@ -331,7 +349,9 @@ class TmpDialect:
     ) -> list[TmpFieldAssociation]:
         """jiraProjectByKey...fieldAssociationWithIssueTypes: every field
         visible on the project, both TMP-native (scope PROJECT) and shared
-        (scope GLOBAL).
+        (scope GLOBAL), including select-field options (reflect needs these
+        to detect option drift; the `fieldOptions` sub-selection is the same
+        shape already confirmed live on create_field/edit_field's responses).
 
         Relay-paginated on the wire (`pageInfo.hasNextPage`), but cursor
         pagination past the first page was never exercised live, so a
@@ -346,7 +366,12 @@ class TmpDialect:
             jiraProjectByKey(cloudId: {_gql_str(cloud_id)}, key: {_gql_str(project_key)}) {{
               projectWithVisibleIssueTypeIds {{
                 fieldAssociationWithIssueTypes(first: {int(page_size)}) {{
-                  edges {{ node {{ field {{ fieldId name scope typeKey }} }} }}
+                  edges {{
+                    node {{
+                      field {{ fieldId name scope typeKey }}
+                      fieldOptions {{ edges {{ node {{ optionId value color {{ colorKey }} }} }} }}
+                    }}
+                  }}
                   pageInfo {{ hasNextPage }}
                 }}
               }}
@@ -372,6 +397,9 @@ class TmpDialect:
                 name=str(e["node"]["field"].get("name", "")),
                 scope=str(e["node"]["field"].get("scope", "")),
                 type_key=str(e["node"]["field"].get("typeKey", "")),
+                options=tuple(
+                    _parse_field_option(o["node"]) for o in ((e["node"].get("fieldOptions") or {}).get("edges") or [])
+                ),
             )
             for e in conn["edges"]
         ]
@@ -538,3 +566,105 @@ class TmpDialect:
         if not isinstance(response, dict):
             raise TmpApiError(f"issueLayouts PUT for {layout.layout_id} returned unexpected body: {response!r}")
         return _parse_written_layout(layout.layout_id, response)
+
+    # ── Reflect ─────────────────────────────────────────────────────────
+    async def _server_info(self) -> ServerInfoSnapshot:
+        """GET /serverInfo: style-agnostic, identical to CmpDialect's own
+        version (duplicated rather than shared, to keep TmpDialect independent
+        of JiraDialectBase per the isolation principle)."""
+        payload = await self._client.get_json(f"{_API_ROOT}/serverInfo")
+        return ServerInfoSnapshot(
+            deployment_type=str(payload.get("deploymentType", "")),
+            version=str(payload.get("version", "")),
+            base_url=str(payload.get("baseUrl", self._client.base_url)),
+        )
+
+    async def _resolve_cloud_id(self) -> str:
+        """GET /_edge/tenant_info, cached: every fields-gateway call needs it."""
+        if self._cloud_id is None:
+            payload = await self._client.get_json("/_edge/tenant_info")
+            cloud_id = payload.get("cloudId") if isinstance(payload, dict) else None
+            if not cloud_id:
+                raise TmpApiError(f"/_edge/tenant_info returned no cloudId: {payload!r}")
+            self._cloud_id = str(cloud_id)
+        return self._cloud_id
+
+    async def resolve_project(self, *, project_key: str) -> TmpProjectContext:
+        """jira_projectByIdOrKey: resolves the numeric project id and the
+        project uuid (a separate identifier space that only work-type
+        *creation* needs) from a project key, and confirms the project is
+        actually team-managed. No `@optIn` on this field, confirmed live."""
+        cloud_id = await self._resolve_cloud_id()
+        query = f"""
+        query StintTmpResolveProject {{
+          jira_projectByIdOrKey(cloudId: {_gql_str(cloud_id)}, idOrKey: {_gql_str(project_key)}) {{
+            projectId key uuid name projectType projectStyle
+          }}
+        }}
+        """
+        data = await self._graphql.query(FIELDS_GATEWAY_PATH, query=query, operation_name="StintTmpResolveProject")
+        proj = data.get("jira_projectByIdOrKey")
+        if not isinstance(proj, dict) or "projectId" not in proj:
+            raise TmpApiError(f"project {project_key!r} not found: {data!r}")
+        style = proj.get("projectStyle")
+        if style != "TEAM_MANAGED_PROJECT":
+            raise TmpApiError(
+                f"project {project_key!r} is {style!r}, not TEAM_MANAGED_PROJECT; "
+                "the TMP dialect only supports team-managed projects"
+            )
+        return TmpProjectContext(
+            cloud_id=cloud_id,
+            project_id=str(proj["projectId"]),
+            project_uuid=str(proj.get("uuid", "")),
+            key=str(proj.get("key", project_key)),
+            name=str(proj.get("name", "")),
+        )
+
+    async def list_worktypes(self, *, project_id: str) -> list[IssueTypeSnapshot]:
+        """GET /rest/api/3/issuetype/project: this project's work types.
+        Public REST, style-agnostic, already used by tools/tmp_discovery.py's
+        project-context resolution."""
+        raw = await self._client.get_json(f"{_API_ROOT}/issuetype/project", params={"projectId": project_id})
+        if not isinstance(raw, list):
+            raise TmpApiError(f"issuetype/project for {project_id!r} returned non-list: {type(raw)}")
+        return [
+            IssueTypeSnapshot(
+                id=str(it["id"]),
+                name=str(it.get("name", "")),
+                description=str(it.get("description", "")),
+                subtask=bool(it.get("subtask", False)),
+                project_scoped=True,
+            )
+            for it in raw
+        ]
+
+    async def reflect(self, *, project_key: str) -> TmpSnapshot:
+        """Assemble a TmpSnapshot from the project's fields, work types, and
+        each work type's layout. See the module docstring for why this takes
+        a required project_key and returns TmpSnapshot rather than matching
+        BaseDialect.reflect's exact zero-arg, bare-Snapshot signature.
+        """
+        ctx = await self.resolve_project(project_key=project_key)
+        server_info = await self._server_info()
+        fields = await self.enumerate_fields(cloud_id=ctx.cloud_id, project_key=ctx.key)
+        custom_fields = {
+            f.field_id: CustomFieldSnapshot(
+                id=f.field_id,
+                name=f.name,
+                type_id=f.type_key,
+                options={o.value: o.option_id for o in f.options if o.option_id is not None},
+            )
+            for f in fields
+            if f.scope == "PROJECT"
+        }
+        worktypes = await self.list_worktypes(project_id=ctx.project_id)
+        layouts = {
+            wt.id: await self.read_layout(project_id=ctx.project_id, issuetype_id=int(wt.id)) for wt in worktypes
+        }
+        snapshot = Snapshot(
+            server_info=server_info,
+            custom_fields=custom_fields,
+            issuetypes={wt.id: wt for wt in worktypes},
+            projects={ctx.key: ProjectSnapshot(id=ctx.project_id, key=ctx.key, name=ctx.name, style="next-gen")},
+        )
+        return TmpSnapshot(snapshot=snapshot, layouts=layouts)
