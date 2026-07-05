@@ -93,6 +93,39 @@ class ProjectMapping:
 
 
 @dataclass
+class TmpProjectState:
+    """One team-managed project's alias -> Jira ID mappings.
+
+    Kept as a generic, TMP-shaped record here (not imported from
+    ``stint.dialects.jira.tmp``, per that package's isolation rule: core must
+    never import from it, only the reverse). ``layout_ids`` exists because
+    the internal issueLayouts API has no listing endpoint -- the ``layoutId``
+    a reflect returns must be remembered to write back to that same layout.
+    """
+
+    fields: dict[str, str] = field(default_factory=dict)  # alias -> fieldId
+    worktypes: dict[str, str] = field(default_factory=dict)  # alias -> issuetype id
+    layout_ids: dict[str, str] = field(default_factory=dict)  # worktype alias -> layoutId
+
+    def to_dict(self) -> dict[str, Any]:
+        return _drop_empty(
+            {
+                "fields": dict(self.fields),
+                "worktypes": dict(self.worktypes),
+                "layout_ids": dict(self.layout_ids),
+            }
+        )
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> TmpProjectState:
+        return cls(
+            fields=dict(raw.get("fields", {})),
+            worktypes=dict(raw.get("worktypes", {})),
+            layout_ids=dict(raw.get("layout_ids", {})),
+        )
+
+
+@dataclass
 class StateFile:
     env: str
     jira_url: str
@@ -110,6 +143,7 @@ class StateFile:
     issuetype_screen_schemes: dict[str, SimpleMapping] = field(default_factory=dict)
     field_configurations: dict[str, SimpleMapping] = field(default_factory=dict)
     field_configuration_schemes: dict[str, SimpleMapping] = field(default_factory=dict)
+    tmp_projects: dict[str, TmpProjectState] = field(default_factory=dict)  # project alias -> TMP state
 
     def to_yaml(self) -> str:
         return yaml.safe_dump(self._to_dict(), sort_keys=False)
@@ -126,6 +160,7 @@ class StateFile:
                 "issuetype_screen_schemes": {a: m.to_dict() for a, m in self.issuetype_screen_schemes.items()},
                 "field_configurations": {a: m.to_dict() for a, m in self.field_configurations.items()},
                 "field_configuration_schemes": {a: m.to_dict() for a, m in self.field_configuration_schemes.items()},
+                "tmp_projects": {a: m.to_dict() for a, m in self.tmp_projects.items()},
             }
         )
         return {
@@ -174,6 +209,7 @@ class StateFile:
             field_configuration_schemes={
                 a: SimpleMapping.from_dict(d) for a, d in (m.get("field_configuration_schemes") or {}).items()
             },
+            tmp_projects={a: TmpProjectState.from_dict(d) for a, d in (m.get("tmp_projects") or {}).items()},
         )
 
     def save(self, path: str | Path) -> None:

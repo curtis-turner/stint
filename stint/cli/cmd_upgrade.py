@@ -18,7 +18,7 @@ from stint.state.file import StateFile
 from stint.state.lock import StateLock
 
 AuthMode = Literal["pat", "basic", "api-token"]
-DialectName = Literal["jira_cloud"]
+DialectName = Literal["jira_cloud", "jira_cloud_tmp"]
 
 
 @app.command

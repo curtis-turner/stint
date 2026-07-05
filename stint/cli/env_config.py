@@ -29,10 +29,10 @@ LiteralStr = TypeVar("LiteralStr", bound=str)
 # Connection enums. Defined once here; CLI modules import these so the param
 # annotations and the resolved values share a single source of truth.
 AuthMode = Literal["pat", "basic", "api-token"]
-DialectName = Literal["jira_cloud"]
+DialectName = Literal["jira_cloud", "jira_cloud_tmp"]
 
 _AUTH_MODES: tuple[AuthMode, ...] = ("pat", "basic", "api-token")
-_DIALECT_NAMES: tuple[DialectName, ...] = ("jira_cloud",)
+_DIALECT_NAMES: tuple[DialectName, ...] = ("jira_cloud", "jira_cloud_tmp")
 
 
 def _validate_literal(value: str | None, allowed: tuple[LiteralStr, ...], field: str) -> LiteralStr | None:

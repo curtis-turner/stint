@@ -18,10 +18,12 @@ returns ``TmpSnapshot`` rather than bare ``Snapshot``, which is a deliberate
 deviation from ``BaseDialect.reflect(self) -> Snapshot``: TMP objects are
 inherently project-scoped (unlike CMP's genuinely tenant-wide schemes), so a
 zero-arg, whole-tenant reflect would mean discovering and reflecting every
-team-managed project on the site on every call. Reconciling this signature
-gap (or deciding it's fine to leave it) is Phase 5's job when reflect/apply
-actually get wired up -- this class still does not satisfy ``BaseDialect``
-and must not be registered as a selectable dialect until then.
+team-managed project on the site on every call. This class still does not
+satisfy ``BaseDialect`` (no ``detect``, and the ``reflect`` signature above),
+so it is never registered in ``Engine``/``create_engine``'s CMP-only
+dialect registry -- it is reachable only through the separate
+``stint.engine.create_tmp_engine``/``TmpEngine`` pair (core wiring, done
+2026-07-05; see ``tmp_dialect_design.md``).
 
 Every shape here was captured from a live tenant and confirmed working over
 stint's existing token auth (see ``tmp_internal_endpoints.md``); the query
@@ -40,9 +42,12 @@ Phase 5 (``desired.py``/``state.py``/``ops.py``/``reconcile.py``, siblings of
 this module) added reconcile and a TMP-local op set operating directly
 against this class. Phase 6 adds ``check_capabilities`` (a read-only
 pre-flight against a live tenant) and an experimental-use warning emitted on
-construction -- both self-contained here, since TmpDialect still has no real
-CLI/``Engine`` entry point to hook an automatic "first use" trigger into
-(that wiring remains deferred; see ``tmp_dialect_design.md``).
+construction. Core wiring (``stint.engine.create_tmp_engine``, `stint reflect
+--dialect jira_cloud_tmp --project-key`, and ``TmpState`` persistence via
+``StateFile.tmp_projects``) followed as a separate pass -- see
+``tmp_dialect_design.md``'s build-status section for what that did and did
+not cover (notably: no CLI apply/upgrade path, since that pipeline assumes
+CmpDialect's op set throughout).
 """
 
 from __future__ import annotations
@@ -75,8 +80,9 @@ from stint.state.snapshot import CustomFieldSnapshot, IssueTypeSnapshot, Project
 _EXPERIMENTAL_NOTICE = (
     "TmpDialect (team-managed project support) is experimental: it drives "
     "undocumented, unsupported Atlassian internal APIs that may change or "
-    "break without notice, and it is not registered as a selectable stint "
-    "dialect yet. See tmp_spike_conclusion.md for the full risk record."
+    "break without notice. Reachable only via stint.engine.create_tmp_engine "
+    "(dialect='jira_cloud_tmp'), never through create_engine. See "
+    "tmp_spike_conclusion.md for the full risk record."
 )
 
 # Public REST root. TMP is Cloud-only, so this is fixed (unlike JiraDialectBase's
