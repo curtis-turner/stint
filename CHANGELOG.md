@@ -6,6 +6,8 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-05
+
 ### Added
 - Experimental, opt-in support for Jira Cloud team-managed ("next-gen")
   projects via a new `jira_cloud_tmp` dialect (`stint.dialects.jira.tmp`).
