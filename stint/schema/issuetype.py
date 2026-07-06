@@ -9,14 +9,15 @@ from typing import Any, cast
 from pydantic import BaseModel
 
 from stint.exceptions import ConfigurationError
-from stint.fields import CustomField, MultiSelectField, SelectField
+from stint.fields import CheckboxesField, CustomField, MultiSelectField, RadioButtonsField, SelectField
 from stint.registry import registry
 from stint.schema._meta import StintMeta
 
 if typing.TYPE_CHECKING:
     from stint.query.columns import Columns
 
-_SELECT_FIELD_TYPES: tuple[type, ...] = (SelectField, MultiSelectField)
+# Types whose values are constrained to a fixed, field-owned option list.
+_SELECT_FIELD_TYPES: tuple[type, ...] = (SelectField, MultiSelectField, RadioButtonsField, CheckboxesField)
 
 
 class IssueTypeMeta(StintMeta):

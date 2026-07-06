@@ -1,10 +1,16 @@
 """Construct Jira `{"fields": ...}` payloads from Pydantic model instances.
 
 Per-field-type rules:
-  - Text / TextArea: bare string (Cloud wraps ``description`` in ADF)
-  - Select:        ``{"value": "S1"}``
-  - MultiSelect:   ``[{"value": "S1"}, ...]``
+  - Text / TextArea / URL / ReadOnly: bare string (Cloud wraps ``description`` in ADF)
+  - Select / RadioButtons: ``{"value": "S1"}``
+  - MultiSelect / Checkboxes: ``[{"value": "S1"}, ...]``
+  - Labels:        bare list of strings, no ``value`` wrapping: ``["a", "b"]``
   - User:          ``{"name": "..."}`` (DC) or ``{"accountId": "..."}`` (Cloud)
+  - MultiUser:     list of the same shape
+  - Version:       ``{"name": "1.0"}``
+  - MultiVersion:  ``[{"name": "1.0"}, ...]``
+  - Group:         ``{"name": "jira-admins"}``
+  - MultiGroup:    ``[{"name": "jira-admins"}, ...]``
   - Number:        bare number
   - Date:          ``"YYYY-MM-DD"``
   - DateTime:      ``"YYYY-MM-DDTHH:MM:SS+00:00"``
@@ -25,14 +31,24 @@ from typing import TYPE_CHECKING, Any
 
 from stint.exceptions import ConfigurationError
 from stint.fields import (
+    CheckboxesField,
     DateField,
     DateTimeField,
+    GroupField,
+    LabelsField,
+    MultiGroupField,
     MultiSelectField,
+    MultiUserField,
+    MultiVersionField,
     NumberField,
+    RadioButtonsField,
+    ReadOnlyField,
     SelectField,
     TextAreaField,
     TextField,
+    URLField,
     UserField,
+    VersionField,
     _FieldType,
 )
 from stint.query.adf import wrap_plain_text
@@ -151,14 +167,34 @@ def _emit_custom_field(
     *,
     is_cloud: bool,
 ) -> Any:
-    if field_type is SelectField:
+    if field_type in (SelectField, RadioButtonsField):
         return {"value": str(value)}
-    if field_type is MultiSelectField:
+    if field_type in (MultiSelectField, CheckboxesField):
         if isinstance(value, (list, tuple)):
             return [{"value": str(v)} for v in value]
         return [{"value": str(value)}]
+    if field_type is LabelsField:
+        if isinstance(value, (list, tuple)):
+            return [str(v) for v in value]
+        return [str(value)]
     if field_type is UserField:
         return {"accountId": str(value)} if is_cloud else {"name": str(value)}
+    if field_type is MultiUserField:
+        values = value if isinstance(value, (list, tuple)) else [value]
+        key = "accountId" if is_cloud else "name"
+        return [{key: str(v)} for v in values]
+    if field_type is VersionField:
+        return {"name": str(value)}
+    if field_type is MultiVersionField:
+        if isinstance(value, (list, tuple)):
+            return [{"name": str(v)} for v in value]
+        return [{"name": str(value)}]
+    if field_type is GroupField:
+        return {"name": str(value)}
+    if field_type is MultiGroupField:
+        if isinstance(value, (list, tuple)):
+            return [{"name": str(v)} for v in value]
+        return [{"name": str(value)}]
     if field_type is DateField:
         if isinstance(value, datetime):
             return value.date().isoformat()
@@ -171,7 +207,7 @@ def _emit_custom_field(
         return str(value)
     if field_type is NumberField:
         return value
-    if field_type in (TextField, TextAreaField):
+    if field_type in (TextField, TextAreaField, URLField, ReadOnlyField):
         return value
     # Unknown field type → pass through and hope Jira understands
     return value

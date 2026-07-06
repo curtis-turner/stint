@@ -56,14 +56,24 @@ from stint.autogen.diff import (
     UpdateScreenScheme,
 )
 from stint.fields import (
+    CheckboxesField,
     DateField,
     DateTimeField,
+    GroupField,
+    LabelsField,
+    MultiGroupField,
     MultiSelectField,
+    MultiUserField,
+    MultiVersionField,
     NumberField,
+    RadioButtonsField,
+    ReadOnlyField,
     SelectField,
     TextAreaField,
     TextField,
+    URLField,
     UserField,
+    VersionField,
     _FieldType,
 )
 
@@ -264,6 +274,16 @@ _FIELD_TYPE_BY_ID: dict[str, type[_FieldType]] = {
         NumberField,
         DateField,
         DateTimeField,
+        RadioButtonsField,
+        CheckboxesField,
+        LabelsField,
+        URLField,
+        VersionField,
+        MultiVersionField,
+        GroupField,
+        MultiGroupField,
+        MultiUserField,
+        ReadOnlyField,
     )
 }
 
