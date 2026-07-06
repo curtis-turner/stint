@@ -6,6 +6,16 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Ten more standard Jira custom field types in `stint.fields`, closing the
+  gap between stint's declarative model and Jira's built-in field type
+  catalog: `RadioButtonsField`, `CheckboxesField`, `LabelsField`,
+  `URLField`, `VersionField`, `MultiVersionField`, `GroupField`,
+  `MultiGroupField`, `MultiUserField`, `ReadOnlyField`. Each is wired
+  through schema validation (`CustomField` options rules,
+  Literal-vs-options checks for the option-style types), write payloads,
+  read hydration, and autogenerate's reflect-back type lookup. (Closes #15.)
+
 ## [0.3.0] - 2026-07-05
 
 ### Added

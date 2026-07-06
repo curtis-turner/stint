@@ -20,9 +20,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from stint.fields import (
+    CheckboxesField,
+    GroupField,
+    MultiGroupField,
     MultiSelectField,
+    MultiUserField,
+    MultiVersionField,
+    RadioButtonsField,
     SelectField,
     UserField,
+    VersionField,
     _FieldType,
 )
 
@@ -125,23 +132,38 @@ def _coerce_system_field(attr_name: str, raw: Any) -> Any:
 
 def _coerce_custom_field(field_type: type[_FieldType], raw: Any) -> Any:
     """Custom-field shapes:
-    - SelectField:      {"value": "S1", "id": "100"}
-    - MultiSelectField: [{"value": "S1"}, {"value": "S2"}]
-    - UserField:        {"name": "..."} or {"accountId": "..."}
-    - others (text, number, date, datetime): bare scalar
+    - SelectField / RadioButtonsField:      {"value": "S1", "id": "100"}
+    - MultiSelectField / CheckboxesField:   [{"value": "S1"}, {"value": "S2"}]
+    - UserField:                            {"name": "..."} or {"accountId": "..."}
+    - MultiUserField:                       list of the same shape
+    - VersionField / GroupField:            {"name": "..."}
+    - MultiVersionField / MultiGroupField:  list of the same shape
+    - others (text, labels, url, number, date, datetime): bare scalar/list
     """
     if raw is None:
         return None
-    if field_type is SelectField:
+    if field_type in (SelectField, RadioButtonsField):
         if isinstance(raw, dict):
             return raw.get("value")
         return raw
-    if field_type is MultiSelectField:
+    if field_type in (MultiSelectField, CheckboxesField):
         if isinstance(raw, list):
             return [v.get("value") if isinstance(v, dict) else v for v in raw]
         return raw
     if field_type is UserField:
         if isinstance(raw, dict):
             return raw.get("accountId") or raw.get("name")
+        return raw
+    if field_type is MultiUserField:
+        if isinstance(raw, list):
+            return [v.get("accountId") or v.get("name") if isinstance(v, dict) else v for v in raw]
+        return raw
+    if field_type in (VersionField, GroupField):
+        if isinstance(raw, dict):
+            return raw.get("name")
+        return raw
+    if field_type in (MultiVersionField, MultiGroupField):
+        if isinstance(raw, list):
+            return [v.get("name") if isinstance(v, dict) else v for v in raw]
         return raw
     return raw

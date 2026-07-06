@@ -53,7 +53,51 @@ class DateTimeField(_FieldType):
     jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:datetime"
 
 
-_SELECT_TYPES = (SelectField, MultiSelectField)
+class RadioButtonsField(_FieldType):
+    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:radiobuttons"
+
+
+class CheckboxesField(_FieldType):
+    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:multicheckboxes"
+
+
+class LabelsField(_FieldType):
+    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:labels"
+
+
+class URLField(_FieldType):
+    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:url"
+
+
+class VersionField(_FieldType):
+    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:version"
+
+
+class MultiVersionField(_FieldType):
+    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:multiversion"
+
+
+class GroupField(_FieldType):
+    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:grouppicker"
+
+
+class MultiGroupField(_FieldType):
+    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:multigrouppicker"
+
+
+class MultiUserField(_FieldType):
+    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:multiuserpicker"
+
+
+class ReadOnlyField(_FieldType):
+    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:readonlyfield"
+
+
+# Option-style types: values must come from a fixed, field-owned option list
+# (the same list the Jira "add option" API manages). Version/Group/User
+# pickers validate against Jira-side objects (versions, groups, users) that
+# exist independently of the field, so they don't take `options`.
+_SELECT_TYPES = (SelectField, MultiSelectField, RadioButtonsField, CheckboxesField)
 
 
 @dataclass(frozen=False)
