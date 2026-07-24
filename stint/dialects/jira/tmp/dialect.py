@@ -302,7 +302,8 @@ class TmpDialect:
               success
               fieldAssociationWithIssueTypes {{
                 field {{ fieldId name description scope }}
-                fieldOptions {{ edges {{ node {{ optionId value color {{ colorKey }} }} }} }}
+                 fieldOptions {{ edges {{ node {{ optionId value color @optIn(to: "JiraColorfulSingleSelect")
+                     {{ colorKey }} }} }} }}
               }}
             }}
           }}
@@ -340,7 +341,8 @@ class TmpDialect:
               success
               fieldAssociationWithIssueTypes {{
                 field {{ fieldId name description scope }}
-                fieldOptions {{ edges {{ node {{ optionId value color {{ colorKey }} }} }} }}
+                 fieldOptions {{ edges {{ node {{ optionId value color @optIn(to: "JiraColorfulSingleSelect")
+                     {{ colorKey }} }} }} }}
               }}
             }}
           }}
@@ -394,7 +396,8 @@ class TmpDialect:
                   edges {{
                     node {{
                       field {{ fieldId name scope typeKey }}
-                      fieldOptions {{ edges {{ node {{ optionId value color {{ colorKey }} }} }} }}
+                      fieldOptions {{ edges {{ node {{ optionId value color @optIn(to: "JiraColorfulSingleSelect")
+                     {{ colorKey }} }} }} }}
                     }}
                   }}
                   pageInfo {{ hasNextPage }}

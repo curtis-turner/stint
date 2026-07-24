@@ -7,7 +7,7 @@ by name (or key for projects), populates the state file. No writes.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 from cyclopts import Parameter
 
@@ -16,8 +16,9 @@ from stint.autogen.stamp import stamp as run_stamp_alg
 from stint.cli.app import app
 from stint.cli.cmd_reflect import _build_auth
 from stint.cli.env_config import require_resolved_connection, resolve_connection
-from stint.engine import create_engine
+from stint.engine import create_engine, create_tmp_engine
 from stint.state.file import StateFile
+from stint.state.snapshot import Snapshot
 
 AuthMode = Literal["pat", "basic", "api-token"]
 DialectName = Literal["jira_cloud", "jira_cloud_tmp"]
@@ -47,6 +48,7 @@ async def stamp(
         Parameter(help="Env var holding the username/email. Read from env config if omitted."),
     ] = None,
     no_verify_ssl: Annotated[bool, Parameter(negative=())] = False,
+    project_key: Annotated[str | None, Parameter(help="Project key for tmp dialect")] = None,
     revision: Annotated[
         str | None,
         Parameter(help="Mark the state file at this revision id (default: leave unchanged)."),
@@ -67,12 +69,22 @@ async def stamp(
     state_path = Path(state)
     state_file = StateFile.load(state_path) if state_path.exists() else StateFile(env=env, jira_url=url)
     auth_obj = _build_auth(auth, token_env, user_env)
-    engine = create_engine(url, auth=auth_obj, dialect=dialect, verify_ssl=not no_verify_ssl)
-    try:
-        snapshot = await engine.reflect()
-    finally:
-        await engine.close()
-    report = run_stamp_alg(state_file, snapshot)
+    if dialect == "jira_cloud_tmp":
+        if not project_key:
+            raise SystemExit("--project-key is required for --dialect jira_cloud_tmp")
+        engine = create_tmp_engine(url, auth=auth_obj, dialect=dialect, verify_ssl=not no_verify_ssl)
+        try:
+            snapshot = await engine.reflect(project_key=project_key)
+        finally:
+            await engine.close()
+    else:
+        engine = create_engine(url, auth=auth_obj, dialect=dialect, verify_ssl=not no_verify_ssl)
+        try:
+            snapshot = await engine.reflect()
+        finally:
+            await engine.close()
+
+    report = run_stamp_alg(state_file, cast(Snapshot, snapshot))
     if revision:
         state_file.revision = revision
     state_file.save(state_path)

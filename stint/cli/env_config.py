@@ -79,7 +79,7 @@ def load_env_config(env_name: str) -> dict[str, Any]:
     unknown = set(raw) - set(CONFIG_KEYS)
     if unknown:
         raise ConfigurationError(
-            f"env config {path!s} has unknown keys {sorted(unknown)}; recognized: {list(CONFIG_KEYS)}"
+            f"env config {path!s} has unknown keys {sorted(map(str, unknown))}; recognized: {list(CONFIG_KEYS)}"
         )
     return raw
 
