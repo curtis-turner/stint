@@ -116,6 +116,9 @@ def _coerce_system_field(attr_name: str, raw: Any) -> Any:
     if raw is None:
         return None
     if isinstance(raw, dict):
+        # Special case: description may be an ADF document
+        if attr_name == "description":
+            return _parse_adf_to_text(raw)
         # Common cases:
         #   reporter/assignee/creator: {"name": "...", "accountId": "..."}
         #   priority/status/resolution: {"name": "..."}
@@ -128,6 +131,26 @@ def _coerce_system_field(attr_name: str, raw: Any) -> Any:
             return raw["value"]
         return raw
     return raw
+
+
+def _parse_adf_to_text(doc: dict) -> str:
+    """Parse a minimal Atlassian Document Format (ADF) dict into plain text.
+
+    The implementation follows the logic used in ``wrap_plain_text``: each
+    paragraph is joined by spaces, and paragraphs are separated by two newlines.
+    Non-text nodes are ignored.
+    """
+    if not isinstance(doc, dict) or doc.get("type") != "doc":
+        return ""
+    paragraphs: list[str] = []
+    for node in doc.get("content", []):
+        if node.get("type") == "paragraph":
+            texts: list[str] = []
+            for leaf in node.get("content", []):
+                if leaf.get("type") == "text":
+                    texts.append(leaf.get("text", ""))
+            paragraphs.append(" ".join(texts))
+    return "\n\n".join(paragraphs)
 
 
 def _coerce_custom_field(field_type: type[_FieldType], raw: Any) -> Any:

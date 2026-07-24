@@ -59,15 +59,16 @@ def stamp(
     desired = build_desired_snapshot(registry)
     report = StampReport()
 
-    _stamp_custom_fields(state, snapshot, desired, report)
-    _stamp_issuetypes(state, snapshot, desired, report)
-    _stamp_screens(state, snapshot, desired, report)
-    _stamp_screen_schemes(state, snapshot, desired, report)
-    _stamp_field_configurations(state, snapshot, desired, report)
-    _stamp_issuetype_schemes(state, snapshot, desired, report)
-    _stamp_itss(state, snapshot, desired, report)
-    _stamp_fcs(state, snapshot, desired, report)
-    _stamp_projects(state, snapshot, desired, report)
+    snapshot_to_use = snapshot.snapshot if hasattr(snapshot, "snapshot") else snapshot
+    _stamp_custom_fields(state, snapshot_to_use, desired, report)
+    _stamp_issuetypes(state, snapshot_to_use, desired, report)
+    _stamp_screens(state, snapshot_to_use, desired, report)
+    _stamp_screen_schemes(state, snapshot_to_use, desired, report)
+    _stamp_field_configurations(state, snapshot_to_use, desired, report)
+    _stamp_issuetype_schemes(state, snapshot_to_use, desired, report)
+    _stamp_itss(state, snapshot_to_use, desired, report)
+    _stamp_fcs(state, snapshot_to_use, desired, report)
+    _stamp_projects(state, snapshot_to_use, desired, report)
     return report
 
 

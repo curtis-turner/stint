@@ -6,6 +6,7 @@ import httpx
 import pytest
 import respx
 
+import examples.adf.schema as p
 from stint import (
     AsyncSession,
     PartialCommitError,
@@ -16,6 +17,7 @@ from stint import (
 from stint.engine import Engine
 from stint.exceptions import ConfigurationError
 from stint.query.adf import wrap_plain_text
+from stint.query.hydrate import hydrate
 from stint.query.payload import (
     build_fields_payload,
     build_insert_payload,
@@ -47,11 +49,11 @@ def _cloud_engine() -> Engine:
 
 def _platform_state() -> StateFile:
     state = StateFile(env="dev", jira_url=BASE)
-    state.custom_fields["bug_severity"] = CustomFieldMapping(
+    state.custom_fields["vuln_severity"] = CustomFieldMapping(
         id="customfield_10042",
         options={"S1": "100", "S2": "101", "S3": "102", "S4": "103"},
     )
-    state.custom_fields["bug_root_cause"] = CustomFieldMapping(
+    state.custom_fields["vuln_root_cause"] = CustomFieldMapping(
         id="customfield_10043",
     )
     state.issuetypes["bug"] = SimpleMapping(id="10010")
@@ -398,6 +400,30 @@ async def test_commit_delete_calls_dialect():
     assert results[-1].operation == "delete"
     assert results[-1].success
     assert (p.Bug, "PLAT-1") not in session._identity
+
+
+def test_hydrate_description_from_adf():
+    # ADF payload for description
+    issue = {
+        "key": "PLAT-1",
+        "fields": {
+            "summary": "x",
+            "reporter": {"name": "alice"},
+            "description": {
+                "type": "doc",
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {"type": "text", "text": "hello world"},
+                        ],
+                    }
+                ],
+            },
+        },
+    }
+    bug = hydrate(p.Bug, issue, _platform_state())  # type: ignore
+    assert bug.description == "hello world"
 
 
 # ── Mixed success/failure raises PartialCommitError ──────────────────
