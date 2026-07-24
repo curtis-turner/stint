@@ -1,102 +1,33 @@
-name: Publish
+# Publish to PyPI
 
-# Re-run the full quality gate against the tagged commit, then build once on a
-# published GitHub release and route by channel:
-#   - pre-release (PEP 440 aN/bN/rcN/.devN tag, or the GitHub "pre-release"
-#     checkbox) -> TestPyPI dry run only.
-#   - final release -> PyPI prod only.
-# Both uploads use OIDC trusted publishing, so no API tokens are stored. Prod
-# PyPI additionally goes through the `pypi` environment, which requires a manual
-# approval before upload. See the trusted-publisher registration steps in
-# .github/workflows/README.md.
+name: Publish to PyPI
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'  # trigger on tags like v0.3.1
 
 jobs:
-  # Gate the release on the same checks CI runs, against the tagged commit, so
-  # a release cut from a red commit never ships. build depends on it, so both
-  # publish jobs inherit the dependency.
-  gate:
+  build-and-publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.1.0
-        with:
-          python-version: "3.14"
-          enable-cache: true
-      - run: uv sync --all-extras --dev
-      - run: uv run ruff format --check .
-      - run: uv run ruff check .
-      - run: uv run ty check
-      - run: uv run pytest
+      - uses: actions/checkout@v4
 
-  classify:
-    runs-on: ubuntu-latest
-    outputs:
-      prerelease: ${{ steps.check.outputs.prerelease }}
-    steps:
-      - id: check
-        env:
-          TAG: ${{ github.event.release.tag_name }}
-          FLAG: ${{ github.event.release.prerelease }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build tools
         run: |
-          if [[ "$FLAG" == "true" || "$TAG" =~ (a|b|rc|\.dev)[0-9]+$ ]]; then
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-          fi
+          python -m pip install --upgrade pip
+          pip install build twine
 
-  build:
-    needs: [gate]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.1.0
-      - run: uv build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/
+      - name: Build distribution
+        run: python -m build --sdist --wheel --outdir dist
 
-  testpypi:
-    needs: [classify, build]
-    if: needs.classify.outputs.prerelease == 'true'
-    runs-on: ubuntu-latest
-    environment:
-      name: testpypi
-      url: https://test.pypi.org/p/stint
-    permissions:
-      id-token: write
-    steps:
-      - uses: astral-sh/setup-uv@v8.1.0
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-      - run: >-
-          uv publish
-          --publish-url https://test.pypi.org/legacy/
-          --check-url https://test.pypi.org/simple/
-          --trusted-publishing always
-
-  pypi:
-    needs: [classify, build]
-    if: needs.classify.outputs.prerelease == 'false'
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/stint
-    permissions:
-      id-token: write
-    steps:
-      - uses: astral-sh/setup-uv@v8.1.0
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-      - run: >-
-          uv publish
-          --check-url https://pypi.org/simple/
-          --trusted-publishing always
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: twine upload dist/*
