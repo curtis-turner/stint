@@ -5,6 +5,39 @@ config as code, and where stint has room.
 
 ## Jira
 
+### pycontribs/jira (the actual incumbent)
+
+The default choice for Python + Jira is [pycontribs/jira](https://github.com/pycontribs/jira),
+not a Terraform provider. Anyone reaching for Python to script Jira hits
+this library first. Checked 2026-07-12 via its API docs (`docs/api.md`,
+622 indexed snippets, no `create_issue_type` or equivalent anywhere):
+
+- **Data plane only, no admin/schema plane.** `create_issue`, `create_project`,
+  and read-only issue-type metadata (`issue_types`, the deprecated
+  `createmeta_issuetypes`) are as close as it gets to admin. No method
+  creates or updates an issue type, custom field, screen, or scheme as an
+  object. It assumes that config already exists and only touches issue
+  instances.
+- **No CMP/TMP distinction surfaces anywhere in the API.** Consistent with
+  not modeling admin objects at all — there's nothing to be asymmetric
+  about.
+- **Untyped.** Metadata methods return `Dict[str, Any]`. `create_issue`
+  returns a dynamic `Issue` `Resource` object, not a typed model. No
+  static guarantees on field names or shapes; errors surface at runtime
+  against the live tenant.
+- **Scripting tool, not a schema tool.** It is a solid, mature REST
+  wrapper for issue CRUD/JQL — that's a different job than declaring and
+  migrating the objects issues live inside.
+
+This is the real gap stint fills: nothing gives Python users both a typed
+admin/schema plane (issue types, fields, screens, schemes — soon
+workflows, see stint#23) *and* a typed ORM data plane in one tool. Most
+Jira-in-Python code today either hand-rolls untyped REST calls via
+pycontribs/jira for data, or clicks through the admin UI for schema, with
+no diff and no shared source of truth between the two.
+
+### terraform-provider-jira
+
 A Jira Terraform provider exists but does not threaten stint.
 
 [fourplusone/terraform-provider-jira](https://github.com/fourplusone/terraform-provider-jira)
@@ -50,13 +83,18 @@ Two axes are the real moat, not being first.
 
 ## Implications
 
-- Jira pitch is clean. Closest competitor is stale, DC-era, and skips the
-  core plane.
+- Jira pitch is clean, and the primary comparison should lead with
+  pycontribs/jira, not the Terraform provider — it's the tool people
+  actually reach for, and it has no admin/schema plane and no typing at
+  all. The Terraform provider is a secondary, weaker comparison: stale,
+  DC-era, and skips the core plane.
 - Linear pitch needs to frame the difference (migration history plus ORM
   over Terraform state) and treat appetite as an open question, not a gap.
 
 ## Sources
 
+- https://github.com/pycontribs/jira
+- https://github.com/pycontribs/jira/blob/main/docs/api.md
 - https://github.com/fourplusone/terraform-provider-jira
 - https://github.com/terraform-community-providers/linear
 - https://registry.terraform.io/providers/terraform-community-providers/linear/latest/docs
