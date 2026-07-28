@@ -37,3 +37,5 @@ htmlcov/
 # Claude / planning artifacts
 .claude/settings.local.json
 plan_*.md
+
+plans/
