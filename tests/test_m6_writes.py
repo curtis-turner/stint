@@ -6,6 +6,7 @@ import httpx
 import pytest
 import respx
 
+import examples.adf.schema as p
 from stint import (
     AsyncSession,
     PartialCommitError,
@@ -16,6 +17,7 @@ from stint import (
 from stint.engine import Engine
 from stint.exceptions import ConfigurationError
 from stint.query.adf import wrap_plain_text
+from stint.query.hydrate import hydrate
 from stint.query.payload import (
     build_fields_payload,
     build_insert_payload,
@@ -47,12 +49,15 @@ def _cloud_engine() -> Engine:
 
 def _platform_state() -> StateFile:
     state = StateFile(env="dev", jira_url=BASE)
-    state.custom_fields["bug_severity"] = CustomFieldMapping(
+    state.custom_fields["vuln_severity"] = CustomFieldMapping(
         id="customfield_10042",
         options={"S1": "100", "S2": "101", "S3": "102", "S4": "103"},
     )
-    state.custom_fields["bug_root_cause"] = CustomFieldMapping(
+    state.custom_fields["vuln_root_cause"] = CustomFieldMapping(
         id="customfield_10043",
+    )
+    state.custom_fields["bug_severity"] = CustomFieldMapping(
+        "customfield_10044", options={"S1": "100", "S2": "101", "S3": "102", "S4": "103"}
     )
     state.issuetypes["bug"] = SimpleMapping(id="10010")
     state.projects["PLAT"] = ProjectMapping(id="proj-1", key="PLAT")
@@ -93,7 +98,7 @@ def test_payload_select_field_emitted_as_value_object():
         severity="S2",
     )
     fields = build_fields_payload(bug, state, is_cloud=False)
-    assert fields["customfield_10042"] == {"value": "S2"}
+    assert fields["customfield_10044"] == {"value": "S2"}
     assert fields["summary"] == "boom"
     assert fields["reporter"] == {"name": "alice"}
 
@@ -149,7 +154,7 @@ def test_payload_only_filter_for_update():
         is_cloud=False,
         only={"severity"},
     )
-    assert set(fields) == {"customfield_10042"}
+    assert set(fields) == {"customfield_10044"}
 
 
 def test_payload_unmapped_custom_field_raises():
@@ -169,7 +174,7 @@ def test_insert_payload_includes_project_and_issuetype():
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="alice", severity="S1")
     body = build_insert_payload(bug, state, is_cloud=False, project_key="PLAT")
-    assert body["fields"]["project"] == {"id": "proj-1"}
+    assert body["fields"]["project"] == {"key": "PLAT"}
     assert body["fields"]["issuetype"] == {"id": "10010"}
 
 
@@ -179,7 +184,7 @@ def test_update_payload_only_dirty_fields():
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="alice", severity="S2")
     body = build_update_payload(bug, state, is_cloud=False, dirty={"severity"})
-    assert set(body["fields"]) == {"customfield_10042"}
+    assert set(body["fields"]) == {"customfield_10044"}
 
 
 # ── Project inference / __projects__ linkage ─────────────────────────
@@ -303,7 +308,7 @@ async def test_dirty_tracking_emits_minimal_put():
                 "fields": {
                     "summary": "old",
                     "reporter": {"name": "alice"},
-                    "customfield_10042": {"value": "S1"},
+                    "customfield_10044": {"value": "S1"},
                 },
             },
         )
@@ -329,7 +334,7 @@ async def test_dirty_tracking_emits_minimal_put():
             await engine.close()
 
     # Only the dirty field appears in the PUT body.
-    assert captured_body[0]["fields"] == {"customfield_10042": {"value": "S3"}}
+    assert captured_body[0]["fields"] == {"customfield_10044": {"value": "S3"}}
 
 
 @pytest.mark.asyncio
@@ -345,7 +350,7 @@ async def test_no_dirty_changes_means_no_put():
                 "fields": {
                     "summary": "x",
                     "reporter": {"name": "alice"},
-                    "customfield_10042": {"value": "S1"},
+                    "customfield_10044": {"value": "S1"},
                 },
             },
         )
@@ -377,8 +382,9 @@ async def test_commit_delete_calls_dialect():
                 "key": "PLAT-1",
                 "fields": {
                     "summary": "x",
+                    "bug_severity": {"value": "S1"},
                     "reporter": {"name": "alice"},
-                    "customfield_10042": {"value": "S1"},
+                    "customfield_10044": {"value": "S1"},
                 },
             },
         )
@@ -398,6 +404,30 @@ async def test_commit_delete_calls_dialect():
     assert results[-1].operation == "delete"
     assert results[-1].success
     assert (p.Bug, "PLAT-1") not in session._identity
+
+
+def test_hydrate_description_from_adf():
+    # ADF payload for description
+    issue = {
+        "key": "PLAT-1",
+        "fields": {
+            "summary": "x",
+            "reporter": {"name": "alice"},
+            "description": {
+                "type": "doc",
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {"type": "text", "text": "hello world"},
+                        ],
+                    }
+                ],
+            },
+        },
+    }
+    bug = hydrate(p.Foo, issue, _platform_state())
+    assert bug.description == "hello world"
 
 
 # ── Mixed success/failure raises PartialCommitError ──────────────────

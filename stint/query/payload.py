@@ -52,6 +52,7 @@ from stint.fields import (
     _FieldType,
 )
 from stint.query.adf import wrap_plain_text
+from stint.state.file import SimpleMapping
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -120,16 +121,23 @@ def build_insert_payload(
             f"build_insert_payload: project {project_key!r} is not in state. "
             f"Run `stint stamp` or `stint upgrade` first."
         )
-    fields["project"] = {"id": project_mapping.id}
+    fields["project"] = {"key": project_mapping.key}
 
     issuetype_alias = getattr(model, "__alias__", None)
     if not issuetype_alias:
         raise ConfigurationError(f"build_insert_payload: model {model.__name__!r} has no __alias__")
-    it_mapping = state.issuetypes.get(issuetype_alias)
+    it_mapping = None
+    # Prefer project-scoped ID for TMP projects
+    if project_key in state.tmp_projects:
+        for alias_key, wt_id in state.tmp_projects[project_key].worktypes.items():
+            if alias_key.lower() == issuetype_alias.lower():
+                it_mapping = SimpleMapping(id=wt_id)
+                break
+    if it_mapping is None:
+        it_mapping = next((state.issuetypes[k] for k in state.issuetypes if k.lower() == issuetype_alias.lower()), None)
     if it_mapping is None:
         raise ConfigurationError(f"build_insert_payload: issuetype {issuetype_alias!r} is not in state.")
     fields["issuetype"] = {"id": it_mapping.id}
-
     return {"fields": fields}
 
 
