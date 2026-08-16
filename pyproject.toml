@@ -39,6 +39,7 @@ dependencies = [
   "pyyaml>=6.0",
   "pydantic[email]",
   "cyclopts>=4.0",
+  "python-statemachine>=3.2.1",
 ]
 
 [project.urls]
