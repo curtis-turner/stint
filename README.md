@@ -45,9 +45,8 @@ team-managed projects, validated against a real Cloud tenant for `0.1.0`.
 **Jira Data Center is out of scope, not on the roadmap.** An audit against
 Atlassian's official OpenAPI specs found that ~17 of the admin endpoints
 stint drives exist only on Cloud; DC keeps those objects web-admin-only and
-never added REST. A DC dialect would fail on a large part of the op surface,
-so stint does not target it. Future growth goes to other work-management
-backends, like Linear, through the dialect protocol.
+never added REST, so stint does not target it. Future growth goes to other
+work-management backends, like Linear, through the dialect protocol.
 
 ## Install
 
@@ -299,11 +298,10 @@ which can embed secrets and warrants an encrypted backend.
 - **Drift is not auto-reverted.** UI edits land in the live instance and
   stay there until you reflect, diff, and absorb them into the schema.
 - **Project lead resolution needs user-search access.** `__lead__` takes an
-  email, which stint resolves to a backend user id (DC username, Cloud
-  accountId) via the user-search API at apply time. That call requires the
-  "Browse users and groups" global permission. Without it the create/update
-  fails with guidance; set `__lead__` to an already-resolved username or
-  accountId to skip resolution.
+  email, which stint resolves to a Jira Cloud accountId via the user-search
+  API at apply time. That call requires the "Browse users and groups"
+  global permission. Without it the create/update fails with guidance; set
+  `__lead__` to an already-resolved accountId to skip resolution.
 - **Built-in issue types are adopted, not recreated.** Every Jira tenant ships
   Bug, Task, Story, Epic, and Subtask. A schema declaring one of those names
   (the quickstart's `Bug` does) adopts the existing type into state on

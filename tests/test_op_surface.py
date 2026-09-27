@@ -353,6 +353,51 @@ async def test_create_field_configuration():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_create_field_configuration_retired_raises_configuration_error():
+    """Classic field configurations retired on Jira Cloud in May 2026: the
+    legacy endpoint replies 400 with ``Cannot create a new field
+    configuration. Please use Field Scheme instead.`` We translate that
+    into a ConfigurationError that points at RFC-103/104/105 (and the
+    in-tree Phase 3 plan), instead of letting the raw 400 leak to the
+    schema author."""
+    respx.post(
+        f"{CLOUD_ROOT}/fieldconfiguration",
+        json__eq={
+            "name": "Bug FC",
+            "description": "",
+        },
+    ).mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "errorMessages": ["Cannot create a new field configuration. Please use Field Scheme instead."],
+                "errors": {},
+            },
+        )
+    )
+    state = StateFile(env="dev", jira_url=BASE)
+    engine = _cloud_engine()
+    try:
+        with pytest.raises(ConfigurationError) as exc_info:
+            await _run_in_ctx(
+                engine,
+                state,
+                lambda: op.create_field_configuration(
+                    alias="bug_fc",
+                    name="Bug FC",
+                ),
+            )
+    finally:
+        await engine.close()
+    msg = str(exc_info.value)
+    assert "retired classic field configurations" in msg
+    assert "RFC-103/104/105" in msg
+    # Alias must NOT have been recorded: the call never created anything.
+    assert "bug_fc" not in state.field_configurations
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_set_field_configuration_item_resolves_aliases():
     respx.put(
         f"{CLOUD_ROOT}/fieldconfiguration/fc-1/fields",
