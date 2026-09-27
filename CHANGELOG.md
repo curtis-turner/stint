@@ -6,19 +6,83 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-27
+
 ### Added
-- Ten more standard Jira custom field types in `stint.fields`, closing
-  the gap between stint's declarative model and Jira's built-in field type
-  catalog: `RadioButtonsField`, `CheckboxesField`, `LabelsField`,
-  `URLField`, `VersionField`, `MultiVersionField`, `GroupField`,
-  `MultiGroupField`, `MultiUserField`, `ReadOnlyField`. Each is wired
-  through schema validation (`CustomField` options rules,
-  Literal-vs-options checks for the option-style types), write payloads,
-  read hydration, and autogenerate's reflect-back type lookup. (Closes #15.)
-- Experimental support for Atlassian Data Format (ADF) rich text fields in
-  `stint.fields.ADFTextField`. This field type enables storage and retrieval
-  of ADF-formatted content in Jira custom fields, supporting complex formatting
-  including inline styles, block types, and embedded content. (Closes #16.)
+- `stint revision --autogenerate` now scopes the desired-snapshot diff to
+  the `Project` classes defined in the module passed via `--schema`
+  (matched on `__module__`), plus everything reachable from them:
+  issuetypes, custom fields, screens, screen schemes, and field
+  configurations. Importing a sibling schema module for reuse (the
+  documented sharing pattern) no longer leaks its `Project`s into the
+  generated migration. The migration file's preamble lists the project
+  keys it covers, so a schema author notices at a glance if scope
+  misbehaves. Unscoped invocations keep the historical behavior
+  (`build_desired_snapshot()` without `project_module`). (Closes the
+  CMP-B portion of `CMP_ISSUE_DRAFT.md`.)
+- `stint apply` (team-managed projects) now persists the state file
+  after every successful op, matching CMP's per-op `ctx.persist()`
+  pattern. If a mid-plan op fails, every change that already wrote to
+  Jira is on disk; a retry sees those ids in `tmp_state` and does not
+  duplicate them, and a later `--allow-delete` run can target anything
+  left orphaned from a previous attempt. (Closes the fix-forward
+  half of the TMP-C finding in `ISSUE_DRAFT.md`.)
+- Translates Jira Cloud's retired-classic-field-configurations 400
+  (`Cannot create a new field configuration. Please use Field Scheme
+  instead.`) into a `ConfigurationError` that points at RFC-103/104/105
+  and the in-tree Phase 3 plan for the v1/v2 Field Schemes split.
+  Schema authors get an actionable message instead of a raw HTTP
+  error. The real fix (a per-tenant v1/v2 capability detection routing
+  to Field Schemes) is the larger Phase 3 work. (Closes the short-term
+  half of the CMP-A finding in `CMP_ISSUE_DRAFT.md`.)
+- `stint.dialects.jira.tmp.types` (`tmp_type_key_for`,
+  `TMP_FIELD_TYPE_KEYS`) names the 9-of-18 subset of Jira custom-field
+  type ids that the TMP `createCustomFieldInProjectAndAddToAllIssueTypes`
+  mutation actually accepts. `build_tmp_desired` raises
+  `TmpFieldTypeError` (a `ConfigurationError`) eagerly during
+  `stint apply` plan time when a schema declares an unsupported type,
+  surfacing the gap with a precise message naming the offending field
+  alias and the supported set instead of a raw `400 Invalid field type
+  specified` from the live mutation. `tools/tmp_type_probe.py` is the
+  live discovery tool to re-verify the count against a real tenant.
+  (Closes TMP-B in `ISSUE_DRAFT.md`.)
+- `tmp_set_layout` now adds layout items for newly-declared custom
+  fields, not just prunes them. The previous behavior wrote the empty
+  `current.items` of a freshly-created work type back unchanged, so
+  declaring a new `IssueType` together with its fields in the same
+  schema produced a work type whose edit screen showed none of the
+  declared fields -- and `apply` reported full success. New items come
+  from (1) another work type's layout in the snapshot, (2) a fresh
+  `read_layout` of a sibling work type the apply run knows about, or
+  (3) minimal synthesis from the desired-field metadata, in that order.
+  (Closes TMP-A in `ISSUE_DRAFT.md`.)
+- `stint.dialects.jira.common.paginate` now raises `ReflectionError`
+  on (a) a dict response with no `values` key (an unrecognized
+  pagination envelope), and (b) a paginated response that echoes a
+  `startAt` different from the one we requested. Both used to be
+  silent misbehavior: the first would leave live resources invisible
+  to diff; the second would loop on the same page. (Closes DC-A in
+  `DC_ISSUE_DRAFT.md`.)
+- Four respx-driven offline repros in `tools/` exercising the
+  Phase 0/1/2 fixes against a mocked Jira (no credentials required):
+  `tools/tmp_apply_eager_error_repro.py`, `tools/tmp_apply_layout_repro.py`,
+  `tools/cmp_autogenerate_scoping_repro.py`, `tools/cmp_retired_fc_repro.py`.
+- `tools/tmp_type_probe.py`: live vocabulary probe for the TMP custom-
+  field type mapping. Iterates every supported type against a real
+  team-managed project, deletes each one it created, and exits non-zero
+  with a clear drift message if the live tenant disagrees with the
+  in-tree map.
+
+### Changed
+- Collapses the Jira dialect layer to a single `JiraCloudDialect`
+  class in `stint/dialects/jira/cloud.py` and deletes the legacy
+  `JiraDialectBase` (`_base.py`). DC-specific ClassVar defaults
+  (`/rest/api/2`, `expected_deployment_type="Server"`, etc.) are gone;
+  Cloud's overridden behavior is now the only behavior. The DC vs
+  Cloud split in `paginate()`, `add_custom_field_option`,
+  `_reflect_field_options`, project CRUD, and search has been folded
+  into the single class. The README + `common.py` docstrings stop
+  mentioning DC. (Closes DC-B in `DC_ISSUE_DRAFT.md`.)
 
 ## [0.3.0] - 2026-07-05
 
