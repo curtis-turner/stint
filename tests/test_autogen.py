@@ -99,6 +99,99 @@ def test_desired_screen_carries_one_tab_with_field_refs():
     assert "bug_severity" in tab.field_refs
 
 
+# ── Desired snapshot: per-module scoping (CMP-B) ─────────────────────
+def test_desired_snapshot_scoped_excludes_sibling_module_projects():
+    """A Project pulled into the registry by importing a sibling schema module
+    must not leak into a desired snapshot scoped to the --schema module."""
+    from typing import Annotated
+
+    from stint import CustomField, IssueType, Project
+
+    in_scope_field = CustomField(alias="in_scope_text", name="In Scope", type=TextField)
+    leaked_field = CustomField(alias="leaked_text", name="Leaked", type=TextField)
+
+    class InScopeType(IssueType):
+        __alias__ = "in_scope_type"
+        in_scope: Annotated[str | None, in_scope_field] = None
+
+    class LeakedType(IssueType):
+        __alias__ = "leaked_type"
+        leaked: Annotated[str | None, leaked_field] = None
+
+    class InScopeProject(Project):
+        __key__ = "INSC"
+        __issuetypes__ = [InScopeType]
+
+    class LeakedProject(Project):
+        __key__ = "LEAK"
+        __issuetypes__ = [LeakedType]
+
+    # Simulate LeakedProject being defined in a sibling module that the
+    # --schema module imported for reuse (the documented sharing pattern).
+    LeakedProject.__module__ = "sibling_schema"
+
+    desired = build_desired_snapshot(project_module=__name__)
+    assert "INSC" in desired.projects
+    assert "LEAK" not in desired.projects
+    assert "in_scope_type" in desired.issuetypes
+    assert "leaked_type" not in desired.issuetypes
+    assert "in_scope_text" in desired.custom_fields
+    assert "leaked_text" not in desired.custom_fields
+    # Derived schemes follow the scoped projects only.
+    assert "INSC_its" in desired.issuetype_schemes
+    assert "LEAK_its" not in desired.issuetype_schemes
+
+
+def test_desired_snapshot_scoped_walks_reachability():
+    """Scoping keeps screens/schemes/field configurations reachable from
+    in-scope projects and drops ones reachable only from out-of-scope ones."""
+    from stint import CustomField, FieldConfiguration, IssueType, Project, Screen, ScreenScheme
+
+    keep_field = CustomField(alias="keep_text", name="Keep", type=TextField)
+    drop_field = CustomField(alias="drop_text", name="Drop", type=TextField)
+    keep_screen = Screen(alias="keep_screen", name="Keep Screen", fields=["Summary", keep_field])
+    drop_screen = Screen(alias="drop_screen", name="Drop Screen", fields=["Summary", drop_field])
+    keep_scheme = ScreenScheme(
+        alias="keep_scheme", name="Keep Scheme", create=keep_screen, edit=keep_screen, view=keep_screen
+    )
+    drop_scheme = ScreenScheme(
+        alias="drop_scheme", name="Drop Scheme", create=drop_screen, edit=drop_screen, view=drop_screen
+    )
+    keep_fc = FieldConfiguration(alias="keep_fc", name="Keep FC", required=[keep_field])
+    drop_fc = FieldConfiguration(alias="drop_fc", name="Drop FC", required=[drop_field])
+
+    class KeepType(IssueType):
+        __alias__ = "keep_type"
+        __screen_scheme__ = keep_scheme
+        __field_configuration__ = keep_fc
+
+    class DropType(IssueType):
+        __alias__ = "drop_type"
+        __screen_scheme__ = drop_scheme
+        __field_configuration__ = drop_fc
+
+    class KeepProject(Project):
+        __key__ = "KEEP"
+        __issuetypes__ = [KeepType]
+
+    class DropProject(Project):
+        __key__ = "DROP"
+        __issuetypes__ = [DropType]
+
+    DropProject.__module__ = "sibling_schema"
+
+    desired = build_desired_snapshot(project_module=__name__)
+    assert "keep_screen" in desired.screens
+    assert "drop_screen" not in desired.screens
+    assert "keep_scheme" in desired.screen_schemes
+    assert "drop_scheme" not in desired.screen_schemes
+    assert "keep_fc" in desired.field_configurations
+    assert "drop_fc" not in desired.field_configurations
+    # Fields referenced only through screens/FCs follow their owners.
+    assert "keep_text" in desired.custom_fields
+    assert "drop_text" not in desired.custom_fields
+
+
 # ── Diff: greenfield (no state, no Jira) ─────────────────────────────
 def test_diff_greenfield_emits_create_for_every_declared_object():
     """State empty, Jira empty, schema has everything → all creates."""

@@ -177,4 +177,11 @@ async def apply_tmp_plan(
                 current_layout = await ctx.dialect.read_layout(
                     project_id=ctx.project.project_id, issuetype_id=int(worktype_id)
                 )
-            await tmp_set_layout(ctx, change.alias, desired.worktypes[change.alias], current_layout)
+            await tmp_set_layout(
+                ctx,
+                change.alias,
+                desired.worktypes[change.alias],
+                current_layout,
+                snapshot=snapshot,
+                desired_all=desired,
+            )

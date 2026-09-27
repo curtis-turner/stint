@@ -41,6 +41,7 @@ from stint.dialects.jira.tmp.reconcile import (
     sort_tmp_changes,
 )
 from stint.dialects.jira.tmp.state import TmpState
+from stint.exceptions import TransportError
 from stint.fields import SelectField, TextField
 from stint.registry import registry
 from stint.state.snapshot import CustomFieldSnapshot, ServerInfoSnapshot, Snapshot
@@ -390,6 +391,330 @@ async def test_tmp_set_layout_prunes_undeclared_fields_and_resyncs_owner():
     assert ctx.state.layout_ids["bug"] == "layout-1"
 
 
+# ── tmp_set_layout add-missing-items branch (TMP-A) ─────────────────
+def _empty_worktype_layout(layout_id: str = "layout-new") -> TmpLayout:
+    """The layout of a work type that was just created: no custom items,
+    only the owner's metadata. Confirmed live (see ISSUE_DRAFT.md TMP-A):
+    ``read_layout`` on a freshly created work type returns zero custom
+    items, and the old ``tmp_set_layout`` would write that emptiness back
+    -- the field would never appear on the work type's edit screen."""
+    return TmpLayout(
+        layout_id=layout_id,
+        owner=TmpLayoutOwner(id="10007", name="Bug", description="A bug", avatar_id="1", icon_url="x"),
+        items=(),
+    )
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_tmp_set_layout_synthesizes_items_for_new_worktype():
+    """A brand-new work type's current layout has zero custom items
+    (confirmed live). ``tmp_set_layout`` must NOT write that emptiness
+    back: it has to add layout items for every declared custom field.
+
+    With no snapshot to harvest from and no other work type the apply
+    run knows about, this exercises the synthesis fallback. The wire
+    body must carry one synthesized item per declared field, with
+    ``custom=True`` and ``section=primary``."""
+    route = respx.put(f"{ISSUE_LAYOUTS_URL}/layout-new").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "owners": [
+                    {
+                        "type": "ISSUE_TYPE",
+                        "data": {"id": 10007, "name": "Bug", "description": "A bug", "avatarId": 1, "iconUrl": "x"},
+                    }
+                ],
+                "issueLayoutConfig": {"items": []},
+            },
+        )
+    )
+    ctx = _ctx(
+        TmpState(fields={"severity": "customfield_1", "root_cause": "customfield_2"}, worktypes={"bug": "10007"})
+    )
+    desired = TmpDesiredWorkType(alias="bug", name="Bug", description="A bug", field_aliases=("severity", "root_cause"))
+    desired_all = TmpDesired(
+        project_key="VM",
+        fields={
+            "severity": TmpDesiredField(alias="severity", name="Severity", type_key=SelectField.jira_type_id),
+            "root_cause": TmpDesiredField(alias="root_cause", name="Root Cause", type_key=TextField.jira_type_id),
+        },
+        worktypes={"bug": desired},
+    )
+    await tmp_set_layout(ctx, "bug", desired, _empty_worktype_layout(), desired_all=desired_all)
+
+    body = json.loads(route.calls.last.request.content)
+    sent = body["issueLayoutConfig"]["items"]
+    assert len(sent) == 2  # both fields attached, not the empty pre-fix write
+    sent_by_key = {item["key"]: item for item in sent}
+    assert sent_by_key["customfield_1"]["data"]["name"] == "Severity"
+    assert sent_by_key["customfield_1"]["sectionType"] == "primary"
+    assert sent_by_key["customfield_1"]["data"]["custom"] is True
+    assert sent_by_key["customfield_1"]["data"]["global"] is False
+    assert sent_by_key["customfield_1"]["data"]["required"] is False
+    # Distinct externalUuid per field so Jira treats them as distinct items.
+    assert sent_by_key["customfield_1"]["data"]["externalUuid"] != sent_by_key["customfield_2"]["data"]["externalUuid"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_tmp_set_layout_harvests_template_from_snapshot():
+    """If another work type in the snapshot already has the field, copy
+    that item instead of synthesizing. The harvested item keeps its
+    source-work-type operations/provider/externalUuid exactly as Jira
+    returned them, so the wire shape round-trips without surprise."""
+    sibling_layout = TmpLayout(
+        layout_id="layout-sibling",
+        owner=TmpLayoutOwner(id="10008", name="Other", description="", avatar_id="1", icon_url="x"),
+        items=(
+            TmpLayoutItem(
+                field_id="customfield_1",
+                key="customfield_1",
+                name="Severity",
+                type_key=SelectField.jira_type_id,
+                custom=True,
+                global_=False,
+                required=False,
+                section="secondary",  # distinct from default to prove it copied
+                position=314,
+                external_uuid="uuid-from-sibling",
+                description="harvested",
+                operations={"move": True},
+                provider={"k": "v"},
+            ),
+        ),
+    )
+    snap = TmpSnapshot(snapshot=_empty_snapshot(), layouts={"10008": sibling_layout})
+
+    put_route = respx.put(f"{ISSUE_LAYOUTS_URL}/layout-new").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "owners": [
+                    {
+                        "type": "ISSUE_TYPE",
+                        "data": {"id": 10007, "name": "Bug", "description": "A bug", "avatarId": 1, "iconUrl": "x"},
+                    }
+                ],
+                "issueLayoutConfig": {"items": []},
+            },
+        )
+    )
+    ctx = _ctx(TmpState(fields={"severity": "customfield_1"}, worktypes={"bug": "10007"}))
+    desired = TmpDesiredWorkType(alias="bug", name="Bug", description="A bug", field_aliases=("severity",))
+    desired_all = TmpDesired(
+        project_key="VM",
+        fields={"severity": TmpDesiredField(alias="severity", name="Severity", type_key=SelectField.jira_type_id)},
+        worktypes={"bug": desired},
+    )
+    await tmp_set_layout(ctx, "bug", desired, _empty_worktype_layout(), snapshot=snap, desired_all=desired_all)
+
+    body = json.loads(put_route.calls.last.request.content)
+    sent = body["issueLayoutConfig"]["items"]
+    assert len(sent) == 1
+    item = sent[0]
+    # Harvested from sibling: the wire fields round-trip untouched.
+    assert item["data"]["externalUuid"] == "uuid-from-sibling"
+    assert item["sectionType"] == "secondary"
+    assert item["data"]["operations"] == {"move": True}
+    assert item["data"]["provider"] == {"k": "v"}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_tmp_set_layout_falls_back_to_remote_read_when_snapshot_misses():
+    """When the snapshot doesn't carry the field -- it was created in
+    this same apply run, for instance -- try a fresh ``read_layout`` of
+    a sibling work type the apply run knows about. First sibling that
+    has it wins."""
+    # Fresh sibling read returns an item for customfield_1 (positioned
+    # in a PRIMARY container so the parser actually emits a TmpLayoutItem).
+    respx.post(GIRA_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "issueLayoutConfiguration": {
+                        "__typename": "JiraIssueLayoutConfigurationResult",
+                        "issueLayoutResult": {
+                            "id": "layout-sibling",
+                            "usageInfo": {
+                                "edges": [
+                                    {
+                                        "currentProject": True,
+                                        "node": {
+                                            "layoutOwners": [
+                                                {
+                                                    "__typename": "JiraIssueLayoutIssueTypeOwner",
+                                                    "id": "10008",
+                                                    "name": "Other",
+                                                    "description": "",
+                                                    "avatarId": "1",
+                                                    "iconUrl": "x",
+                                                }
+                                            ]
+                                        },
+                                    }
+                                ]
+                            },
+                            "containers": [
+                                {
+                                    "containerType": "PRIMARY",
+                                    "items": {
+                                        "nodes": [
+                                            {
+                                                "__typename": "JiraIssueItemFieldItem",
+                                                "fieldItemId": "customfield_1",
+                                                "containerPosition": 100,
+                                            }
+                                        ]
+                                    },
+                                }
+                            ],
+                        },
+                        "metadata": {
+                            "configuration": {
+                                "items": {
+                                    "nodes": [
+                                        {
+                                            "__typename": "JiraIssueLayoutFieldItemConfiguration",
+                                            "fieldItemId": "customfield_1",
+                                            "key": "customfield_1",
+                                            "name": "Severity",
+                                            "type": SelectField.jira_type_id,
+                                            "custom": True,
+                                            "global": False,
+                                            "required": False,
+                                            "externalUuid": "fresh-uuid",
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                    }
+                }
+            },
+        )
+    )
+
+    put_route = respx.put(f"{ISSUE_LAYOUTS_URL}/layout-new").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "owners": [
+                    {
+                        "type": "ISSUE_TYPE",
+                        "data": {"id": 10007, "name": "Bug", "description": "A bug", "avatarId": 1, "iconUrl": "x"},
+                    }
+                ],
+                "issueLayoutConfig": {"items": []},
+            },
+        )
+    )
+    ctx = _ctx(
+        TmpState(
+            fields={"severity": "customfield_1"},
+            worktypes={"bug": "10007", "other": "10008"},  # other is the sibling we'll read
+        )
+    )
+    desired = TmpDesiredWorkType(alias="bug", name="Bug", description="A bug", field_aliases=("severity",))
+    desired_all = TmpDesired(
+        project_key="VM",
+        fields={"severity": TmpDesiredField(alias="severity", name="Severity", type_key=SelectField.jira_type_id)},
+        worktypes={"bug": desired},
+    )
+    # Empty snapshot: the harvest-from-snapshot step finds nothing.
+    snap = TmpSnapshot(snapshot=_empty_snapshot(), layouts={})
+    await tmp_set_layout(ctx, "bug", desired, _empty_worktype_layout(), snapshot=snap, desired_all=desired_all)
+
+    body = json.loads(put_route.calls.last.request.content)
+    sent = body["issueLayoutConfig"]["items"]
+    assert len(sent) == 1
+    # Fresh-read item carries the UUID from the live sibling response.
+    assert sent[0]["data"]["externalUuid"] == "fresh-uuid"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_apply_tmp_plan_layout_items_appear_for_new_worktype_end_to_end():
+    """The full end-to-end repro from ISSUE_DRAFT.md TMP-A: a brand-new
+    project with one new field and one new work type that declares the
+    field. Before the fix, ``apply`` silently wrote an empty layout;
+    here the new layout's wire body carries the synthesized item."""
+    desired = build_tmp_desired(_make_project())
+    snapshot = TmpSnapshot(snapshot=_empty_snapshot())
+    state = TmpState()
+    changes = plan_tmp(desired, snapshot, state)
+
+    respx.post(GATEWAY_URL).mock(side_effect=_field_create_dispatch())
+    respx.post(f"{SIMPLIFIED_URL}/project/10001/settings/issuetype").mock(
+        return_value=httpx.Response(201, json={"id": "10007", "name": "Bug", "avatarId": 10321, "hierarchyLevel": 0})
+    )
+    respx.post(GIRA_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "issueLayoutConfiguration": {
+                        "__typename": "JiraIssueLayoutConfigurationResult",
+                        "issueLayoutResult": {
+                            "id": "layout-x",
+                            "name": "VM-Bug",
+                            "usageInfo": {
+                                "edges": [
+                                    {
+                                        "currentProject": True,
+                                        "node": {
+                                            "layoutOwners": [
+                                                {
+                                                    "__typename": "JiraIssueLayoutIssueTypeOwner",
+                                                    "id": "10007",
+                                                    "name": "Bug",
+                                                    "description": "A bug",
+                                                    "avatarId": "10321",
+                                                    "iconUrl": "x",
+                                                }
+                                            ]
+                                        },
+                                    }
+                                ]
+                            },
+                            "containers": [],
+                        },
+                        "metadata": {"configuration": {"items": {"nodes": []}}},
+                    }
+                }
+            },
+        )
+    )
+    put_route = respx.put(f"{ISSUE_LAYOUTS_URL}/layout-x").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "owners": [
+                    {
+                        "type": "ISSUE_TYPE",
+                        "data": {"id": 10007, "name": "Bug", "description": "A bug", "avatarId": 10321, "iconUrl": "x"},
+                    }
+                ],
+                "issueLayoutConfig": {"items": []},
+            },
+        )
+    )
+
+    ctx = _ctx(state)
+    await apply_tmp_plan(ctx, changes, desired, snapshot)
+
+    # Two custom fields declared -> two layout items in the wire body.
+    body = json.loads(put_route.calls.last.request.content)
+    sent = body["issueLayoutConfig"]["items"]
+    assert len(sent) == 2
+    sent_field_ids = {item["data"]["key"] for item in sent}
+    # Field ids (customfield_1 and customfield_2 from create dispatch) both attached.
+    assert sent_field_ids == {"customfield_1", "customfield_2"}
+
+
 # ── apply_tmp_plan end to end ────────────────────────────────────────
 def _field_create_dispatch():
     def _respond(request: httpx.Request) -> httpx.Response:
@@ -475,3 +800,157 @@ async def test_apply_tmp_plan_end_to_end():
     assert ctx.state.fields["root_cause"] == "customfield_2"
     assert ctx.state.worktypes["bug"] == "10007"
     assert ctx.state.layout_ids["bug"] == "layout-x"
+
+
+# ── per-op persist (TMP-C fix-forward) ───────────────────────────────
+@pytest.mark.asyncio
+@respx.mock
+async def test_apply_tmp_plan_persists_after_each_state_mutation():
+    """``ctx.persist()`` runs once per successful state mutation, so a mid-plan
+    failure leaves everything that already wrote to Jira recorded on disk.
+    Verifies the callback fires 4 times for the canonical end-to-end plan:
+    2 field creates + 1 worktype create + 1 layout write."""
+    desired = build_tmp_desired(_make_project())
+    snapshot = TmpSnapshot(snapshot=_empty_snapshot())
+    state = TmpState()
+    changes = plan_tmp(desired, snapshot, state)
+
+    respx.post(GATEWAY_URL).mock(side_effect=_field_create_dispatch())
+    respx.post(f"{SIMPLIFIED_URL}/project/10001/settings/issuetype").mock(
+        return_value=httpx.Response(201, json={"id": "10007", "name": "Bug", "avatarId": 10321, "hierarchyLevel": 0})
+    )
+    respx.post(GIRA_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "issueLayoutConfiguration": {
+                        "__typename": "JiraIssueLayoutConfigurationResult",
+                        "issueLayoutResult": {
+                            "id": "layout-x",
+                            "name": "VM-Bug",
+                            "usageInfo": {
+                                "edges": [
+                                    {
+                                        "currentProject": True,
+                                        "node": {
+                                            "layoutOwners": [
+                                                {
+                                                    "__typename": "JiraIssueLayoutIssueTypeOwner",
+                                                    "id": "10007",
+                                                    "name": "Bug",
+                                                    "description": "A bug",
+                                                    "avatarId": "10321",
+                                                    "iconUrl": "x",
+                                                }
+                                            ]
+                                        },
+                                    }
+                                ]
+                            },
+                            "containers": [],
+                        },
+                        "metadata": {"configuration": {"items": {"nodes": []}}},
+                    }
+                }
+            },
+        )
+    )
+    respx.put(f"{ISSUE_LAYOUTS_URL}/layout-x").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "owners": [
+                    {
+                        "type": "ISSUE_TYPE",
+                        "data": {"id": 10007, "name": "Bug", "description": "A bug", "avatarId": 10321, "iconUrl": "x"},
+                    }
+                ],
+                "issueLayoutConfig": {"items": []},
+            },
+        )
+    )
+
+    checkpoints: list[TmpState] = []
+
+    def _on_change() -> None:
+        # Capture a copy of the state at each checkpoint so the assertion
+        # below sees the cumulative-progress signal the CLI relies on.
+        checkpoints.append(
+            TmpState(
+                fields=dict(state.fields),
+                worktypes=dict(state.worktypes),
+                layout_ids=dict(state.layout_ids),
+            )
+        )
+
+    ctx = _ctx(state)
+    ctx.on_state_changed = _on_change
+    await apply_tmp_plan(ctx, changes, desired, snapshot)
+
+    assert len(checkpoints) == 4
+    # Each checkpoint reflects one more mutation than the previous one.
+    assert checkpoints[0].fields == {"severity": "customfield_1"}
+    assert "root_cause" not in checkpoints[0].fields
+    assert checkpoints[1].fields == {"severity": "customfield_1", "root_cause": "customfield_2"}
+    assert "bug" not in checkpoints[1].worktypes
+    assert checkpoints[2].worktypes == {"bug": "10007"}
+    assert "bug" not in checkpoints[2].layout_ids
+    assert checkpoints[3].layout_ids == {"bug": "layout-x"}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_apply_tmp_plan_state_survives_mid_plan_failure():
+    """If an op raises mid-plan, every prior mutation is reflected in
+    ``ctx.state`` AND each prior op's ``on_state_changed`` already ran --
+    exactly the signal the CLI needs to checkpoint the file. The retry
+    below then plans against the updated state and produces no duplicate
+    work, which is the fix-forward contract."""
+    desired = build_tmp_desired(_make_project())
+    snapshot = TmpSnapshot(snapshot=_empty_snapshot())
+    state = TmpState()
+    changes = plan_tmp(desired, snapshot, state)
+
+    # First field create succeeds, second fails. Subsequent routes are
+    # unreachable on this run; registering them keeps the test honest.
+    def _field_dispatch(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "Severity" in body["query"]:
+            return httpx.Response(200, json=_field_response("customfield_1", "Severity"))
+        if "Root Cause" in body["query"]:
+            return httpx.Response(500, json={"errors": [{"message": "boom"}]})
+        raise AssertionError(f"unexpected query: {body['query'][:80]!r}")
+
+    respx.post(GATEWAY_URL).mock(side_effect=_field_dispatch)
+    respx.post(f"{SIMPLIFIED_URL}/project/10001/settings/issuetype").mock(
+        return_value=httpx.Response(201, json={"id": "10007", "name": "Bug", "avatarId": 10321, "hierarchyLevel": 0})
+    )
+
+    checkpoints: list[TmpState] = []
+    ctx = _ctx(state)
+
+    def _on_change() -> None:
+        checkpoints.append(
+            TmpState(
+                fields=dict(state.fields),
+                worktypes=dict(state.worktypes),
+                layout_ids=dict(state.layout_ids),
+            )
+        )
+
+    ctx.on_state_changed = _on_change
+    with pytest.raises(TransportError):
+        await apply_tmp_plan(ctx, changes, desired, snapshot)
+
+    # First field was committed AND persisted; second was neither.
+    assert state.fields == {"severity": "customfield_1"}
+    assert "root_cause" not in state.fields
+    assert state.worktypes == {}
+    assert state.layout_ids == {}
+    assert len(checkpoints) == 1
+
+    # Retry sees the prior success and plans no duplicate work for it.
+    changes_retry = plan_tmp(desired, snapshot, state)
+    assert CreateField("severity") not in changes_retry
+    assert CreateField("root_cause") in changes_retry  # still missing

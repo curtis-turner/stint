@@ -31,7 +31,7 @@ honor but Python never executes.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from stint.client.auth import Auth
 from stint.client.http import JiraHTTPClient
@@ -92,7 +92,7 @@ class TmpEngine:
         await self.close()
 
 
-_CMP_DIALECT_REGISTRY: dict[str, type[CmpDialect]] = {
+_CMP_DIALECT_REGISTRY: dict[str, type[Any]] = {
     "jira_cloud": JiraCloudDialect,
 }
 
@@ -148,7 +148,7 @@ def create_engine(
     if chosen not in _CMP_DIALECT_REGISTRY:
         raise ConfigurationError(f"create_engine {chosen!r}: use create_tmp_engine() for '{_TMP_DIALECT_NAME}'.")
     client = JiraHTTPClient(base_url, auth=auth, verify_ssl=verify_ssl, timeout=timeout)
-    dialect_obj = _CMP_DIALECT_REGISTRY[chosen](client)  # type: ignore
+    dialect_obj = _CMP_DIALECT_REGISTRY[chosen](client)
     return Engine(base_url=base_url, dialect=dialect_obj, client=client)
 
 
