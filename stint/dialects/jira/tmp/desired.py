@@ -7,6 +7,14 @@ don't have and are forbidden from referencing (see ``ProjectMeta``). Reuses
 the *same* schema classes (``Project``, ``IssueType``, ``CustomField``) --
 there is no separate TMP schema DSL -- just a different, simpler read of them.
 
+Field-type validation: only 9 of the 18 ``_FieldType`` classes in
+``stint.fields`` are accepted by the TMP ``createCustomFieldInProjectAndAdd
+ToAllIssueTypes`` mutation. ``tmp_type_key_for`` enforces that at plan
+time -- a schema declaring an unsupported type fails loudly here, not as
+a raw 400 from a live create call. The supported set lives in
+``stint/dialects/jira/tmp/types.py``; re-verify it with
+``tools/tmp_type_probe.py``.
+
 Known gap: there is no schema-level way to mark a field required on a TMP
 work type today (``FieldConfiguration.required`` is CMP-only and forbidden
 for team-managed projects by ``ProjectMeta``). TMP fields are therefore
@@ -18,6 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from stint.dialects.jira.tmp.types import tmp_type_key_for
 from stint.schema.project import Project
 
 
@@ -67,7 +76,7 @@ def build_tmp_desired(project_cls: type[Project]) -> TmpDesired:
             fields[cf.alias] = TmpDesiredField(
                 alias=cf.alias,
                 name=cf.name,
-                type_key=cf.type.jira_type_id,
+                type_key=tmp_type_key_for(cf.type),
                 description=cf.description,
                 options=tuple(cf.options),
             )

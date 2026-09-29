@@ -85,8 +85,7 @@ _EXPERIMENTAL_NOTICE = (
     "tmp_spike_conclusion.md for the full risk record."
 )
 
-# Public REST root. TMP is Cloud-only, so this is fixed (unlike JiraDialectBase's
-# ClassVar hook for DC/Cloud divergence -- not needed here, there is no TMP-on-DC).
+# Public REST root. TMP is Cloud-only, so this is fixed (no DC dialect exists anymore).
 _API_ROOT = "/rest/api/3"
 
 # A standard system issue-type avatar id, used as create_worktype's default.
@@ -598,8 +597,8 @@ class TmpDialect:
     # ── Reflect ─────────────────────────────────────────────────────────
     async def _server_info(self) -> ServerInfoSnapshot:
         """GET /serverInfo: style-agnostic, identical to CmpDialect's own
-        version (duplicated rather than shared, to keep TmpDialect independent
-        of JiraDialectBase per the isolation principle)."""
+        version (duplicated rather than shared, to keep TmpDialect
+        independent of JiraCloudDialect per the isolation principle)."""
         payload = await self._client.get_json(f"{_API_ROOT}/serverInfo")
         return ServerInfoSnapshot(
             deployment_type=str(payload.get("deploymentType", "")),
