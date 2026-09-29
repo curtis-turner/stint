@@ -1,7 +1,7 @@
-"""Logic shared between the DC and Cloud Jira dialects.
+"""Helpers shared inside the Jira dialect layer.
 
-Pagination, payload parsers for each admin object. The DC and Cloud dialects
-build URLs against their own api_root and delegate parsing here.
+Pagination, payload parsers for each admin object. ``JiraCloudDialect``
+builds URLs against its own api_root and delegates parsing here.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from stint.client.http import JiraHTTPClient
+from stint.exceptions import ReflectionError
 from stint.state.snapshot import (
     CustomFieldSnapshot,
     FieldConfigurationItemSnapshot,
@@ -37,11 +38,17 @@ async def paginate(
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield items from a Jira admin endpoint, page by page.
 
-    Handles three response shapes seen on DC and Cloud admin endpoints:
-      1. Bare JSON array (e.g. /field, /issuetype on older DC) - single page.
+    Handles three response shapes seen on Jira admin endpoints:
+      1. Bare JSON array (e.g. /field, /issuetype on older Cloud) - single page.
       2. ``{"values": [...], "isLast": bool, "startAt": int, ...}`` - paginated.
       3. ``{"values": [...], "nextPage": "..."}`` style - paginated, treat
          absence of more values as end.
+
+    Raises ``ReflectionError`` on:
+      - a dict response with no ``"values"`` key (unrecognized envelope).
+      - a paginated response that echoes a ``startAt`` different from what we
+        requested, which would otherwise loop forever advancing our counter to
+        the same page.
     """
     start = 0
     while True:
@@ -55,6 +62,18 @@ async def paginate(
                 yield item
             return
 
+        if not isinstance(resp, dict) or "values" not in resp:
+            raise ReflectionError(
+                f"{path} returned an unrecognized pagination envelope: "
+                f"expected a list or a dict with a 'values' key, got "
+                f"{type(resp).__name__}: {str(resp)[:200]!r}"
+            )
+        if "startAt" in resp and resp["startAt"] != start:
+            raise ReflectionError(
+                f"{path} echoed startAt={resp['startAt']!r} but we requested "
+                f"startAt={start}; refusing to advance to a page we did not ask for"
+            )
+
         values = resp.get("values") or []
         for item in values:
             yield item
@@ -63,11 +82,7 @@ async def paginate(
             return
         if resp.get("isLast") is True:
             return
-        # Defensive: if a server omits isLast, advance startAt until empty page.
-        next_start = resp.get("startAt", start) + len(values)
-        if next_start == start:
-            return
-        start = next_start
+        start += len(values)
 
 
 # ── Custom fields ─────────────────────────────────────────────────────
@@ -90,7 +105,7 @@ SELECT_TYPE_FRAGMENTS = ("select", "multiselect", "radiobuttons", "checkboxes")
 
 
 def is_select_style(type_id: str) -> bool:
-    """Heuristic for needing an option fetch. Matches DC and Cloud type IDs."""
+    """Heuristic for needing an option fetch. Matches Jira Cloud type IDs."""
     return any(frag in type_id.lower() for frag in SELECT_TYPE_FRAGMENTS)
 
 
@@ -157,7 +172,7 @@ def parse_screen_scheme(payload: dict[str, Any]) -> ScreenSchemeSnapshot:
     for op, ref in screens.items():
         if ref is None:
             continue
-        # On Cloud the value is an int; on DC it can be {"id": "..."} or just an int/str.
+        # Cloud screens are referenced by id; a few payload shapes wrap it as {"id": "..."}.
         if isinstance(ref, dict):
             sid = ref.get("id")
         else:

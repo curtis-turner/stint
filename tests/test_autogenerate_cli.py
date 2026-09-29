@@ -245,6 +245,73 @@ def test_autogenerate_orphan_state_warns_without_allow_delete(
 
 
 @respx.mock
+def test_autogenerate_scopes_to_schema_module_projects(tmp_path, monkeypatch, capsys):
+    """The --schema module imports a sibling module for reuse; the sibling's
+    own Project registers as a side effect. The generated migration must not
+    touch that project (CMP-B)."""
+    _stub_empty_jira(respx.mock)
+    (tmp_path / "schema_b.py").write_text(
+        "from stint import IssueType, Project\n"
+        "\n"
+        "class TaskB(IssueType):\n"
+        "    __alias__ = 'task_b'\n"
+        "\n"
+        "class ProjB(Project):\n"
+        "    __key__ = 'BBB'\n"
+        "    __style__ = 'company-managed'\n"
+        "    __issuetypes__ = [TaskB]\n"
+    )
+    (tmp_path / "schema_a.py").write_text(
+        "import schema_b  # noqa: F401 -- reuse import; registers ProjB as a side effect\n"
+        "from stint import IssueType, Project\n"
+        "\n"
+        "class TaskA(IssueType):\n"
+        "    __alias__ = 'task_a'\n"
+        "\n"
+        "class ProjA(Project):\n"
+        "    __key__ = 'AAA'\n"
+        "    __style__ = 'company-managed'\n"
+        "    __issuetypes__ = [TaskA]\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    mig_dir = tmp_path / "migrations"
+    state_path = tmp_path / "state.yaml"
+    monkeypatch.setenv("STINT_TOKEN", "tok")
+    rc = main(
+        [
+            "revision",
+            "--migrations-dir",
+            str(mig_dir),
+            "-m",
+            "scoped autogen",
+            "--autogenerate",
+            "--schema",
+            str(tmp_path / "schema_a.py"),
+            "--state",
+            str(state_path),
+            "--env",
+            "dev",
+            "--url",
+            f"jira_cloud+{BASE}",
+            "--auth",
+            "pat",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "migration covers project(s): AAA" in out
+
+    files = list(mig_dir.glob("*.py"))
+    assert len(files) == 1
+    src = files[0].read_text()
+    assert "key='AAA'" in src
+    assert "alias='task_a'" in src
+    assert "key='BBB'" not in src
+    assert "alias='task_b'" not in src
+
+
+@respx.mock
 def test_autogenerate_allow_delete_emits_delete(tmp_path, monkeypatch, capsys):
     """Same as above but with --allow-delete: a delete op IS emitted."""
     _stub_empty_jira(respx.mock)

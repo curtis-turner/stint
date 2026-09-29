@@ -30,8 +30,9 @@ honor but Python never executes.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from stint.client.auth import Auth
 from stint.client.http import JiraHTTPClient
@@ -148,7 +149,13 @@ def create_engine(
     if chosen not in _CMP_DIALECT_REGISTRY:
         raise ConfigurationError(f"create_engine {chosen!r}: use create_tmp_engine() for '{_TMP_DIALECT_NAME}'.")
     client = JiraHTTPClient(base_url, auth=auth, verify_ssl=verify_ssl, timeout=timeout)
-    dialect_obj = _CMP_DIALECT_REGISTRY[chosen](client)  # type: ignore
+    # Cast through ``Callable`` because every concrete dialect in
+    # ``_CMP_DIALECT_REGISTRY`` accepts a ``JiraHTTPClient`` in its
+    # ``__init__``, but ``type[CmpDialect]`` structurally only knows
+    # about ``object.__init__()`` (no positional args). The cast is local
+    # to the registry indirection -- the runtime call is correct.
+    dialect_cls = cast("Callable[[JiraHTTPClient], CmpDialect]", _CMP_DIALECT_REGISTRY[chosen])
+    dialect_obj = dialect_cls(client)
     return Engine(base_url=base_url, dialect=dialect_obj, client=client)
 
 
