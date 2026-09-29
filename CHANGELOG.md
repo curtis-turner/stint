@@ -9,6 +9,7 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.5.0] - 2026-09-27
 
 ### Added
+
 - `stint revision --autogenerate` now scopes the desired-snapshot diff to
   the `Project` classes defined in the module passed via `--schema`
   (matched on `__module__`), plus everything reachable from them:
@@ -29,7 +30,7 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   half of the TMP-C finding in `ISSUE_DRAFT.md`.)
 - Translates Jira Cloud's retired-classic-field-configurations 400
   (`Cannot create a new field configuration. Please use Field Scheme
-  instead.`) into a `ConfigurationError` that points at RFC-103/104/105
+instead.`) into a `ConfigurationError` that points at RFC-103/104/105
   and the in-tree Phase 3 plan for the v1/v2 Field Schemes split.
   Schema authors get an actionable message instead of a raw HTTP
   error. The real fix (a per-tenant v1/v2 capability detection routing
@@ -43,7 +44,7 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `stint apply` plan time when a schema declares an unsupported type,
   surfacing the gap with a precise message naming the offending field
   alias and the supported set instead of a raw `400 Invalid field type
-  specified` from the live mutation. `tools/tmp_type_probe.py` is the
+specified` from the live mutation. `tools/tmp_type_probe.py` is the
   live discovery tool to re-verify the count against a real tenant.
   (Closes TMP-B in `ISSUE_DRAFT.md`.)
 - `tmp_set_layout` now adds layout items for newly-declared custom
@@ -74,6 +75,7 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in-tree map.
 
 ### Changed
+
 - Collapses the Jira dialect layer to a single `JiraCloudDialect`
   class in `stint/dialects/jira/cloud.py` and deletes the legacy
   `JiraDialectBase` (`_base.py`). DC-specific ClassVar defaults
@@ -84,9 +86,16 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   into the single class. The README + `common.py` docstrings stop
   mentioning DC. (Closes DC-B in `DC_ISSUE_DRAFT.md`.)
 
+## [0.4.0] - 2026-07-31
+
+### Added
+
+- Support for Jira Cloud team-managed (
+
 ## [0.3.0] - 2026-07-05
 
 ### Added
+
 - Experimental, opt-in support for Jira Cloud team-managed ("next-gen")
   projects via a new `jira_cloud_tmp` dialect (`stint.dialects.jira.tmp`).
   The public Jira Cloud REST API cannot author team-managed project config
@@ -116,12 +125,14 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     own README.
 
 ### Changed
+
 - README install instructions now lead with `uv add stint`; `pip install
-  stint` is kept as a documented alternative.
+stint` is kept as a documented alternative.
 
 ## [0.2.0] - 2026-07-02
 
 ### Changed
+
 - Lowered the minimum Python version from 3.14 to **3.10**, so users on
   distro-shipped interpreters (RHEL, Ubuntu LTS) can install stint. PEP 695
   generics were rewritten as `TypeVar`/`Generic` and `datetime.UTC` as
@@ -139,11 +150,13 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.1.0] - 2026-06-30
 
 ### Added
+
 - `examples/README.md`: a runnable end-to-end walkthrough (validate → stamp →
   autogenerate → upgrade) against a real Jira Cloud tenant, plus a committed
   env-config template `examples/devel.env.example.yaml` to copy into `.stint/`.
 
 ### Fixed
+
 - Issue-type matching now considers **only global** issue types. A tenant with
   team-managed projects exposes same-named project-scoped types in
   `/issuetype`; `stamp` and `create_issuetype` could record one of those, and a
@@ -179,6 +192,7 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.1.0a2] - 2026-06-26
 
 ### Changed
+
 - **Require Python 3.14+** (`requires-python = ">=3.14"`). stint depends on
   PEP 649 deferred annotation evaluation — the default from 3.14 — so the
   schema metaclass can inspect `Annotated` field metadata reliably (e.g.
@@ -195,6 +209,7 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.1.0a1] - 2026-06-26
 
 ### Added
+
 - Sync `Session` facade over `AsyncSession` for callers who do not want to
   manage an event loop.
 - `stint validate` CLI subcommand for schema-level checks with no network
@@ -204,6 +219,7 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   annotations against the installed package.
 
 ### Changed
+
 - CLI ported from `argparse` to [Cyclopts](https://cyclopts.readthedocs.io)
   for type-hint-driven parsing and Rich-rendered help. Subcommand names,
   flag names, and exit codes are unchanged. `--merge a b c` still accepts
@@ -214,12 +230,14 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   plan reflect the new ordering.
 
 ### Removed
+
 - `[project.optional-dependencies].dev` block from `pyproject.toml`. It
   duplicated `[dependency-groups].dev` with stale lower bounds and leaked
   test/lint tooling into `pip install stint[dev]`. `uv sync --dev` only
   read the dependency group anyway.
 
 ### Fixed
+
 - Cloud reflect now reads custom fields from the paginated
   `GET /rest/api/3/field/search`, not `GET /rest/api/3/field`. The latter
   returns only a subset of custom fields on Cloud (omitting fields not yet
@@ -233,6 +251,7 @@ Initial alpha. The schema plane and the data plane are both shippable
 end-to-end against Jira Data Center and Jira Cloud.
 
 ### Added
+
 - Declarative schema classes: `IssueType`, `Project`, `CustomField`, `Screen`,
   `ScreenScheme`, `FieldConfiguration`.
 - Jira DC and Jira Cloud dialects sharing a common base.
