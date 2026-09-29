@@ -84,6 +84,11 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   into the single class. The README + `common.py` docstrings stop
   mentioning DC. (Closes DC-B in `DC_ISSUE_DRAFT.md`.)
 
+## [0.4.0] - 2026-07-31
+
+### Added
+- Support for Jira Cloud team-managed (
+
 ## [0.3.0] - 2026-07-05
 
 ### Added
