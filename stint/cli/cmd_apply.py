@@ -27,6 +27,7 @@ reasoning as ``stint/engine.py``'s ``create_tmp_engine``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
 
@@ -39,11 +40,12 @@ from stint.cli.env_config import require_resolved_connection, resolve_connection
 from stint.engine import create_tmp_engine, resolve_dialect_name
 from stint.exceptions import ConfigurationError
 from stint.registry import registry
-from stint.state.file import ProjectMapping, StateFile
+from stint.state.file import ProjectMapping, StateFile, TmpProjectState
 from stint.state.lock import StateLock
 
 if TYPE_CHECKING:
     from stint.dialects.jira.tmp.reconcile import TmpChange
+    from stint.dialects.jira.tmp.state import TmpState
 
 AuthMode = Literal["pat", "basic", "api-token"]
 DialectName = Literal["jira_cloud", "jira_cloud_tmp"]
@@ -150,10 +152,16 @@ async def apply(
             print("Apply cancelled.")
             return 1
 
-        ctx = TmpApplyContext(dialect=tmp_eng.dialect, project=project_ctx, state=tmp_state)
+        ctx = TmpApplyContext(
+            dialect=tmp_eng.dialect,
+            project=project_ctx,
+            state=tmp_state,
+            on_state_changed=_make_persist(state_file, state_path, tmp_state, project_key, to_project_state),
+        )
         await apply_tmp_plan(ctx, changes, desired, snapshot)
 
-        state_file.tmp_projects[project_key] = to_project_state(tmp_state)
+        # Final snapshot keeps ``project.projects`` (the CMP-style mapping)
+        # in sync even though per-op persist already wrote ``tmp_projects``.
         state_file.projects[project_key] = ProjectMapping(
             id=project_ctx.project_id, style="team-managed", key=project_ctx.key
         )
@@ -165,6 +173,35 @@ async def apply(
     _print_summary(changes)
     print(f"wrote {state_path}")
     return 0
+
+
+def _make_persist(
+    state_file: StateFile,
+    state_path: Path,
+    tmp_state: TmpState,
+    project_key: str,
+    to_project_state: Callable[[TmpState], TmpProjectState],
+) -> Callable[[], None]:
+    """Build the per-op checkpoint closure for ``TmpApplyContext.persist``.
+
+    Each successful op calls this; if the plan crashes halfway through,
+    every change that already wrote to Jira is also on disk in
+    ``state_file.tmp_projects[project_key]``. A retry sees those ids in
+    ``tmp_state.fields``/``worktypes``/``layout_ids`` and skips them; a
+    later ``--allow-delete`` run can target anything left orphaned from a
+    previous attempt.
+
+    ``to_project_state`` is passed in (rather than imported here) so this
+    helper stays at module scope while the TMP package import itself
+    stays deferred to ``apply()`` -- same isolation the rest of this
+    module enforces.
+    """
+
+    def _save() -> None:
+        state_file.tmp_projects[project_key] = to_project_state(tmp_state)
+        state_file.save(state_path)
+
+    return _save
 
 
 def _change_counts(changes: list[TmpChange]) -> tuple[int, int, int]:
