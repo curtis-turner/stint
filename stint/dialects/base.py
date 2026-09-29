@@ -18,7 +18,7 @@ Concrete dialects (see ``stint.dialects.jira``) satisfy these structurally.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 from stint.state.snapshot import Snapshot
 
@@ -26,7 +26,13 @@ from stint.state.snapshot import Snapshot
 class BaseDialect(Protocol):
     """The subset of the contract every backend style satisfies identically."""
 
-    name: str
+    # Class-level constant: a backend identifies itself by `name` (e.g.
+    # "jira_cloud"); nothing ever writes to it on an instance. ``ClassVar``
+    # here lets concrete dialects declare ``name: ClassVar[str] = "..."``
+    # in their class body without tripping ty's structural check against
+    # the protocol (mutable ``name: str`` would require a writable
+    # attribute, which a ClassVar isn't).
+    name: ClassVar[str]
 
     # ── Detection / reflection ───────────────────────────────────────
     async def detect(self) -> bool:
