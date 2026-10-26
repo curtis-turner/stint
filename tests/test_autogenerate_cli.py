@@ -54,6 +54,7 @@ def _stub_empty_jira(mock):
         "/fieldconfiguration",
         "/fieldconfigurationscheme",
         "/fieldconfigurationscheme/project",
+        "/issuesecurityschemes",
     ):
         mock.get(f"{CLOUD_ROOT}{path}").mock(return_value=httpx.Response(200, json=_paginated([])))
 

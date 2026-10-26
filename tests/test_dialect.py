@@ -59,6 +59,7 @@ def _stub_empty_admin(mock: respx.MockRouter, root: str = CLOUD_ROOT) -> None:
     mock.get(f"{root}/fieldconfiguration").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{root}/fieldconfigurationscheme").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{root}/fieldconfigurationscheme/project").mock(return_value=httpx.Response(200, json=_paginated([])))
+    mock.get(f"{root}/issuesecurityschemes").mock(return_value=httpx.Response(200, json=_paginated([])))
 
 
 # ── reflect(): custom fields ──────────────────────────────────────────

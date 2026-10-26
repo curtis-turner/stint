@@ -50,6 +50,7 @@ def _stub_empty(mock: respx.MockRouter) -> None:
     mock.get(f"{CLOUD_ROOT}/fieldconfigurationscheme/project").mock(
         return_value=httpx.Response(200, json=_paginated([]))
     )
+    mock.get(f"{CLOUD_ROOT}/issuesecurityschemes").mock(return_value=httpx.Response(200, json=_paginated([])))
 
 
 # ── Detection ────────────────────────────────────────────────────────
