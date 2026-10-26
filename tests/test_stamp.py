@@ -323,6 +323,7 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
     respx.get(f"{CLOUD_ROOT}/fieldconfigurationscheme/project").mock(
         return_value=httpx.Response(200, json=_paginated([]))
     )
+    respx.get(f"{CLOUD_ROOT}/issuesecurityschemes").mock(return_value=httpx.Response(200, json=_paginated([])))
 
     state_path = tmp_path / "state.yaml"
     monkeypatch.setenv("STINT_TOKEN", "tok")

@@ -59,6 +59,9 @@ from stint.registry import registry
 from stint.schema import FieldConfiguration, IssueType, Project, Screen, ScreenScheme
 from stint.state import (
     CustomFieldSnapshot,
+    SecurityLevelMemberSnapshot,
+    SecurityLevelSnapshot,
+    SecuritySchemeSnapshot,
     ServerInfoSnapshot,
     Snapshot,
     StateFile,
@@ -137,3 +140,13 @@ __all__ = [
     "validate",
     "validate_or_raise",
 ]
+
+
+# Issue Security Scheme Declarations
+# These types are used in schema definitions to declare desired security schemes.
+# They are distinct from the snapshot types (which end in "Snapshot") that represent
+# reflected state from Jira.
+
+SecurityLevel = SecurityLevelSnapshot
+SecurityLevelMember = SecurityLevelMemberSnapshot
+SecurityScheme = SecuritySchemeSnapshot

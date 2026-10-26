@@ -48,17 +48,21 @@ root_cause_field = CustomField(
     type=TextField,
 )
 
+test_text_field = CustomField(
+    alias="test_test_field", name="TestTextField", type=TextField, description="Test adding a new text field to schema"
+)
+
 # ── Screens ───────────────────────────────────────────────────────────
 bug_create_screen = Screen(
     alias="bug_create",
     name="Bug Create Screen",
-    fields=["Summary", "Description", "Reporter", "Assignee", severity_field],
+    fields=["Summary", "Description", "Reporter", "Assignee", severity_field, test_text_field],
 )
 
 bug_edit_screen = Screen(
     alias="bug_edit",
     name="Bug Edit Screen",
-    fields=["Summary", "Description", "Reporter", "Assignee", severity_field, root_cause_field],
+    fields=["Summary", "Description", "Reporter", "Assignee", severity_field, root_cause_field, test_text_field],
 )
 
 bug_view_screen = Screen(
@@ -71,6 +75,7 @@ bug_view_screen = Screen(
         "Assignee",
         severity_field,
         root_cause_field,
+        test_text_field,
         "Created",
         "Updated",
     ],
@@ -89,7 +94,7 @@ bug_screen_scheme = ScreenScheme(
 bug_field_config = FieldConfiguration(
     alias="bug_fields",
     name="Bug Field Configuration",
-    required=["Summary", "Reporter", severity_field],
+    required=["Summary", "Reporter", severity_field, test_text_field],
 )
 
 
@@ -110,6 +115,7 @@ class Bug(IssueType):
     root_cause: Annotated[str | None, root_cause_field] = None
     created: datetime | None = None
     updated: datetime | None = None
+    test_text_field: str | None = None
 
 
 # ── Project ───────────────────────────────────────────────────────────

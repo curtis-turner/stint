@@ -34,6 +34,9 @@ from stint.state.snapshot import (
     ScreenSchemeSnapshot,
     ScreenSnapshot,
     ScreenTabSnapshot,
+    SecurityLevelMemberSnapshot,
+    SecurityLevelSnapshot,
+    SecuritySchemeSnapshot,
     ServerInfoSnapshot,
     Snapshot,
 )
@@ -81,6 +84,7 @@ class JiraCloudDialect:
         itss = await self._reflect_issuetype_screen_schemes()
         field_configurations = await self._reflect_field_configurations()
         fcs = await self._reflect_field_configuration_schemes()
+        security_schemes = await self._reflect_issue_security_schemes()
         return Snapshot(
             server_info=info,
             custom_fields=custom_fields,
@@ -92,6 +96,7 @@ class JiraCloudDialect:
             issuetype_screen_schemes=itss,
             field_configurations=field_configurations,
             field_configuration_schemes=fcs,
+            security_schemes=security_schemes,
         )
 
     # ── Custom fields ────────────────────────────────────────────────
@@ -997,6 +1002,201 @@ class JiraCloudDialect:
 
     async def delete_issue(self, key: str) -> None:
         await self.client.delete(f"{self.api_root}/issue/{key}")
+
+    # ── Issue security schemes ────────────────────────────────────────────
+
+    async def _reflect_issue_security_schemes(self) -> dict[str, SecuritySchemeSnapshot]:
+        """Reflect all issue security schemes from the Jira instance.
+
+        Returns a dict mapping scheme ID -> SecuritySchemeSnapshot.
+        """
+        result: dict[str, SecuritySchemeSnapshot] = {}
+        async for entry in common.paginate(self.client, f"{self.api_root}/issuesecurityschemes"):
+            scheme = common.parse_issue_security_scheme(entry)
+            result[scheme.id] = scheme
+        return result
+
+    async def _reflect_issue_security_levels(self, scheme_id: str) -> dict[str, SecurityLevelSnapshot]:
+        """Reflect all security levels for a given issue security scheme.
+
+        Returns a dict mapping level ID -> SecurityLevelSnapshot.
+        """
+        result: dict[str, SecurityLevelSnapshot] = {}
+        # Query: GET /rest/api/3/issuesecurityschemes/level?id=<scheme_id>
+        payload = await self.client.get_json(
+            f"{self.api_root}/issuesecurityschemes/level",
+            params={"id": [scheme_id]},
+        )
+        for level in payload.get("values", []):
+            members: list[SecurityLevelMemberSnapshot] = []
+            for m in level.get("members", []):
+                holder = m.get("holder", {})
+                m_type = holder.get("type", "unknown")
+                members.append(
+                    SecurityLevelMemberSnapshot(
+                        id=str(m.get("id", "")),
+                        type=m_type,
+                        name=str(holder.get("name", "")),
+                    )
+                )
+            result[level["id"]] = SecurityLevelSnapshot(
+                id=str(level["id"]),
+                name=str(level["name"]),
+                description=str(level.get("description", "")),
+                is_default=level.get("isDefault", False),
+                members=tuple(members),
+            )
+        return result
+
+    async def _reflect_issue_security_level_members(
+        self,
+        scheme_id: str,
+        level_id: str,
+    ) -> dict[str, SecurityLevelMemberSnapshot]:
+        """Reflect all members for a given security level.
+
+        Returns a dict mapping member ID -> SecurityLevelMemberSnapshot.
+        """
+        result: dict[str, SecurityLevelMemberSnapshot] = {}
+        payload = await self.client.get_json(
+            f"{self.api_root}/issuesecurityschemes/level/member",
+            params={"schemeId": scheme_id, "levelId": level_id},
+        )
+        for member in payload.get("values", []):
+            holder = member.get("holder", {})
+            m_type = holder.get("type", "unknown")
+            result[member.get("id", "")] = SecurityLevelMemberSnapshot(
+                id=str(member.get("id", "")),
+                type=m_type,
+                name=str(holder.get("name", "")),
+            )
+        return result
+
+    async def create_issue_security_scheme(
+        self,
+        *,
+        name: str,
+        description: str = "",
+        levels: list[dict[str, Any]] | None = None,
+    ) -> str:
+        """Create a new issue security scheme.
+
+        Returns the new scheme's ID.
+
+        **Permissions required:** Administer Jira global permission.
+
+        **OAuth scopes:** `manage:jira-configuration`
+        """
+        body: dict[str, Any] = {"name": name, "description": description}
+        if levels:
+            body["levels"] = levels
+        result = await self.client.post_json(f"{self.api_root}/issuesecurityschemes", json=body)
+        return str(result["id"])
+
+    async def update_issue_security_scheme(
+        self, scheme_id: str, *, name: str | None = None, description: str | None = None
+    ) -> None:
+        """Update an existing issue security scheme's name and/or description.
+
+        **Permissions required:** Administer Jira global permission.
+        """
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        await self.client.put_json(f"{self.api_root}/issuesecurityschemes/{scheme_id}", json=body)
+
+    async def delete_issue_security_scheme(self, scheme_id: str) -> None:
+        """Delete an issue security scheme.
+
+        **Permissions required:** Administer Jira global permission.
+
+        The scheme must not be associated with any project, or the call will fail.
+        """
+        await self.client.delete(f"{self.api_root}/issuesecurityschemes/{scheme_id}")
+
+    async def associate_security_scheme_to_project(
+        self,
+        *,
+        project_id: str,
+        scheme_id: str,
+        old_to_new_level_mappings: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        """Associate an issue security scheme with a project.
+
+        This is an asynchronous operation; the response includes a `location` link
+        to check task progress.
+
+        **Permissions required:** Administer Jira global permission.
+
+        **OAuth scopes:** `manage:jira-configuration`
+
+        :param project_id: The Jira project ID.
+        :param scheme_id: The issue security scheme ID to associate.
+        :param old_to_new_level_mappings: Optional mapping of old level IDs to new level IDs
+            for remapping existing issues' security levels.
+        :return: Task progress dict.
+        """
+        body: dict[str, Any] = {"projectId": project_id, "schemeId": scheme_id}
+        if old_to_new_level_mappings:
+            body["oldToNewSecurityLevelMappings"] = old_to_new_level_mappings
+        result = await self.client.put_json(f"{self.api_root}/issuesecurityschemes/project", json=body)
+        return result
+
+    async def disassociate_security_scheme_from_project(self, project_id: str) -> None:
+        """Disassociate the issue security scheme from a project, falling back to Jira's default.
+
+        **Permissions required:** Administer Jira global permission.
+        """
+        await self.client.put_json(
+            f"{self.api_root}/issuesecurityschemes/project",
+            json={"projectId": project_id},
+        )
+
+    # ── Issue security level member operations ────────────────────────────
+
+    async def add_issue_security_level_member(
+        self,
+        *,
+        scheme_id: str,
+        level_id: str,
+        member_type: str,  # "user" or "group"
+        member_id_or_name: str,  # accountId for user, group name for group
+    ) -> None:
+        """Add a user or group as a member of a security level.
+
+        **Permissions required:** Administer Jira global permission.
+
+        **OAuth scopes:** `manage:jira-configuration`
+        """
+        if member_type == "user":
+            # Add user by accountId
+            body = {"members": [{"parameter": member_id_or_name, "type": "user"}]}
+        elif member_type == "group":
+            # Add group by group name
+            body = {"members": [{"parameter": member_id_or_name, "type": "group"}]}
+        else:
+            raise ValueError(f"Invalid member_type: {member_type!r}. Expected 'user' or 'group'.")
+        await self.client.put_json(
+            f"{self.api_root}/issuesecurityschemes/{scheme_id}/level/{level_id}/member",
+            json=body,
+        )
+
+    async def remove_issue_security_level_member(
+        self,
+        *,
+        scheme_id: str,
+        level_id: str,
+        member_id: str,
+    ) -> None:
+        """Remove a member from a security level.
+
+        **Permissions required:** Administer Jira global permission.
+        """
+        await self.client.delete(
+            f"{self.api_root}/issuesecurityschemes/{scheme_id}/level/{level_id}/member/{member_id}"
+        )
 
 
 def _expect_id(result: Any, where: str) -> str:

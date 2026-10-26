@@ -64,6 +64,7 @@ class ProjectSnapshot:
     issuetype_scheme_id: str | None = None
     issuetype_screen_scheme_id: str | None = None
     field_configuration_scheme_id: str | None = None
+    issue_security_scheme_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -153,6 +154,56 @@ class IssueTypeSchemeSnapshot:
 
 
 @dataclass
+class SecurityLevelMemberSnapshot:
+    """A member (user or group) of an issue security level."""
+
+    type: str  # "user" or "group"
+    id: str  # e.g. "5b10ac8b86e24b0016d46e0f" or "12345" for groups
+    name: str  # display name
+    # Jira internal holder format: {"type": "user", "parameter": "grace", "user": {...}}
+    # or {"type": "group", "parameter": "administrators", "group": {...}}
+
+
+@dataclass
+class SecurityLevelSnapshot:
+    """A security level within an issue security scheme.
+
+    The ``id`` is optional in schema declarations; it is populated from Jira
+    during ``reflect``.  When used as a plain declaration (e.g. in an example
+    or test) the ``id`` may be omitted.
+    """
+
+    id: str  # e.g. "10021"
+    name: str  # e.g. "Reporter Only"
+    description: str = ""
+    is_default: bool = False
+    members: tuple[SecurityLevelMemberSnapshot, ...] = field(default_factory=tuple)
+
+
+@dataclass
+class SecuritySchemeSnapshot:
+    """An issue security scheme with its security levels.
+
+    The ``id`` is optional in schema declarations; it is populated from Jira
+    during ``reflect``.
+
+    Additional schema-declaration fields (not stored in Jira directly):
+    - ``project``: links this scheme to a project
+    - ``default_level``: the default security level name
+    - ``alias``: a user-friendly alias/identifier for the scheme
+    """
+
+    id: str = ""  # e.g. "10000"; optional in schema declarations
+    name: str = ""  # e.g. "Default Issue Security Scheme"
+    alias: str | None = None  # user-friendly alias/identifier
+    description: str = ""
+    default_security_level_id: str | None = None
+    levels: list[SecurityLevelSnapshot] = field(default_factory=list)  # ordered list of levels
+    project: str | None = None  # project key this scheme is attached to
+    default_level: str | None = None  # default security level name
+
+
+@dataclass
 class Snapshot:
     """Full reflected state of a Jira instance (subset stint manages)."""
 
@@ -166,3 +217,4 @@ class Snapshot:
     issuetype_screen_schemes: dict[str, IssueTypeScreenSchemeSnapshot] = field(default_factory=dict)
     field_configurations: dict[str, FieldConfigurationSnapshot] = field(default_factory=dict)
     field_configuration_schemes: dict[str, FieldConfigurationSchemeSnapshot] = field(default_factory=dict)
+    security_schemes: dict[str, SecuritySchemeSnapshot] = field(default_factory=dict)
