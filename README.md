@@ -94,8 +94,14 @@ Define the schema as Pydantic classes:
 from typing import Annotated, Literal
 
 from stint import (
-    CustomField, IssueType, Project, Screen, ScreenScheme,
-    FieldConfiguration, SelectField, TextField,
+    CustomField,
+    IssueType,
+    Project,
+    Screen,
+    ScreenScheme,
+    FieldConfiguration,
+    SelectField,
+    TextField,
 )
 
 severity_field = CustomField(
@@ -105,20 +111,23 @@ severity_field = CustomField(
     options=["S1", "S2", "S3", "S4"],
 )
 
-bug_create = Screen(alias="bug_create", name="Bug Create",
-                   fields=["Summary", "Reporter", severity_field])
-bug_edit = Screen(alias="bug_edit", name="Bug Edit",
-                  fields=["Summary", "Reporter", severity_field])
-bug_view = Screen(alias="bug_view", name="Bug View",
-                  fields=["Summary", "Reporter", severity_field])
+bug_create = Screen(alias="bug_create", name="Bug Create", fields=["Summary", "Reporter", severity_field])
+bug_edit = Screen(alias="bug_edit", name="Bug Edit", fields=["Summary", "Reporter", severity_field])
+bug_view = Screen(alias="bug_view", name="Bug View", fields=["Summary", "Reporter", severity_field])
 
 bug_screens = ScreenScheme(
-    alias="bug_screens", name="Bug Screen Scheme",
-    create=bug_create, edit=bug_edit, view=bug_view,
+    alias="bug_screens",
+    name="Bug Screen Scheme",
+    create=bug_create,
+    edit=bug_edit,
+    view=bug_view,
 )
 bug_fields = FieldConfiguration(
-    alias="bug_fields", name="Bug Field Config", required=["Summary"],
+    alias="bug_fields",
+    name="Bug Field Config",
+    required=["Summary"],
 )
+
 
 class Bug(IssueType):
     __alias__ = "bug"
@@ -128,6 +137,7 @@ class Bug(IssueType):
     summary: str
     reporter: str
     severity: Annotated[Literal["S1", "S2", "S3", "S4"], severity_field]
+
 
 class Platform(Project):
     __key__ = "PLAT"
@@ -167,6 +177,7 @@ from stint.fields import SelectField
 revision = "abc123def456"
 down_revision = None
 
+
 async def upgrade():
     await op.create_custom_field(
         alias="bug_severity",
@@ -174,6 +185,7 @@ async def upgrade():
         type=SelectField,
         options=["S1", "S2", "S3", "S4"],
     )
+
 
 async def downgrade():
     op.unsupported("deleting bug_severity destroys severity data on existing issues")
@@ -205,12 +217,12 @@ with Session(engine, state) as session:
     bug = Bug(summary="boom", reporter="alice", severity="S2")
     session.add(bug)
     session.commit()
-    print(bug.key)              # populated from the response
+    print(bug.key)  # populated from the response
 
     # UPDATE
     existing = session.get(Bug, "PLAT-1234")
     existing.severity = "S1"
-    session.commit()            # only the changed field is sent
+    session.commit()  # only the changed field is sent
 ```
 
 The async version is `AsyncSession(engine, state)` with the same surface
