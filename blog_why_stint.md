@@ -64,11 +64,13 @@ severity = CustomField(
     options=["S1", "S2", "S3", "S4"],
 )
 
+
 class Bug(IssueType):
     __alias__ = "bug"
     summary: str
     reporter: str
     severity: Annotated[Literal["S1", "S2", "S3", "S4"], severity]
+
 
 class Platform(Project):
     __key__ = "PLAT"
