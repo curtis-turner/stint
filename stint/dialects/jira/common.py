@@ -25,6 +25,9 @@ from stint.state.snapshot import (
     ScreenSchemeSnapshot,
     ScreenSnapshot,
     ScreenTabSnapshot,
+    SecurityLevelMemberSnapshot,
+    SecurityLevelSnapshot,
+    SecuritySchemeSnapshot,
 )
 
 
@@ -259,4 +262,50 @@ def parse_issuetype_scheme_mapping(payload: dict[str, Any]) -> tuple[str, str]:
     return (
         str(payload.get("issueTypeSchemeId", "")),
         str(payload.get("issueTypeId", "")),
+    )
+
+
+def parse_issue_security_scheme(payload: dict[str, Any]) -> SecuritySchemeSnapshot:
+    """Parse a single issue security scheme entry from the /issuesecurityschemes endpoint.
+
+    The paginated list returns entries like:
+    {
+      "id": 10000,
+      "name": "Default Issue Security Scheme",
+      "description": "Description for the default issue security scheme",
+      "defaultSecurityLevelId": 10021,
+      "self": "https://your-domain.atlassian.net/rest/api/3/issuesecurityschemes/10000"
+    }
+    """
+    levels: list[SecurityLevelSnapshot] = []
+    # If the entry includes levels (some API versions do), parse them
+    for level_entry in payload.get("levels", []):
+        members: list[SecurityLevelMemberSnapshot] = []
+        for m in level_entry.get("members", []):
+            holder = m.get("holder", {})
+            members.append(
+                SecurityLevelMemberSnapshot(
+                    id=str(m.get("id", "")),
+                    type=str(holder.get("type", "unknown")),
+                    name=str(holder.get("name", "")),
+                )
+            )
+        levels.append(
+            SecurityLevelSnapshot(
+                id=str(level_entry.get("id", "")),
+                name=str(level_entry.get("name", "")),
+                description=str(level_entry.get("description", "")),
+                is_default=level_entry.get("isDefault", False),
+                members=tuple(members),
+            ),
+        )
+
+    return SecuritySchemeSnapshot(
+        id=str(payload["id"]),
+        name=str(payload.get("name", "")),
+        description=str(payload.get("description", "")),
+        default_security_level_id=str(payload.get("defaultSecurityLevelId", ""))
+        if payload.get("defaultSecurityLevelId")
+        else None,
+        levels=levels,
     )
