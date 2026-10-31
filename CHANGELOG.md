@@ -137,6 +137,11 @@ specified` from the live mutation. `tools/tmp_type_probe.py` is the
   `_reflect_field_options`, project CRUD, and search has been folded
   into the single class. The README + `common.py` docstrings stop
   mentioning DC. (Closes DC-B in `DC_ISSUE_DRAFT.md`.)
+- Removes the remaining Data Center references from user-facing and
+  internal documentation: CLI auth help, package/dialect/auth docstrings,
+  snapshot and schema comments, and test fixtures now describe Jira Cloud
+  only. No runtime behavior change; `detect()` still rejects non-Cloud
+  deployments.
 
 ## [0.4.0] - 2026-07-31
 

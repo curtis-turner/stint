@@ -655,8 +655,9 @@ async def update_project(
 
 
 async def delete_project(*, alias: str, key: str) -> None:
-    """Delete requires the key because DC's delete URL is keyed by project key,
-    while Cloud uses id. Idempotent: no-op when alias is absent from state."""
+    """Delete takes both id and key; Jira Cloud deletes by id. The key stays
+    part of the stable op surface. Idempotent: no-op when alias is absent from
+    state."""
     ctx = get_context()
     mapping = ctx.state.projects.get(alias)
     if mapping is None:

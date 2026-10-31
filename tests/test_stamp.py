@@ -33,7 +33,7 @@ def _isolate_registry():
 def _empty_snapshot() -> Snapshot:
     return Snapshot(
         server_info=ServerInfoSnapshot(
-            deployment_type="Server",
+            deployment_type="Cloud",
             version="9",
             base_url="x",
         )

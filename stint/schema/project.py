@@ -80,14 +80,13 @@ class Project(BaseModel, metaclass=ProjectMeta):
     - ``__key__``: Jira project key (e.g. ``"PLAT"``). Stable identifier.
     - ``__title__``: optional Jira display name. Defaults to the class name.
     - ``__lead__``: optional project lead email. stint resolves it to the
-      backend user id at apply time (DC username, Cloud accountId) via the
-      user-search API. A raw username/accountId (no ``@``) is passed through
-      unchanged. Resolution needs the "Browse users and groups" permission.
+      Jira Cloud accountId at apply time via the user-search API. A raw
+      accountId (no ``@``) is passed through unchanged. Resolution needs the
+      "Browse users and groups" permission.
     - ``__style__``: ``"company-managed"`` (default) or ``"team-managed"`` (Cloud only).
     - ``__issuetypes__``: list of IssueType subclasses included in this project.
 
-    On DC, ``__style__`` is ignored at apply time (DC is CMP-equivalent). On
-    Cloud, TMP projects cannot reference reusable schemes (ScreenScheme,
+    TMP projects cannot reference reusable schemes (ScreenScheme,
     FieldConfiguration); stint rejects this combination at class-definition time.
     """
 

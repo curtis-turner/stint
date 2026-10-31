@@ -39,8 +39,10 @@ next to the code that depends on it.
 Status: `0.3.0`. Runs on Python 3.10 through 3.14. Validated against a live
 Jira Cloud tenant for `0.1.0`. The API may still change within `0.x`.
 
-**Primary target: Jira Cloud**, covering both company-managed and
-team-managed projects, validated against a real Cloud tenant for `0.1.0`.
+**Primary target: Jira Cloud.** Company-managed (CMP) projects are the
+primary, migration-based path. Team-managed (TMP) projects are the secondary,
+opt-in dialect (`jira_cloud_tmp`). Both are validated against a real Cloud
+tenant.
 
 **Jira Data Center is out of scope, not on the roadmap.** An audit against
 Atlassian's official OpenAPI specs found that ~17 of the admin endpoints
