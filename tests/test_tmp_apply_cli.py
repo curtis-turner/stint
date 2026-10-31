@@ -15,6 +15,7 @@ import pytest
 import respx
 
 from stint.cli.main import main
+from stint.fields import TextField
 from stint.registry import registry
 from stint.state.file import StateFile
 
@@ -114,7 +115,16 @@ def _field_create_response(field_id: str, name: str) -> dict:
     }
 
 
-def _gateway_dispatch():
+def _enumeration_edge(field_id: str, name: str, type_key: str) -> dict:
+    return {
+        "node": {
+            "field": {"fieldId": field_id, "name": name, "scope": "PROJECT", "typeKey": type_key},
+            "fieldOptions": {"edges": []},
+        }
+    }
+
+
+def _gateway_dispatch(untracked_edges: list[dict] | None = None):
     def _respond(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         op = body.get("operationName")
@@ -126,7 +136,7 @@ def _gateway_dispatch():
                 ),
             )
         if op == "StintTmpFieldEnumeration":
-            return httpx.Response(200, json=_enumeration_response([]))
+            return httpx.Response(200, json=_enumeration_response(untracked_edges or []))
         if op == "StintTmpFieldCreate":
             return httpx.Response(200, json=_field_create_response("customfield_1", "Root Cause"))
         raise AssertionError(f"no mocked response for operationName {op!r}")
@@ -134,7 +144,7 @@ def _gateway_dispatch():
     return _respond
 
 
-def _stub_reflect_only(mock: respx.MockRouter) -> None:
+def _stub_reflect_only(mock: respx.MockRouter, *, untracked_edges: list[dict] | None = None) -> None:
     """Endpoints reflect() needs. Deliberately does NOT mock field-create,
     worktype-create, or layout read/write -- if apply proceeds to write
     anyway (e.g. a --dry-run or cancel bug), respx raises instead of
@@ -143,7 +153,7 @@ def _stub_reflect_only(mock: respx.MockRouter) -> None:
     mock.get(f"{API_ROOT}/serverInfo").mock(
         return_value=httpx.Response(200, json={"deploymentType": "Cloud", "version": "1001.0.0", "baseUrl": BASE})
     )
-    mock.post(GATEWAY_URL).mock(side_effect=_gateway_dispatch())
+    mock.post(GATEWAY_URL).mock(side_effect=_gateway_dispatch(untracked_edges))
     mock.get(ISSUETYPE_PROJECT_URL).mock(return_value=httpx.Response(200, json=[]))
 
 
@@ -237,6 +247,51 @@ def test_cli_apply_dry_run_shows_plan_and_writes_nothing(tmp_path, monkeypatch, 
     out = capsys.readouterr().out
     assert "Plan: 2 to add, 1 to change, 0 to destroy." in out
     assert not state_path.exists()
+
+
+@respx.mock
+def test_cli_apply_reports_untracked_fields_that_allow_delete_cannot_reach(tmp_path, monkeypatch, capsys):
+    """An untracked project field is in neither state nor schema, so
+    --allow-delete cannot target it. apply must at least name it and give
+    the adopt-then-delete recovery path instead of leaving it invisible."""
+    monkeypatch.setenv("STINT_TOKEN", "test-token")
+    monkeypatch.setenv("STINT_USER", "you@example.com")
+    _stub_reflect_only(
+        respx.mock,
+        untracked_edges=[_enumeration_edge("customfield_999", "Leftover Field", TextField.jira_type_id)],
+    )
+    schema = _write_schema(tmp_path)
+    state_path = tmp_path / "state.yaml"
+
+    rc = main(_base_args(schema, state_path, extra=["--dry-run"]))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Untracked project-scoped fields" in out
+    assert "customfield_999" in out
+    assert "Leftover Field" in out
+    assert "--allow-delete cannot see these" in out
+
+
+@respx.mock
+def test_cli_apply_adopts_matching_untracked_field_instead_of_creating(tmp_path, monkeypatch, capsys):
+    """The schema declares Root Cause, and reflect already sees a project
+    field with that name/type. The plan adopts it rather than creating a
+    duplicate, and the adoption is not reported as an untracked leftover."""
+    monkeypatch.setenv("STINT_TOKEN", "test-token")
+    monkeypatch.setenv("STINT_USER", "you@example.com")
+    _stub_reflect_only(
+        respx.mock,
+        untracked_edges=[_enumeration_edge("customfield_1", "Root Cause", TextField.jira_type_id)],
+    )
+    schema = _write_schema(tmp_path)
+    state_path = tmp_path / "state.yaml"
+
+    rc = main(_base_args(schema, state_path, extra=["--dry-run"]))
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "adopt_field" in out
+    assert "create_field" not in out
+    assert "Untracked project-scoped fields" not in out
 
 
 @respx.mock
