@@ -42,8 +42,10 @@ class TmpApplyContext:
     uses. Ops call ``ctx.persist()`` once their state mutation is committed,
     so a mid-plan failure leaves everything that already succeeded recorded
     on disk: a retry sees them, and ``--allow-delete`` can target anything
-    orphaned from a previous run. ``None`` (the unit-test default) means
-    "don't checkpoint" -- tests can observe final state without I/O.
+    orphaned from a previous run. Fields orphaned *before* this checkpoint
+    existed are recovered by ``plan_tmp``'s adopt-by-name branch instead.
+    ``None`` (the unit-test default) means "don't checkpoint" -- tests can
+    observe final state without I/O.
     """
 
     dialect: TmpDialect

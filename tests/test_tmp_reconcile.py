@@ -30,13 +30,17 @@ from stint.dialects.jira.tmp.ops import (
     tmp_upsert_worktype,
 )
 from stint.dialects.jira.tmp.reconcile import (
+    AdoptField,
     CreateField,
     CreateWorkType,
     DeleteField,
     DeleteWorkType,
     SetLayout,
+    TmpAmbiguousFieldError,
+    TmpChange,
     UpdateField,
     apply_tmp_plan,
+    find_untracked_fields,
     plan_tmp,
     sort_tmp_changes,
 )
@@ -198,8 +202,122 @@ def test_plan_tmp_deletes_only_when_allow_delete():
     assert DeleteWorkType("gone_wt") in changes
 
 
+# ── adopt / report untracked fields (ISSUE_DRAFT delete-side gap) ────
+def _snapshot_with(*fields: CustomFieldSnapshot) -> TmpSnapshot:
+    snap = _empty_snapshot()
+    for field in fields:
+        snap.custom_fields[field.id] = field
+    return TmpSnapshot(snapshot=snap)
+
+
+def test_plan_tmp_adopts_matching_untracked_field_instead_of_creating():
+    """A field present in Jira but missing from state (an orphan from a
+    pre-per-op-persist run, or a hand-created field) is adopted by name and
+    type instead of being created a second time under the same name."""
+    desired = build_tmp_desired(_make_project())
+    snapshot = _snapshot_with(
+        CustomFieldSnapshot(
+            id="customfield_9", name="Severity", type_id=SelectField.jira_type_id, options={"S1": "1", "S2": "2"}
+        ),
+        CustomFieldSnapshot(id="customfield_10", name="Root Cause", type_id=TextField.jira_type_id, options={}),
+    )
+    changes = plan_tmp(desired, snapshot, TmpState())
+    assert AdoptField("severity", "customfield_9") in changes
+    assert AdoptField("root_cause", "customfield_10") in changes
+    assert not any(isinstance(c, CreateField) for c in changes)
+
+
+def test_plan_tmp_adopts_then_updates_when_adopted_field_drifted():
+    desired = build_tmp_desired(_make_project())
+    snapshot = _snapshot_with(
+        CustomFieldSnapshot(id="customfield_9", name="Severity", type_id=SelectField.jira_type_id, options={"S1": "1"}),
+    )
+    changes = plan_tmp(desired, snapshot, TmpState())
+    assert changes.index(AdoptField("severity", "customfield_9")) < changes.index(UpdateField("severity"))
+
+
+def test_plan_tmp_does_not_adopt_untracked_field_with_different_type():
+    desired = build_tmp_desired(_make_project())
+    snapshot = _snapshot_with(
+        CustomFieldSnapshot(id="customfield_9", name="Severity", type_id=TextField.jira_type_id, options={}),
+    )
+    changes = plan_tmp(desired, snapshot, TmpState())
+    assert CreateField("severity") in changes
+    assert not any(isinstance(c, AdoptField) and c.alias == "severity" for c in changes)
+
+
+def test_plan_tmp_rejects_ambiguous_untracked_field_matches():
+    desired = build_tmp_desired(_make_project())
+    snapshot = _snapshot_with(
+        CustomFieldSnapshot(id="customfield_8", name="Severity", type_id=SelectField.jira_type_id, options={"S1": "1"}),
+        CustomFieldSnapshot(id="customfield_9", name="Severity", type_id=SelectField.jira_type_id, options={"S1": "1"}),
+    )
+    with pytest.raises(TmpAmbiguousFieldError, match="customfield_8, customfield_9"):
+        plan_tmp(desired, snapshot, TmpState())
+
+
+def test_find_untracked_fields_reports_only_unclaimed_leftovers():
+    desired = build_tmp_desired(_make_project())
+    snapshot = _snapshot_with(
+        CustomFieldSnapshot(
+            id="customfield_9", name="Severity", type_id=SelectField.jira_type_id, options={"S1": "1", "S2": "2"}
+        ),
+        CustomFieldSnapshot(id="customfield_99", name="Leftover", type_id=TextField.jira_type_id, options={}),
+    )
+    state = TmpState(fields={"severity": "customfield_9"})
+    untracked = find_untracked_fields(desired, snapshot, state)
+    assert [(f.field_id, f.name) for f in untracked] == [("customfield_99", "Leftover")]
+
+
+def test_find_untracked_fields_excludes_fields_about_to_be_adopted():
+    desired = build_tmp_desired(_make_project())
+    snapshot = _snapshot_with(
+        CustomFieldSnapshot(
+            id="customfield_9", name="Severity", type_id=SelectField.jira_type_id, options={"S1": "1", "S2": "2"}
+        ),
+    )
+    # Root Cause has no matching untracked field, so only Severity is adoptable
+    # -- and an adoptable field is not "untracked" in the warning sense.
+    assert find_untracked_fields(desired, snapshot, TmpState()) == ()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_apply_tmp_plan_adopts_and_persists_without_creating():
+    desired = TmpDesired(
+        project_key="VM",
+        fields={
+            "severity": TmpDesiredField(
+                alias="severity", name="Severity", type_key=SelectField.jira_type_id, options=("S1", "S2")
+            ),
+            "root_cause": TmpDesiredField(alias="root_cause", name="Root Cause", type_key=TextField.jira_type_id),
+        },
+    )
+    snapshot = _snapshot_with(
+        CustomFieldSnapshot(
+            id="customfield_9", name="Severity", type_id=SelectField.jira_type_id, options={"S1": "1", "S2": "2"}
+        ),
+        CustomFieldSnapshot(id="customfield_10", name="Root Cause", type_id=TextField.jira_type_id, options={}),
+    )
+    state = TmpState()
+    changes = plan_tmp(desired, snapshot, state)
+
+    checkpoints: list[dict[str, str]] = []
+    ctx = _ctx(state)
+    ctx.on_state_changed = lambda: checkpoints.append(dict(state.fields))
+
+    # No HTTP routes registered: an accidental create would fail loudly.
+    await apply_tmp_plan(ctx, changes, desired, snapshot)
+
+    assert state.fields == {"severity": "customfield_9", "root_cause": "customfield_10"}
+    assert checkpoints == [
+        {"severity": "customfield_9"},
+        {"severity": "customfield_9", "root_cause": "customfield_10"},
+    ]
+
+
 def test_sort_tmp_changes_orders_by_apply_phase():
-    changes = [
+    changes: list[TmpChange] = [
         DeleteField("a"),
         SetLayout("wt"),
         CreateField("a"),
@@ -455,6 +573,64 @@ async def test_tmp_set_layout_synthesizes_items_for_new_worktype():
     assert sent_by_key["customfield_1"]["data"]["required"] is False
     # Distinct externalUuid per field so Jira treats them as distinct items.
     assert sent_by_key["customfield_1"]["data"]["externalUuid"] != sent_by_key["customfield_2"]["data"]["externalUuid"]
+
+
+def _layout_put_response(worktype_id: str, name: str) -> dict:
+    return {
+        "owners": [
+            {
+                "type": "ISSUE_TYPE",
+                "data": {"id": int(worktype_id), "name": name, "description": "", "avatarId": 1, "iconUrl": "x"},
+            }
+        ],
+        "issueLayoutConfig": {"items": []},
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_tmp_set_layout_attaches_distinct_subsets_to_multiple_new_worktypes():
+    """The draft's larger repro: several brand-new work types, each declaring
+    a distinct, non-overlapping subset of fields. Every work type's layout
+    must get exactly its own subset -- not an empty write, and not another
+    work type's fields."""
+    field_ids = {f"f{i}": f"customfield_{i}" for i in range(6)}
+    desired_fields = {
+        alias: TmpDesiredField(alias=alias, name=alias.upper(), type_key=TextField.jira_type_id) for alias in field_ids
+    }
+    subsets = {"a": ("f0", "f1"), "b": ("f2", "f3"), "c": ("f4", "f5")}
+    worktype_ids = {"a": "10007", "b": "10008", "c": "10009"}
+    desired_all = TmpDesired(
+        project_key="VM",
+        fields=desired_fields,
+        worktypes={
+            alias: TmpDesiredWorkType(alias=alias, name=alias.upper(), field_aliases=aliases)
+            for alias, aliases in subsets.items()
+        },
+    )
+    ctx = _ctx(TmpState(fields=field_ids, worktypes=worktype_ids))
+    snapshot = TmpSnapshot(snapshot=_empty_snapshot())
+    routes = {
+        alias: respx.put(f"{ISSUE_LAYOUTS_URL}/layout-{alias}").mock(
+            return_value=httpx.Response(200, json=_layout_put_response(wt_id, alias.upper()))
+        )
+        for alias, wt_id in worktype_ids.items()
+    }
+
+    for alias in subsets:
+        await tmp_set_layout(
+            ctx,
+            alias,
+            desired_all.worktypes[alias],
+            _empty_worktype_layout(f"layout-{alias}"),
+            snapshot=snapshot,
+            desired_all=desired_all,
+        )
+
+    for alias, aliases in subsets.items():
+        body = json.loads(routes[alias].calls.last.request.content)
+        sent_keys = [item["key"] for item in body["issueLayoutConfig"]["items"]]
+        assert sent_keys == [field_ids[a] for a in aliases]
 
 
 @pytest.mark.asyncio

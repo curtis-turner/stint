@@ -44,7 +44,7 @@ from stint.state.file import ProjectMapping, StateFile, TmpProjectState
 from stint.state.lock import StateLock
 
 if TYPE_CHECKING:
-    from stint.dialects.jira.tmp.reconcile import TmpChange
+    from stint.dialects.jira.tmp.reconcile import TmpChange, UntrackedField
     from stint.dialects.jira.tmp.state import TmpState
 
 AuthMode = Literal["pat", "basic", "api-token"]
@@ -95,7 +95,7 @@ async def apply(
     """Reflect a team-managed project, diff it against schema, and apply."""
     from stint.dialects.jira.tmp.desired import build_tmp_desired
     from stint.dialects.jira.tmp.ops import TmpApplyContext
-    from stint.dialects.jira.tmp.reconcile import apply_tmp_plan, plan_tmp
+    from stint.dialects.jira.tmp.reconcile import apply_tmp_plan, find_untracked_fields, plan_tmp
     from stint.dialects.jira.tmp.state import TmpState, from_project_state, to_project_state
 
     url, auth, dialect, token_env, user_env, no_verify_ssl = resolve_connection(
@@ -139,9 +139,11 @@ async def apply(
         project_ctx = await tmp_eng.dialect.resolve_project(project_key=project_key)
         snapshot = await tmp_eng.dialect.reflect(project_key=project_key)
         changes = plan_tmp(desired, snapshot, tmp_state, allow_delete=allow_delete)
+        untracked = find_untracked_fields(desired, snapshot, tmp_state)
+        _print_untracked_fields(untracked)
 
         if not changes:
-            print("No changes. The team-managed project already matches the schema.")
+            print("No schema changes. The team-managed project already matches the schema.")
             return 0
 
         _print_plan(changes)
@@ -189,7 +191,8 @@ def _make_persist(
     ``state_file.tmp_projects[project_key]``. A retry sees those ids in
     ``tmp_state.fields``/``worktypes``/``layout_ids`` and skips them; a
     later ``--allow-delete`` run can target anything left orphaned from a
-    previous attempt.
+    previous attempt. Fields orphaned before this checkpoint existed are
+    adopted by name/type on the next plan, then become deletable normally.
 
     ``to_project_state`` is passed in (rather than imported here) so this
     helper stays at module scope while the TMP package import itself
@@ -204,6 +207,26 @@ def _make_persist(
     return _save
 
 
+def _print_untracked_fields(untracked: tuple[UntrackedField, ...]) -> None:
+    """Report project-scoped fields reflect sees but state/schema do not own.
+
+    These cannot be reached by ``--allow-delete`` -- that path diffs state
+    against desired, and an untracked field is in neither. The message names
+    the recovery path: declare a matching ``CustomField`` to adopt it, then
+    remove it from schema and re-run with ``--allow-delete``.
+    """
+    if not untracked:
+        return
+    print("Untracked project-scoped fields (present in Jira, absent from state and schema):")
+    for field in untracked:
+        print(f"  - {field.field_id}  {field.name!r}  ({field.type_id})")
+    print()
+    print("  --allow-delete cannot see these. To adopt one, declare a CustomField")
+    print("  with the same name and type in the schema and re-run apply; then remove")
+    print("  it and re-run with --allow-delete to delete it.")
+    print()
+
+
 def _change_counts(changes: list[TmpChange]) -> tuple[int, int, int]:
     symbols = [_describe_change(c)[0] for c in changes]
     return symbols.count("+"), symbols.count("~"), symbols.count("-")
@@ -213,6 +236,7 @@ def _describe_change(change: TmpChange) -> tuple[str, str]:
     """Return (symbol, label) for one change. isinstance dispatch, matching
     apply_tmp_plan's own dispatch style on this same Union type."""
     from stint.dialects.jira.tmp.reconcile import (
+        AdoptField,
         CreateField,
         CreateWorkType,
         DeleteField,
@@ -223,6 +247,8 @@ def _describe_change(change: TmpChange) -> tuple[str, str]:
 
     if isinstance(change, CreateField):
         return "+", "create_field"
+    if isinstance(change, AdoptField):
+        return "~", "adopt_field"
     if isinstance(change, UpdateField):
         return "~", "update_field"
     if isinstance(change, DeleteField):
