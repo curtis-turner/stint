@@ -411,6 +411,22 @@ async def delete_field_configuration(*, alias: str) -> None:
     del ctx.state.field_configurations[alias]
 
 
+async def update_field_configuration(
+    *,
+    alias: str,
+    name: str | None = None,
+    description: str | None = None,
+) -> None:
+    """Rename or re-describe an existing field configuration / field scheme."""
+    ctx = get_context()
+    mapping = _require_existing("update_field_configuration", alias, ctx.state.field_configurations)
+    await ctx.engine.dialect.update_field_configuration(
+        mapping.id,
+        name=name,
+        description=description,
+    )
+
+
 async def set_field_configuration_item(
     *,
     fc_alias: str,

@@ -213,7 +213,7 @@ def parse_field_configuration_header(payload: dict[str, Any]) -> FieldConfigurat
     return FieldConfigurationSnapshot(
         id=str(payload["id"]),
         name=str(payload.get("name", "")),
-        description=str(payload.get("description", "")),
+        description=str(payload.get("description") or ""),
         items={},
     )
 
@@ -227,12 +227,34 @@ def parse_field_configuration_item(payload: dict[str, Any]) -> FieldConfiguratio
     )
 
 
+def parse_field_scheme_field(payload: dict[str, Any]) -> FieldConfigurationItemSnapshot:
+    """Parse one row of ``GET /config/fieldschemes/{id}/fields`` (v2).
+
+    v2 has no ``isHidden``: a field that is not associated with the scheme
+    is absent from this listing, which is the hiding mechanism. Required can
+    be set at the scheme default (``parameters``) or per work type
+    (``workTypeParameters``); the snapshot carries one bool, so any required
+    override counts as required.
+    """
+    parameters = payload.get("parameters") or {}
+    work_type_parameters = payload.get("workTypeParameters") or []
+    required = bool(parameters.get("isRequired")) or any(
+        bool((wt or {}).get("isRequired")) for wt in work_type_parameters
+    )
+    return FieldConfigurationItemSnapshot(
+        field_id=str(payload.get("fieldId", "")),
+        required=required,
+        hidden=False,
+        description=str(parameters.get("description") or ""),
+    )
+
+
 # ── Field configuration schemes ───────────────────────────────────────
 def parse_fcs_header(payload: dict[str, Any]) -> FieldConfigurationSchemeSnapshot:
     return FieldConfigurationSchemeSnapshot(
         id=str(payload["id"]),
         name=str(payload.get("name", "")),
-        description=str(payload.get("description", "")),
+        description=str(payload.get("description") or ""),
         mappings=(),
     )
 
