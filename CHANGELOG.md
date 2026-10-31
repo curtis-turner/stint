@@ -6,6 +6,28 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `stint apply` (team-managed projects) now adopts an existing
+  project-scoped field when a declared `CustomField` has no state
+  mapping but a reflected field matches it by name *and* type. Adoption
+  replaces a duplicate create and records the alias→id mapping in state,
+  so a field orphaned by a pre-0.5.0 partial apply (or created by hand)
+  becomes reachable by the normal `--allow-delete` path. More than one
+  matching untracked field raises `TmpAmbiguousFieldError` instead of
+  guessing.
+- `stint apply` now reports project-scoped fields that exist in Jira but
+  are in neither state nor schema. Previously these were completely
+  invisible: `plan_tmp` only diffs state against desired, so
+  `--allow-delete` could never target them. The warning names each field
+  and explains the adopt-then-delete recovery path. (Closes the
+  delete-side gap called out in `ISSUE_DRAFT.md` TMP-C, beyond the
+  per-op persistence shipped in 0.5.0.)
+- `tools/tmp_orphan_field_recovery_repro.py`: offline repro (no
+  credentials) showing an orphan adopted without duplication, a
+  leftover reported, and the adopted field reaching the normal
+  `DeleteField` path.
+
 ## [0.5.0] - 2026-09-27
 
 ### Added
