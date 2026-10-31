@@ -7,7 +7,8 @@ slot key is the attribute name itself (``summary``, ``description``, etc.).
 
 The shape of each value also varies:
   - select / multiselect: ``{"value": "S1", "id": "100"}`` → extract ``.value``
-  - reporter / assignee: ``{"name": "jdoe"}`` (DC) or ``{"accountId": "..."}`` (Cloud)
+  - reporter / assignee: ``{"accountId": "..."}`` on Jira Cloud; ``name`` is
+    retained as a legacy fallback
   - priority: ``{"name": "High"}``
   - text fields: bare string
 

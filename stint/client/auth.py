@@ -1,7 +1,9 @@
-"""Auth modes for Jira.
+"""Auth modes for Jira Cloud.
 
-DC: PAT (preferred), Basic (legacy).
-Cloud: APIToken (preferred, email + token via Basic), OAuth2 (deferred).
+``APITokenAuth`` (email + API token, sent as HTTP Basic) is the supported
+Jira Cloud connection. ``PATAuth`` and ``BasicAuth`` are generic legacy
+primitives retained for proxies and older callers; they are not part of the
+supported Jira Cloud path.
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ class _BearerAuth(httpx.Auth):
 
 @dataclass(frozen=True)
 class PATAuth:
-    """Personal Access Token, the recommended mode for Jira DC."""
+    """Bearer-token auth. Legacy alternative; not used by the Cloud dialect."""
 
     token: str
 
@@ -44,7 +46,7 @@ class PATAuth:
 
 @dataclass(frozen=True)
 class BasicAuth:
-    """Username + password. Legacy DC mode. Often disabled by admins."""
+    """Username + password HTTP Basic. Legacy alternative for proxies."""
 
     username: str
     password: str

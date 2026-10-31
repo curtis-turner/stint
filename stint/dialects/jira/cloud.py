@@ -1,10 +1,6 @@
-"""Jira Cloud dialect.
+"""Jira Cloud dialect for company-managed projects.
 
-This is the only Jira dialect in the package: Jira Data Center support has
-been retired (``plans/plan_issue_triage.md`` Phase 1). The dialect's class
-shape used to live in ``_base.py`` with ``JiraCloudDialect`` overriding the
-DC defaults; that split collapsed to a single ``JiraCloudDialect`` class
-with no subclass, so nothing here should be overridden by a future subclass.
+Team-managed writes live in the separate ``stint.dialects.jira.tmp`` dialect.
 """
 
 from __future__ import annotations

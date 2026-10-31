@@ -204,9 +204,9 @@ async def test_cloud_reflects_tmp_project_style():
 @respx.mock
 async def test_cloud_reads_field_configuration_items_at_fields_endpoint():
     """Cloud's field-configuration items endpoint is documented as
-    /rest/api/3/fieldconfiguration/{id}/fields (DC uses /items, which does
-    not exist on Cloud — verified against the Cloud Platform OpenAPI). This
-    test confirms the dialect override routes to the right segment."""
+    /rest/api/3/fieldconfiguration/{id}/fields (verified against the Cloud
+    Platform OpenAPI). This test confirms the dialect routes to that
+    segment."""
     _stub_empty(respx.mock)
     respx.get(f"{CLOUD_ROOT}/fieldconfiguration").mock(
         return_value=httpx.Response(

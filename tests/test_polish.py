@@ -250,7 +250,7 @@ async def test_retry_on_503_then_success():
                 json={
                     "baseUrl": BASE,
                     "version": "9",
-                    "deploymentType": "Server",
+                    "deploymentType": "Cloud",
                 },
             ),
         ]
@@ -319,7 +319,7 @@ def test_diff_emits_update_project_on_rename():
 
     snapshot = Snapshot(
         server_info=ServerInfoSnapshot(
-            deployment_type="Server",
+            deployment_type="Cloud",
             version="9",
             base_url="x",
         )
@@ -382,7 +382,7 @@ def test_diff_emits_update_itss_when_mappings_change():
 
     snap = Snapshot(
         server_info=ServerInfoSnapshot(
-            deployment_type="Server",
+            deployment_type="Cloud",
             version="9",
             base_url="x",
         )
@@ -640,7 +640,7 @@ def test_cli_reflect_reads_connection_from_env_config(tmp_path, monkeypatch, cap
         mock.get(f"{dc_root}/serverInfo").mock(
             return_value=httpx.Response(
                 200,
-                json={"baseUrl": base, "version": "9.12.4", "deploymentType": "Server"},
+                json={"baseUrl": base, "version": "9.12.4", "deploymentType": "Cloud"},
             )
         )
         for path in (f"{dc_root}/field", f"{dc_root}/issuetype"):
@@ -704,7 +704,7 @@ def test_cli_stamp_reads_connection_from_env_config(tmp_path, monkeypatch):
 
     with respx.mock(assert_all_called=False) as mock:
         mock.get(f"{dc_root}/serverInfo").mock(
-            return_value=httpx.Response(200, json={"baseUrl": base, "version": "9.12.4", "deploymentType": "Server"})
+            return_value=httpx.Response(200, json={"baseUrl": base, "version": "9.12.4", "deploymentType": "Cloud"})
         )
         for path in (f"{dc_root}/field", f"{dc_root}/issuetype"):
             mock.get(path).mock(return_value=httpx.Response(200, json=[]))
@@ -765,7 +765,7 @@ def test_cli_revision_autogenerate_reads_connection_from_env_config(tmp_path, mo
 
     with respx.mock(assert_all_called=False) as mock:
         mock.get(f"{dc_root}/serverInfo").mock(
-            return_value=httpx.Response(200, json={"baseUrl": base, "version": "9.12.4", "deploymentType": "Server"})
+            return_value=httpx.Response(200, json={"baseUrl": base, "version": "9.12.4", "deploymentType": "Cloud"})
         )
         for path in (f"{dc_root}/field", f"{dc_root}/issuetype"):
             mock.get(path).mock(return_value=httpx.Response(200, json=[]))

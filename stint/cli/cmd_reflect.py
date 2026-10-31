@@ -41,8 +41,9 @@ async def reflect(
         AuthMode | None,
         Parameter(
             help=(
-                "Auth mode. pat=Personal Access Token (DC), basic=username+password, "
-                "api-token=email+API token (Cloud). Read from env config if omitted."
+                "Auth mode. api-token=email+API token (supported for Jira Cloud); "
+                "pat=bearer token and basic=username+password are legacy alternatives. "
+                "Read from env config if omitted."
             ),
         ),
     ] = None,
@@ -70,7 +71,7 @@ async def reflect(
         bool,
         Parameter(
             negative=(),
-            help="Skip TLS verification. Use only with internal/self-signed DC instances.",
+            help="Skip TLS verification. Use only with internal/self-signed instances.",
         ),
     ] = False,
 ) -> int:

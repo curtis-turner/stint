@@ -24,7 +24,7 @@ def _stub_empty(mock: respx.MockRouter) -> None:
             json={
                 "baseUrl": BASE,
                 "version": "9.12.4",
-                "deploymentType": "Server",
+                "deploymentType": "Cloud",
             },
         )
     )
@@ -67,7 +67,7 @@ def test_reflect_yaml_output(monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     parsed = yaml.safe_load(out)
-    assert parsed["server_info"]["deployment_type"] == "Server"
+    assert parsed["server_info"]["deployment_type"] == "Cloud"
     assert parsed["server_info"]["version"] == "9.12.4"
     assert parsed["custom_fields"] == {}
     assert parsed["issuetypes"] == {}
@@ -92,7 +92,7 @@ def test_reflect_json_output(monkeypatch, capsys):
     import json as _json
 
     parsed = _json.loads(capsys.readouterr().out)
-    assert parsed["server_info"]["deployment_type"] == "Server"
+    assert parsed["server_info"]["deployment_type"] == "Cloud"
 
 
 @respx.mock
@@ -155,7 +155,7 @@ def test_reflect_dialect_kwarg_without_url_prefix(monkeypatch, capsys):
     )
     assert rc == 0
     out = capsys.readouterr().out
-    assert "Server" in out
+    assert "Cloud" in out
 
 
 def test_reflect_requires_url_argument():

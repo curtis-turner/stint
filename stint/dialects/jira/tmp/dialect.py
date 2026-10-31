@@ -85,7 +85,7 @@ _EXPERIMENTAL_NOTICE = (
     "tmp_spike_conclusion.md for the full risk record."
 )
 
-# Public REST root. TMP is Cloud-only, so this is fixed (no DC dialect exists anymore).
+# Public REST root. TMP is Cloud-only, so this is fixed.
 _API_ROOT = "/rest/api/3"
 
 # A standard system issue-type avatar id, used as create_worktype's default.
