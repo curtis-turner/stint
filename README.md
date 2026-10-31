@@ -245,6 +245,12 @@ Two full, runnable walkthroughs against a real Jira Cloud tenant, each about
 
 - **Jira Cloud (only target in 0.1)**: company-managed and team-managed
   projects, validated against a live Cloud tenant.
+- Company-managed field configuration: stint probes each tenant for
+  Atlassian's Field Schemes API (`/config/fieldschemes`) and routes
+  field-configuration reads/writes to it automatically. Tenants still on
+  the classic API keep using `/fieldconfiguration`; schema authors see no
+  difference. This tracks Atlassian's May 2026 retirement of classic field
+  configurations.
 - Schema plane: custom fields, screens, screen schemes, issue type
   screen schemes, field configurations, field configuration schemes,
   issue types, projects.

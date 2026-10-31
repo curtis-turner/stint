@@ -156,6 +156,13 @@ class CreateFieldConfiguration(Change):
 
 
 @dataclass
+class UpdateFieldConfiguration(Change):
+    alias: str
+    name: str | None = None
+    description: str | None = None
+
+
+@dataclass
 class SetFieldConfigurationItem(Change):
     fc_alias: str
     field_alias: str
@@ -772,7 +779,16 @@ def _diff_field_configurations(
                 f"field_configuration {alias!r}: state references id {existing_id!r} but it's not present in Jira"
             )
             continue
-        # No update_field_configuration_header op exists yet — skip name/desc.
+        name_change = want.name if actual.name != want.name else None
+        desc_change = want.description if actual.description != want.description else None
+        if name_change is not None or desc_change is not None:
+            r.changes.append(
+                UpdateFieldConfiguration(
+                    alias=alias,
+                    name=name_change,
+                    description=desc_change,
+                )
+            )
 
     if allow_delete:
         for alias in sorted(state.field_configurations):
@@ -967,6 +983,12 @@ def _itss_mappings_changed(want, actual, state: StateFile) -> dict[str, str] | N
 
 def _fcs_mappings_changed(want, actual, state: StateFile) -> dict[str, str] | None:
     """Same as _itss_mappings_changed for field configuration schemes."""
+    # v2 Field Schemes have no work-type → configuration mapping table: the
+    # dialect reflects an empty tuple, and per-work-type behavior lives in
+    # the scheme's inline field parameters. Treat that as "cannot compare"
+    # rather than emitting a rebind on every autogenerate run.
+    if not actual.mappings:
+        return None
     want_resolved: dict[str, str] = {}
     for it_alias, fc_alias in want.mappings.items():
         fc_mapping = state.field_configurations.get(fc_alias)
