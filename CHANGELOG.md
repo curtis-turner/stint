@@ -8,6 +8,37 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Jira Cloud's Field Schemes API (v2, `/rest/api/3/config/fieldschemes`)
+  is now implemented alongside the classic field-configuration API, with
+  per-tenant capability detection cached on the dialect instance. On a
+  tenant that speaks Field Schemes, `create_field_configuration`,
+  `set_field_configuration_item`, `create_field_configuration_scheme`,
+  the scheme-mapping/binding calls, reflection, and project binding all
+  route to the new endpoints automatically — no schema or migration
+  changes. The classic API stays available for tenants still on the old
+  rollout stage, and a classic create that hits the retired-API 400
+  re-probes and retries on v2 before surfacing an error. This is the real
+  fix for the CMP-A finding in `CMP_ISSUE_DRAFT.md`.
+- New dialect surface for the Field Schemes API:
+  `create_field_scheme`/`update_field_scheme`/`delete_field_scheme`,
+  `get_field_scheme_fields`, `associate_fields_with_field_scheme`,
+  `remove_fields_from_field_scheme`, `set_field_scheme_field_parameters`,
+  `associate_projects_with_field_scheme`,
+  `get_projects_with_field_schemes`, and
+  `search_field_scheme_projects`. New field schemes associate every
+  system/custom field up front, matching a classic configuration's
+  "visible unless explicitly hidden" default. A synthesized
+  field-configuration scheme is translated into one project field scheme,
+  merging its member configurations' fields; a field omitted from an
+  overriding configuration is restricted to the work types that still
+  include it, and per-work-type required behavior becomes inline
+  `workTypeParameters` overrides. Bulk field requests are chunked under
+  the API's 100-field limit.
+- `op.update_field_configuration` (and the matching diff/emit support)
+  closes the previous "no update op, skip name/description drift" gap.
+- `tests/test_field_schemes.py`: offline respx coverage for capability
+  detection, the retired-400 retry, v2 reads/writes, project binding,
+  and the member-configuration merge.
 - `stint apply` (team-managed projects) now adopts an existing
   project-scoped field when a declared `CustomField` has no state
   mapping but a reflected field matches it by name *and* type. Adoption
@@ -52,12 +83,11 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   half of the TMP-C finding in `ISSUE_DRAFT.md`.)
 - Translates Jira Cloud's retired-classic-field-configurations 400
   (`Cannot create a new field configuration. Please use Field Scheme
-instead.`) into a `ConfigurationError` that points at RFC-103/104/105
-  and the in-tree Phase 3 plan for the v1/v2 Field Schemes split.
-  Schema authors get an actionable message instead of a raw HTTP
-  error. The real fix (a per-tenant v1/v2 capability detection routing
-  to Field Schemes) is the larger Phase 3 work. (Closes the short-term
-  half of the CMP-A finding in `CMP_ISSUE_DRAFT.md`.)
+instead.`) into a `ConfigurationError` that points at the Field Schemes
+  API and RFC-103/104/105. The create path first re-probes the tenant and
+  retries on the v2 API; this error is the last resort when the v2 probe
+  also fails. (Pairs with the full v2 routing above for CMP-A in
+  `CMP_ISSUE_DRAFT.md`.)
 - `stint.dialects.jira.tmp.types` (`tmp_type_key_for`,
   `TMP_FIELD_TYPE_KEYS`) names the 9-of-18 subset of Jira custom-field
   type ids that the TMP `createCustomFieldInProjectAndAddToAllIssueTypes`

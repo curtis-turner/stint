@@ -47,6 +47,7 @@ from stint.autogen.diff import (
     SetProjectIssueTypeScheme,
     SetProjectIssueTypeScreenScheme,
     UpdateCustomField,
+    UpdateFieldConfiguration,
     UpdateFieldConfigurationScheme,
     UpdateIssueType,
     UpdateIssueTypeScheme,
@@ -228,6 +229,7 @@ _PHASE: dict[type, int] = {
     UpdateScreenScheme: 75,
     UpdateIssueTypeScheme: 75,
     UpdateIssueTypeScreenScheme: 76,
+    UpdateFieldConfiguration: 77,
     UpdateFieldConfigurationScheme: 77,
     UpdateProject: 78,
     DeleteProject: 80,
@@ -447,6 +449,14 @@ def _render_one(change: Change) -> str:
             f"        fc_alias={change.fc_alias!r},\n"
             f"        field_alias={change.field_alias!r}{req_kv}{hid_kv},\n"
             f"    )"
+        )
+
+    if isinstance(change, UpdateFieldConfiguration):
+        return _render_update(
+            "update_field_configuration",
+            alias=change.alias,
+            name=change.name,
+            description=change.description,
         )
 
     if isinstance(change, DeleteFieldConfiguration):
