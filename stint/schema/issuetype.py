@@ -159,8 +159,8 @@ class IssueType(BaseModel, metaclass=IssueTypeMeta):
     - ``__alias__``: stable cross-environment identifier (required).
     - ``__title__``: Jira display name. Optional. Defaults to the class name.
     - ``__description__``: optional Jira description.
-    - ``__screen_scheme__``: optional ScreenScheme reference (CMP / DC only).
-    - ``__field_configuration__``: optional FieldConfiguration reference (CMP / DC only).
+    - ``__screen_scheme__``: optional ScreenScheme reference (CMP only).
+    - ``__field_configuration__``: optional FieldConfiguration reference (CMP only).
 
     Pydantic-typed attributes declare the data-plane fields. The same class is
     used both as a schema-plane object (declaring what issuetype to provision

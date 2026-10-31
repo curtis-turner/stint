@@ -269,8 +269,8 @@ def _stamp_projects(state, snapshot, desired, report) -> None:
         if match is None:
             report.unmatched.append(("project", alias))
             continue
-        # ProjectSnapshot.style is "classic" (CMP) on DC, "classic" (CMP) or
-        # "next-gen" (TMP) on Cloud. Normalize to stint's vocabulary.
+        # ProjectSnapshot.style is "classic" (CMP) or "next-gen" (TMP).
+        # Normalize to stint's vocabulary.
         style = "team-managed" if match.style == "next-gen" else "company-managed"
         if alias in state.projects:
             existing = state.projects[alias]

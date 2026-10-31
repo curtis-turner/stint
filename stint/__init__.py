@@ -8,9 +8,9 @@ The dialect protocol is the extension point for additional backends.
 M0: schema-plane declarative classes (IssueType, Project, CustomField, Screen,
 ScreenScheme, FieldConfiguration). Validation only, no I/O.
 
-M1 first slice: dialect protocol, engine factory, HTTP client with PAT auth,
-Jira DC dialect with /serverInfo detection and /field reflection, YAML state
-file load/save.
+M1 first slice: dialect protocol, engine factory, HTTP client with API-token
+auth, Jira Cloud dialect with /serverInfo detection and /field reflection,
+YAML state file load/save.
 """
 
 import builtins

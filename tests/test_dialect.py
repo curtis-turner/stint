@@ -1,4 +1,4 @@
-"""Jira DC dialect: detect() against /serverInfo, reflect() of all admin objects.
+"""Jira Cloud dialect: detect() against /serverInfo, reflect() of all admin objects.
 
 All HTTP is mocked via respx; no real network involved.
 """

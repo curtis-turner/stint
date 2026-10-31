@@ -110,7 +110,7 @@ class JiraHTTPClient:
         if status == 403:
             raise PermissionError(
                 f"403 from {response.request.url}: likely insufficient permission. "
-                f"Admin endpoints typically require Site Admin (DC) or Org Admin (Cloud)."
+                f"Admin endpoints typically require Jira Site Admin or Org Admin."
             )
         if status == 404:
             raise NotFoundError(f"404 from {response.request.url}")

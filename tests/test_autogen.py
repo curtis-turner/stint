@@ -50,7 +50,7 @@ def _isolate_registry():
 
 def _empty_snapshot() -> Snapshot:
     return Snapshot(
-        server_info=ServerInfoSnapshot(deployment_type="Server", version="9", base_url="x"),
+        server_info=ServerInfoSnapshot(deployment_type="Cloud", version="9", base_url="x"),
     )
 
 
@@ -440,7 +440,7 @@ def test_diff_emits_set_scheme_for_existing_project_with_drifted_binding():
     state.issuetype_screen_schemes["PLAT_itss"] = SimpleMapping(id="itss-want")
     state.field_configuration_schemes["PLAT_fcs"] = SimpleMapping(id="fcs-want")
     snapshot = Snapshot(
-        server_info=ServerInfoSnapshot(deployment_type="Server", version="9", base_url="x"),
+        server_info=ServerInfoSnapshot(deployment_type="Cloud", version="9", base_url="x"),
         projects={
             "PLAT": ProjectSnapshot(
                 id="p-1",
@@ -484,7 +484,7 @@ def test_diff_skips_set_scheme_when_desired_alias_not_yet_in_state():
     state.projects["PLAT"] = ProjectMapping(id="p-1", key="PLAT")
     # Note: state.issuetype_schemes etc. are intentionally empty.
     snapshot = Snapshot(
-        server_info=ServerInfoSnapshot(deployment_type="Server", version="9", base_url="x"),
+        server_info=ServerInfoSnapshot(deployment_type="Cloud", version="9", base_url="x"),
         projects={
             "PLAT": ProjectSnapshot(
                 id="p-1",
@@ -518,7 +518,7 @@ def test_diff_does_not_emit_lead_update_for_existing_project():
     state.issuetype_screen_schemes["PLAT_itss"] = SimpleMapping(id="itss-1")
     state.field_configuration_schemes["PLAT_fcs"] = SimpleMapping(id="fcs-1")
     snapshot = Snapshot(
-        server_info=ServerInfoSnapshot(deployment_type="Server", version="9", base_url="x"),
+        server_info=ServerInfoSnapshot(deployment_type="Cloud", version="9", base_url="x"),
         projects={
             "PLAT": ProjectSnapshot(
                 id="p-1",
