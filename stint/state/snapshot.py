@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 class ServerInfoSnapshot:
     """Subset of `GET /rest/api/{2,3}/serverInfo` that stint cares about."""
 
-    deployment_type: str  # "Server" (DC) or "Cloud"
-    version: str  # e.g. "9.12.4" or a Cloud build string
+    deployment_type: str  # "Cloud"; legacy state files may still hold "Server"
+    version: str  # e.g. a Cloud build string
     base_url: str  # the server-reported base URL
 
 
@@ -31,7 +31,7 @@ class CustomFieldSnapshot:
 
 @dataclass(frozen=True)
 class IssueTypeSnapshot:
-    """A Jira global issuetype (DC/CMP) or project-scoped issuetype (TMP).
+    """A Jira global issuetype (CMP) or project-scoped issuetype (TMP).
 
     ``project_scoped`` is True for team-managed (next-gen) issue types, which
     Jira's ``scope`` field marks ``PROJECT``. They cannot be managed through the
@@ -49,8 +49,8 @@ class IssueTypeSnapshot:
 
 @dataclass(frozen=True)
 class ProjectSnapshot:
-    """A Jira project. ``style`` is ``classic`` on DC and either
-    ``classic`` (CMP) or ``next-gen`` (TMP) on Cloud."""
+    """A Jira Cloud project. ``style`` is ``classic`` (CMP) or
+    ``next-gen`` (TMP)."""
 
     id: str
     key: str

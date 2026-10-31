@@ -35,7 +35,7 @@ def _stub_empty_jira(mock):
             json={
                 "baseUrl": BASE,
                 "version": "9",
-                "deploymentType": "Server",
+                "deploymentType": "Cloud",
             },
         )
     )

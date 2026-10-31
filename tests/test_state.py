@@ -13,7 +13,7 @@ def test_state_file_roundtrip_yaml():
         env="prod",
         jira_url="https://jira.example.com",
         jira_version="9.12.4",
-        deployment_type="Server",
+        deployment_type="Cloud",
         last_applied="2026-05-19T14:22:11Z",
         custom_fields={
             "bug_severity": CustomFieldMapping(
@@ -80,7 +80,7 @@ def test_full_state_file_roundtrip():
         env="prod",
         jira_url="https://jira.example.com",
         jira_version="9.12.4",
-        deployment_type="Server",
+        deployment_type="Cloud",
         custom_fields={
             "bug_severity": CustomFieldMapping(
                 id="customfield_10042",

@@ -864,7 +864,7 @@ def _diff_projects(
         name_change = want.name if actual.name != want.name else None
         # Lead drift is intentionally NOT auto-detected on existing projects.
         # The schema declares __lead__ as an email, but the reflected snapshot
-        # reports the backend identity (accountId on Cloud, username on DC).
+        # reports the backend identity (Jira Cloud accountId).
         # The two are never directly comparable, so comparing them would emit an
         # UpdateProject lead change on every autogenerate run forever. Lead is
         # still applied on project creation; change an existing project's lead

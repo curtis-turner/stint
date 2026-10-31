@@ -5,7 +5,8 @@ Per-field-type rules:
   - Select / RadioButtons: ``{"value": "S1"}``
   - MultiSelect / Checkboxes: ``[{"value": "S1"}, ...]``
   - Labels:        bare list of strings, no ``value`` wrapping: ``["a", "b"]``
-  - User:          ``{"name": "..."}`` (DC) or ``{"accountId": "..."}`` (Cloud)
+  - User:          ``{"accountId": "..."}`` on Jira Cloud; ``name`` is the
+                   legacy fallback
   - MultiUser:     list of the same shape
   - Version:       ``{"name": "1.0"}``
   - MultiVersion:  ``[{"name": "1.0"}, ...]``
@@ -232,7 +233,8 @@ def _emit_system_field(
     Most system fields share the attribute name (summary, description, priority,
     reporter, assignee). A few need transformation:
       - description on Cloud: wrap in ADF.
-      - reporter/assignee: {"name":...} (DC) / {"accountId":...} (Cloud).
+      - reporter/assignee: {"accountId":...} on Cloud; {"name":...} is the
+        legacy fallback.
       - priority: {"name": "High"}.
     """
     if attr_name == "description" and is_cloud:
