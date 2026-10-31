@@ -13,8 +13,6 @@ auth, Jira Cloud dialect with /serverInfo detection and /field reflection,
 YAML state file load/save.
 """
 
-import builtins
-
 from stint import migrations
 from stint.client.auth import APITokenAuth, BasicAuth, PATAuth
 from stint.engine import Engine, create_engine
@@ -67,13 +65,6 @@ from stint.state import (
     StateFile,
 )
 from stint.validate import validate, validate_or_raise
-
-try:
-    import examples.adf.schema as _p
-
-    builtins.p = _p  # type: ignore
-except Exception:
-    pass
 
 __version__ = "0.5.0"
 
