@@ -945,8 +945,113 @@ async def test_set_project_issuetype_scheme():
         await engine.close()
 
 
+# ── IssueTypeScheme membership (B3: drift must reach Jira) ───────────
 @pytest.mark.asyncio
-async def test_create_issuetype_scheme_rejects_default_outside_member_list():
+@respx.mock
+async def test_update_issuetype_scheme_reconciles_membership_add_remove():
+    """B3: membership drift must produce real HTTP calls. Removes the member
+    Jira has but the schema dropped, and adds the declared new member. No
+    move call is needed (adds append in declared order)."""
+    respx.get(f"{CLOUD_ROOT}/issuetypescheme/mapping").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "startAt": 0,
+                "isLast": True,
+                "values": [
+                    {"issueTypeSchemeId": "its-1", "issueTypeId": "10010"},
+                    {"issueTypeSchemeId": "its-1", "issueTypeId": "10011"},
+                    {"issueTypeSchemeId": "other-scheme", "issueTypeId": "10010"},
+                ],
+            },
+        )
+    )
+    add = respx.put(
+        f"{CLOUD_ROOT}/issuetypescheme/its-1/issuetype",
+        json__eq={"issueTypeIds": ["10012"]},
+    ).mock(return_value=httpx.Response(204))
+    remove = respx.delete(f"{CLOUD_ROOT}/issuetypescheme/its-1/issuetype/10011").mock(return_value=httpx.Response(204))
+    state = StateFile(env="dev", jira_url=BASE)
+    state.issuetype_schemes["PLAT_its"] = SimpleMapping(id="its-1")
+    state.issuetypes["bug"] = SimpleMapping(id="10010")
+    state.issuetypes["task"] = SimpleMapping(id="10012")  # declared new member
+    engine = _cloud_engine()
+    try:
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.update_issuetype_scheme(
+                alias="PLAT_its",
+                issuetypes=["bug", "task"],
+            ),
+        )
+    finally:
+        await engine.close()
+    assert add.called
+    assert remove.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_update_issuetype_scheme_reorders_members_only():
+    """B3: reordering ``__issuetypes__`` is reconcileable — the head member
+    moves to First; the pair is then already in declared order."""
+    respx.get(f"{CLOUD_ROOT}/issuetypescheme/mapping").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "startAt": 0,
+                "isLast": True,
+                "values": [
+                    {"issueTypeSchemeId": "its-1", "issueTypeId": "10010"},
+                    {"issueTypeSchemeId": "its-1", "issueTypeId": "10011"},
+                ],
+            },
+        )
+    )
+    move = respx.put(
+        f"{CLOUD_ROOT}/issuetypescheme/its-1/issuetype/move",
+        json__eq={"issueTypeIds": ["10011"], "position": "First"},
+    ).mock(return_value=httpx.Response(204))
+    state = StateFile(env="dev", jira_url=BASE)
+    state.issuetype_schemes["PLAT_its"] = SimpleMapping(id="its-1")
+    state.issuetypes["bug"] = SimpleMapping(id="10010")
+    state.issuetypes["task"] = SimpleMapping(id="10011")
+    engine = _cloud_engine()
+    try:
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.update_issuetype_scheme(
+                alias="PLAT_its",
+                issuetypes=["task", "bug"],
+            ),
+        )
+    finally:
+        await engine.close()
+    assert move.called
+
+
+@pytest.mark.asyncio
+async def test_update_issuetype_scheme_rejects_default_outside_member_list():
+    state = StateFile(env="dev", jira_url=BASE)
+    state.issuetype_schemes["PLAT_its"] = SimpleMapping(id="its-1")
+    state.issuetypes["bug"] = SimpleMapping(id="10010")
+    state.issuetypes["task"] = SimpleMapping(id="10011")
+    engine = _cloud_engine()
+    try:
+        with pytest.raises(ConfigurationError, match="default_issuetype"):
+            await _run_in_ctx(
+                engine,
+                state,
+                lambda: op.update_issuetype_scheme(
+                    alias="PLAT_its",
+                    issuetypes=["bug"],
+                    default_issuetype="task",
+                ),
+            )
+    finally:
+        await engine.close()
     state = StateFile(env="dev", jira_url=BASE)
     state.issuetypes["bug"] = SimpleMapping(id="10010")
     state.issuetypes["task"] = SimpleMapping(id="10011")

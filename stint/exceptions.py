@@ -47,6 +47,10 @@ class StateFileCorruptError(StateFileError):
     """State file exists but cannot be parsed."""
 
 
+class StateFileWriteError(StateFileError):
+    """State file path cannot be written (parent missing, permissions, disk)."""
+
+
 class ReflectionError(StintError):
     """Reflection produced unexpected or unreadable data."""
 

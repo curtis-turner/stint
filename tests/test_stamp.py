@@ -323,7 +323,9 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
     respx.get(f"{CLOUD_ROOT}/fieldconfigurationscheme/project").mock(
         return_value=httpx.Response(200, json=_paginated([]))
     )
-    respx.get(f"{CLOUD_ROOT}/issuesecurityschemes").mock(return_value=httpx.Response(200, json=_paginated([])))
+    respx.get(f"{CLOUD_ROOT}/issuesecurityschemes").mock(
+        return_value=httpx.Response(200, json={"issueSecuritySchemes": []})
+    )
 
     state_path = tmp_path / "state.yaml"
     monkeypatch.setenv("STINT_TOKEN", "tok")
@@ -356,3 +358,36 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
     assert on_disk.issuetypes["bug"].id == "10010"
     assert on_disk.projects["PLAT"].id == "p-1"
     assert on_disk.screens["bug_view"].id == "scr-3"
+    assert not (tmp_path / "state.yaml.lock").exists()
+
+
+def test_cli_stamp_refuses_when_state_lock_held(tmp_path, monkeypatch, capsys):
+    """H3: stamp takes the state lock before loading the state file, before
+    reflecting, and before saving — it writes the same whole-file state the
+    other commands lock. No respx mocks: if the reflect ran before the lock
+    check, an HTTP error would surface instead of StateLockError."""
+    monkeypatch.setenv("STINT_TOKEN", "tok")
+    state_path = tmp_path / "state.yaml"
+    lock_path = tmp_path / "state.yaml.lock"
+    lock_path.write_text("pid=999999\nacquired_at=2000-01-01T00:00:00+00:00\n", encoding="utf-8")
+
+    rc = main(
+        [
+            "stamp",
+            "--schema",
+            "examples.company_managed.platform",
+            "--state",
+            str(state_path),
+            "--env",
+            "prod",
+            "--url",
+            "jira_cloud+https://jira.example.com",
+            "--auth",
+            "pat",
+        ]
+    )
+    assert rc == 1
+    assert "locked by" in capsys.readouterr().err
+    assert not state_path.exists()
+    # The foreign holder's lock file is untouched (not unlinked/stolen).
+    assert "pid=999999" in lock_path.read_text(encoding="utf-8")

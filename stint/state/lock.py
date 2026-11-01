@@ -77,6 +77,6 @@ class StateLock:
 
 def _read_holder(lock_path: Path) -> str:
     try:
-        return lock_path.read_text().strip().replace("\n", "; ")
+        return lock_path.read_text(encoding="utf-8").strip().replace("\n", "; ")
     except OSError:
         return "(unknown — cannot read lock file)"
