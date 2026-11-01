@@ -480,6 +480,9 @@ def _render_one(change: Change) -> str:
             kwargs.append(f"name={change.name!r}")
         if change.description is not None:
             kwargs.append(f"description={change.description!r}")
+        if change.issuetypes is not None:
+            issuetypes_repr = "[" + ", ".join(repr(a) for a in change.issuetypes) + "]"
+            kwargs.append(f"issuetypes={issuetypes_repr}")
         if change.default_issuetype is not None:
             kwargs.append(f"default_issuetype={change.default_issuetype!r}")
         return _kwargs_call("op.update_issuetype_scheme", kwargs)

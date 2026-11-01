@@ -144,6 +144,7 @@ async def delete_custom_field(*, alias: str) -> None:
         return
     await ctx.engine.dialect.delete_custom_field(mapping.id)
     del ctx.state.custom_fields[alias]
+    ctx.persist()
 
 
 # ── Screens ──────────────────────────────────────────────────────────
@@ -157,6 +158,7 @@ async def create_screen(*, alias: str, name: str, description: str = "") -> str:
         return existing
     screen_id = await ctx.engine.dialect.create_screen(name=name, description=description)
     ctx.state.screens[alias] = ScreenMapping(id=screen_id, tab_ids={})
+    ctx.persist()
     return screen_id
 
 
@@ -168,6 +170,7 @@ async def delete_screen(*, alias: str) -> None:
         return
     await ctx.engine.dialect.delete_screen(mapping.id)
     del ctx.state.screens[alias]
+    ctx.persist()
 
 
 async def update_screen(
@@ -258,6 +261,7 @@ async def create_screen_scheme(
         screens=resolved,
     )
     ctx.state.screen_schemes[alias] = SimpleMapping(id=scheme_id)
+    ctx.persist()
     return scheme_id
 
 
@@ -269,6 +273,7 @@ async def delete_screen_scheme(*, alias: str) -> None:
         return
     await ctx.engine.dialect.delete_screen_scheme(mapping.id)
     del ctx.state.screen_schemes[alias]
+    ctx.persist()
 
 
 async def update_screen_scheme(
@@ -332,6 +337,7 @@ async def create_issuetype_screen_scheme(
         mappings=resolved,
     )
     ctx.state.issuetype_screen_schemes[alias] = SimpleMapping(id=scheme_id)
+    ctx.persist()
     return scheme_id
 
 
@@ -343,6 +349,7 @@ async def delete_issuetype_screen_scheme(*, alias: str) -> None:
         return
     await ctx.engine.dialect.delete_issuetype_screen_scheme(mapping.id)
     del ctx.state.issuetype_screen_schemes[alias]
+    ctx.persist()
 
 
 async def update_issuetype_screen_scheme(
@@ -398,6 +405,7 @@ async def create_field_configuration(
         description=description,
     )
     ctx.state.field_configurations[alias] = SimpleMapping(id=fc_id)
+    ctx.persist()
     return fc_id
 
 
@@ -409,6 +417,7 @@ async def delete_field_configuration(*, alias: str) -> None:
         return
     await ctx.engine.dialect.delete_field_configuration(mapping.id)
     del ctx.state.field_configurations[alias]
+    ctx.persist()
 
 
 async def update_field_configuration(
@@ -501,6 +510,7 @@ async def delete_field_configuration_scheme(*, alias: str) -> None:
         return
     await ctx.engine.dialect.delete_field_configuration_scheme(mapping.id)
     del ctx.state.field_configuration_schemes[alias]
+    ctx.persist()
 
 
 async def update_field_configuration_scheme(
@@ -558,6 +568,7 @@ async def create_issuetype(
     adopted = await ctx.engine.dialect.find_issuetype_id_by_name(name)
     if adopted is not None:
         ctx.state.issuetypes[alias] = SimpleMapping(id=adopted)
+        ctx.persist()
         return adopted
     it_id = await ctx.engine.dialect.create_issuetype(
         name=name,
@@ -565,6 +576,7 @@ async def create_issuetype(
         subtask=subtask,
     )
     ctx.state.issuetypes[alias] = SimpleMapping(id=it_id)
+    ctx.persist()
     return it_id
 
 
@@ -576,6 +588,7 @@ async def delete_issuetype(*, alias: str) -> None:
         return
     await ctx.engine.dialect.delete_issuetype(mapping.id)
     del ctx.state.issuetypes[alias]
+    ctx.persist()
 
 
 async def update_issuetype(
@@ -632,6 +645,7 @@ async def create_project(
         project_template_key=project_template_key,
     )
     ctx.state.projects[alias] = ProjectMapping(id=proj_id, style=style, key=key)
+    ctx.persist()
     return proj_id
 
 
@@ -664,6 +678,7 @@ async def delete_project(*, alias: str, key: str) -> None:
         return
     await ctx.engine.dialect.delete_project(project_id=mapping.id, project_key=key)
     del ctx.state.projects[alias]
+    ctx.persist()
 
 
 async def set_project_issuetype_screen_scheme(
@@ -759,6 +774,7 @@ async def create_issuetype_scheme(
         default_issuetype_id=default_id,
     )
     ctx.state.issuetype_schemes[alias] = SimpleMapping(id=scheme_id)
+    ctx.persist()
     return scheme_id
 
 
@@ -768,9 +784,29 @@ async def update_issuetype_scheme(
     name: str | None = None,
     description: str | None = None,
     default_issuetype: str | None = None,
+    issuetypes: list[str] | None = None,
 ) -> None:
+    """``issuetypes`` (when given) replaces the scheme's full member list;
+    each entry is an issuetype alias resolved through ``state.issuetypes``.
+    Members Jira holds that are not in the list are removed (Jira itself
+    400s removals it cannot perform); the declared order is reconciled via
+    the move endpoint.
+    """
     ctx = get_context()
     mapping = _require_existing("update_issuetype_scheme", alias, ctx.state.issuetype_schemes)
+    if issuetypes is not None:
+        if not issuetypes:
+            raise ConfigurationError("update_issuetype_scheme: `issuetypes` must be non-empty")
+        if default_issuetype is not None and default_issuetype not in issuetypes:
+            raise ConfigurationError(
+                f"update_issuetype_scheme: default_issuetype {default_issuetype!r} must be one of {list(issuetypes)}"
+            )
+        issuetype_ids: list[str] | None = []
+        for it_alias in issuetypes:
+            m = _require_existing("update_issuetype_scheme", it_alias, ctx.state.issuetypes)
+            issuetype_ids.append(m.id)
+    else:
+        issuetype_ids = None
     default_id: str | None = None
     if default_issuetype is not None:
         default_id = _require_existing(
@@ -778,12 +814,20 @@ async def update_issuetype_scheme(
             default_issuetype,
             ctx.state.issuetypes,
         ).id
-    await ctx.engine.dialect.update_issuetype_scheme(
-        mapping.id,
-        name=name,
-        description=description,
-        default_issuetype_id=default_id,
-    )
+    # Membership first: Jira requires the default issuetype to be a member of
+    # the scheme, so a newly added default must land before the header update.
+    if issuetype_ids is not None:
+        await ctx.engine.dialect.set_issuetype_scheme_issuetypes(
+            mapping.id,
+            issuetype_ids=issuetype_ids,
+        )
+    if name is not None or description is not None or default_id is not None:
+        await ctx.engine.dialect.update_issuetype_scheme(
+            mapping.id,
+            name=name,
+            description=description,
+            default_issuetype_id=default_id,
+        )
 
 
 async def delete_issuetype_scheme(*, alias: str) -> None:
@@ -794,6 +838,7 @@ async def delete_issuetype_scheme(*, alias: str) -> None:
         return
     await ctx.engine.dialect.delete_issuetype_scheme(mapping.id)
     del ctx.state.issuetype_schemes[alias]
+    ctx.persist()
 
 
 async def set_project_issuetype_scheme(

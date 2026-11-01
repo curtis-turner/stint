@@ -69,7 +69,7 @@ def load_env_config(env_name: str) -> dict[str, Any]:
     if path is None:
         return {}
     try:
-        raw = yaml.safe_load(path.read_text())
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as e:
         raise ConfigurationError(f"env config {path!s} is not valid YAML: {e}") from e
     if raw is None:

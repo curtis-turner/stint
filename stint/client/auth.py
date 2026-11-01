@@ -8,7 +8,7 @@ supported Jira Cloud path.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import httpx
@@ -38,7 +38,7 @@ class _BearerAuth(httpx.Auth):
 class PATAuth:
     """Bearer-token auth. Legacy alternative; not used by the Cloud dialect."""
 
-    token: str
+    token: str = field(repr=False)
 
     def to_httpx_auth(self) -> httpx.Auth:
         return _BearerAuth(self.token)
@@ -49,7 +49,7 @@ class BasicAuth:
     """Username + password HTTP Basic. Legacy alternative for proxies."""
 
     username: str
-    password: str
+    password: str = field(repr=False)
 
     def to_httpx_auth(self) -> httpx.Auth:
         return httpx.BasicAuth(self.username, self.password)
@@ -63,7 +63,7 @@ class APITokenAuth:
     """
 
     email: str
-    token: str
+    token: str = field(repr=False)
 
     def to_httpx_auth(self) -> httpx.Auth:
         return httpx.BasicAuth(self.email, self.token)

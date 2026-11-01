@@ -29,6 +29,11 @@ def _paginated(values: list[Any]) -> dict[str, Any]:
     return {"values": values, "isLast": True, "startAt": 0, "maxResults": len(values)}
 
 
+def _paginated_security_schemes(values: list[Any]) -> dict[str, Any]:
+    """Single-page response shape used by Get Issues Security Schemes endpoint."""
+    return {"issueSecuritySchemes": values}
+
+
 def _stub_empty_admin(mock: respx.MockRouter, root: str = CLOUD_ROOT) -> None:
     """Mock every admin endpoint with an empty response.
 
@@ -59,7 +64,9 @@ def _stub_empty_admin(mock: respx.MockRouter, root: str = CLOUD_ROOT) -> None:
     mock.get(f"{root}/fieldconfiguration").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{root}/fieldconfigurationscheme").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{root}/fieldconfigurationscheme/project").mock(return_value=httpx.Response(200, json=_paginated([])))
-    mock.get(f"{root}/issuesecurityschemes").mock(return_value=httpx.Response(200, json=_paginated([])))
+    mock.get(f"{root}/issuesecurityschemes").mock(
+        return_value=httpx.Response(200, json=_paginated_security_schemes([]))
+    )
 
 
 # ── reflect(): custom fields ──────────────────────────────────────────

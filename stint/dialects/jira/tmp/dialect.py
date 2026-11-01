@@ -531,12 +531,28 @@ class TmpDialect:
 
     async def delete_worktype(self, *, project_id: str, worktype_id: str) -> None:
         """Runs the checkDelete preflight before DELETE, refusing to delete a
-        work type that still has issues on it rather than doing so silently."""
+        work type that still has issues on it rather than doing so silently.
+
+        Fails closed: the preflight may only permit deletion when it returned a
+        dict with `safeToDelete is True`. Any other shape (missing key, non-bool
+        value, envelope, empty body) raises instead of proceeding -- an
+        irreversible delete against an undocumented API warrants the stricter
+        stance.
+        """
         base = f"{SIMPLIFIED_PATH}/project/{project_id}/settings/issuetype"
         check = await self._internal_rest.get(f"{base}/checkDelete/{worktype_id}")
-        if isinstance(check, dict) and check.get("safeToDelete") is False:
+        if not isinstance(check, dict) or "safeToDelete" not in check:
             raise TmpApiError(
-                f"work type {worktype_id} is not safe to delete: {check.get('issueCount', '?')} issue(s) reference it"
+                f"work type {worktype_id}: checkDelete preflight returned an unexpected shape "
+                f"(expected a JSON object with safeToDelete, got {type(check).__name__}: {check!r}); "
+                "refusing to delete"
+            )
+        if check.get("safeToDelete") is not True:
+            issue_count = check.get("issueCount", "?")
+            raise TmpApiError(
+                f"work type {worktype_id} is not safe to delete: "
+                f"checkDelete reported safeToDelete={check.get('safeToDelete')!r} "
+                f"with {issue_count} issue(s) referencing it"
             )
         await self._internal_rest.delete(f"{base}/{worktype_id}")
 

@@ -116,9 +116,9 @@ def main() -> int:
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="stint-scoping-"))
     try:
-        (tmp_dir / "schema_a.py").write_text(SCHEMA_A_BODY)
-        (tmp_dir / "schema_b.py").write_text(SCHEMA_B_BODY)
-        (tmp_dir / "__init__.py").write_text("")
+        (tmp_dir / "schema_a.py").write_text(SCHEMA_A_BODY, encoding="utf-8")
+        (tmp_dir / "schema_b.py").write_text(SCHEMA_B_BODY, encoding="utf-8")
+        (tmp_dir / "__init__.py").write_text("", encoding="utf-8")
 
         mig_dir = tmp_dir / "migrations"
         mig_dir.mkdir()
@@ -158,7 +158,7 @@ def main() -> int:
         if len(mig_files) != 1:
             print(f"FAIL: expected 1 migration file, got {len(mig_files)}: {mig_files}")
             return 1
-        source = mig_files[0].read_text()
+        source = mig_files[0].read_text(encoding="utf-8")
 
         print("Generated migration:")
         print(source)

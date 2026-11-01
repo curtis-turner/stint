@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stint"
-version = "0.5.0"
+version = "0.6.0"
 description = "Declarative schema-as-code and ORM for work-management systems. Jira first, dialect protocol for the rest."
 readme = "README.md"
 license = { text = "MIT" }
@@ -34,10 +34,8 @@ classifiers = [
 ]
 dependencies = [
   "pydantic>=2.7",
-  "pydantic-settings>=2.0",
   "httpx>=0.25",
   "pyyaml>=6.0",
-  "pydantic[email]",
   "cyclopts>=4.0",
 ]
 
@@ -46,9 +44,6 @@ Homepage = "https://github.com/curtis-turner/stint"
 Source = "https://github.com/curtis-turner/stint"
 Issues = "https://github.com/curtis-turner/stint/issues"
 Changelog = "https://github.com/curtis-turner/stint/blob/main/CHANGELOG.md"
-
-[project.optional-dependencies]
-jira = ["jira>=3.8"]
 
 [project.scripts]
 stint = "stint.cli:main"

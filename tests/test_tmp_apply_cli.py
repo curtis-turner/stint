@@ -66,7 +66,7 @@ def _isolate_registry():
 
 def _write_schema(tmp_path: Path) -> str:
     p = tmp_path / "schema.py"
-    p.write_text(_TMP_SCHEMA)
+    p.write_text(_TMP_SCHEMA, encoding="utf-8")
     return str(p)
 
 
@@ -247,6 +247,38 @@ def test_cli_apply_dry_run_shows_plan_and_writes_nothing(tmp_path, monkeypatch, 
     out = capsys.readouterr().out
     assert "Plan: 2 to add, 1 to change, 0 to destroy." in out
     assert not state_path.exists()
+    # The state lock is released even on the dry-run early return.
+    assert not state_path.with_suffix(".yaml.lock").exists()
+
+
+@respx.mock
+def test_cli_apply_loads_state_only_after_lock_acquired(tmp_path, monkeypatch, capsys):
+    """H3 ('lock then load'): StateFile.load must run while this process
+    already holds ``<state>.lock``; a stale pre-lock read would clobber a
+    concurrent writer's mappings on the next whole-file save."""
+    from stint.state.file import StateFile
+
+    monkeypatch.setenv("STINT_TOKEN", "test-token")
+    monkeypatch.setenv("STINT_USER", "you@example.com")
+    _stub_reflect_only(respx.mock)
+    schema = _write_schema(tmp_path)
+    state_path = tmp_path / "state.yaml"
+    StateFile(env="prod", jira_url=BASE).save(state_path)
+    lock_path = state_path.with_suffix(".yaml.lock")
+
+    real_load = StateFile.load.__func__
+
+    def _spy(cls, route_path):
+        body = lock_path.read_text(encoding="utf-8")  # FileNotFoundError = loaded too early
+        import os
+
+        assert f"pid={os.getpid()}" in body, "state loaded before the lock was acquired"
+        return real_load(cls, route_path)
+
+    monkeypatch.setattr(StateFile, "load", classmethod(_spy))
+    rc = main(_base_args(schema, state_path, extra=["--dry-run"]))
+    assert rc == 0
+    assert not lock_path.exists()  # released on exit
 
 
 @respx.mock

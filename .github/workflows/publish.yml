@@ -2,13 +2,13 @@ name: Publish
 
 # Re-run the full quality gate against the tagged commit, then build once on a
 # published GitHub release and route by channel:
-#   - pre-release (PEP 440 aN/bN/rcN/.devN tag, or the GitHub "pre-release"
-#     checkbox) -> TestPyPI dry run only.
+#   - pre-release (PEP 440 pre-release version, e.g. v0.6.0rc1 / v1.0.0-rc1 /
+#     v1.0.0a1, or the GitHub "pre-release" checkbox) -> TestPyPI dry run only.
 #   - final release -> PyPI prod only.
 # Both uploads use OIDC trusted publishing, so no API tokens are stored. Prod
-# PyPI additionally goes through the `pypi` environment, which requires a manual
-# approval before upload. See the trusted-publisher registration steps in
-# .github/workflows/README.md.
+# PyPI additionally goes through the `pypi` environment, which requires a
+# manual approval before upload. See the trusted-publisher registration steps
+# in .github/workflows/README.md.
 
 on:
   release:
@@ -36,25 +36,120 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       prerelease: ${{ steps.check.outputs.prerelease }}
+      # PEP 440 normalized (v1.0.0-rc1 -> 1.0.0rc1), compared against the
+      # package version in the build job.
+      version: ${{ steps.check.outputs.version }}
     steps:
       - id: check
         env:
           TAG: ${{ github.event.release.tag_name }}
           FLAG: ${{ github.event.release.prerelease }}
         run: |
-          if [[ "$FLAG" == "true" || "$TAG" =~ (a|b|rc|\.dev)[0-9]+$ ]]; then
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-          fi
+          out="$(python3 - <<'EOF'
+          import os
+          import re
+
+          tag = os.environ["TAG"].strip()
+          m = re.fullmatch(
+              r"[vV]?(?P<base>\d+(?:\.\d+)*)"
+              # v1.0.0rc1, v1.0.0-rc1, 1.0.0.beta2, 1.0.0.dev0, ...
+              r"(?:[._-]*(?P<pre>a|b|c|rc|alpha|beta|pre|preview|dev)[._-]?(?P<num>\d+)?)?",
+              tag,
+              re.IGNORECASE,
+          )
+          if m is None:
+              raise SystemExit(
+                  f"tag {tag!r} is not a recognizable version: expected "
+                  "PEP 440 with an optional leading v (v1.0.0, v1.0.0rc1, "
+                  "v1.0.0-rc1, v1.0.0.dev0, ...)"
+              )
+          letter = (m.group("pre") or "").lower()
+          letter = {
+              "alpha": "a",
+              "beta": "b",
+              "c": "rc",
+              "pre": "rc",
+              "preview": "rc",
+          }.get(letter, letter)
+          if letter:
+              num = m.group("num") or "0"
+              version = (
+                  f"{m.group('base')}.dev{num}"
+                  if letter == "dev"
+                  else f"{m.group('base')}{letter}{num}"
+              )
+          else:
+              version = m.group("base")
+          is_prerelease = (
+              os.environ["FLAG"] == "true" or letter in ("a", "b", "rc", "dev")
+          )
+          print(f"prerelease={'true' if is_prerelease else 'false'}")
+          print(f"version={version}")
+          EOF
+          )"
+          echo "$out" >> "$GITHUB_OUTPUT"
 
   build:
-    needs: [gate]
+    needs: [gate, classify]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.1.0
+      - name: Verify the tag matches the declared versions
+        env:
+          EXPECTED: ${{ needs.classify.outputs.version }}
+        run: |
+          python3 - <<'EOF'
+          import os
+          import re
+
+          expected = os.environ["EXPECTED"]
+
+
+          def declared(path: str, pattern: str) -> str:
+              with open(path, encoding="utf-8") as fh:
+                  m = re.search(pattern, fh.read(), re.MULTILINE)
+              if m is None:
+                  raise SystemExit(f"could not find {pattern!r} in {path}")
+              return m.group(1)
+
+
+          sources = {
+              "pyproject.toml": declared(
+                  "pyproject.toml", r'(?m)^version = "([^"]+)"$'
+              ),
+              "stint/__init__.py": declared(
+                  "stint/__init__.py", r'(?m)^__version__ = "([^"]+)"$'
+              ),
+              "uv.lock": declared(
+                  "uv.lock", r'name = "stint"\nversion = "([^"]+)"'
+              ),
+          }
+          mismatches = [f"{k}={v}" for k, v in sources.items() if v != expected]
+          if mismatches:
+              raise SystemExit(
+                  f"tag normalizes to {expected!r}, but disagreeing declared "
+                  f"versions: {', '.join(mismatches)} — push the version-bump "
+                  "commit before tagging."
+              )
+          print(f"tag and declared versions agree: {expected}")
+          EOF
       - run: uv build
+      - name: Verify the built artifacts carry the release version
+        run: |
+          release="${{ needs.classify.outputs.version }}"
+          if [ ! -d dist ] || [ -z "$(ls -A dist)" ]; then
+            echo "::error::uv build produced no artifacts in dist/"
+            exit 1
+          fi
+          shopt -s nullglob
+          for f in dist/*; do
+            base="$(basename "$f")"
+            if [[ "$base" != "stint-${release}"-* ]]; then
+              echo "::error file=$base::artifact does not carry the release version $release"
+              exit 1
+            fi
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: dist

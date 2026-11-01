@@ -9,6 +9,7 @@ import respx
 from stint import (
     PATAuth,
     StateFile,
+    StateFileWriteError,
     create_engine,
     load_migrations,
 )
@@ -58,10 +59,12 @@ def test_loader_unknown_current_raises(tmp_path):
 def test_loader_duplicate_revision_raises(tmp_path):
     """Two files with the same `revision` global cannot coexist."""
     (tmp_path / "a.py").write_text(
-        "revision = 'dup'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
+        "revision = 'dup'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
     )
     (tmp_path / "b.py").write_text(
-        "revision = 'dup'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
+        "revision = 'dup'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
     )
     with pytest.raises(MigrationConflictError):
         load_migrations(tmp_path)
@@ -72,7 +75,8 @@ def test_loader_orphan_down_revision_raises(tmp_path):
         "revision = 'orphan'\n"
         "down_revision = 'missing_parent'\n"
         "async def upgrade(): pass\n"
-        "async def downgrade(): pass\n"
+        "async def downgrade(): pass\n",
+        encoding="utf-8",
     )
     with pytest.raises(MigrationGraphError):
         load_migrations(tmp_path)
@@ -81,13 +85,16 @@ def test_loader_orphan_down_revision_raises(tmp_path):
 def test_multiple_heads_blocks_chain(tmp_path):
     """Two migrations off the same parent must be merged explicitly."""
     (tmp_path / "a.py").write_text(
-        "revision = 'base'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
+        "revision = 'base'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
     )
     (tmp_path / "b.py").write_text(
-        "revision = 'left'\ndown_revision = 'base'\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
+        "revision = 'left'\ndown_revision = 'base'\nasync def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
     )
     (tmp_path / "c.py").write_text(
-        "revision = 'right'\ndown_revision = 'base'\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
+        "revision = 'right'\ndown_revision = 'base'\nasync def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
     )
     graph = load_migrations(tmp_path)
     with pytest.raises(MigrationGraphError) as e:
@@ -179,6 +186,29 @@ async def test_upgrade_at_head_is_noop(tmp_path):
         await engine.close()
     assert applied == []
     assert state.revision == "def789ghi012"
+
+
+@pytest.mark.asyncio
+async def test_upgrade_fails_fast_when_state_path_unwritable(tmp_path):
+    """H2: an unwritable state path fails before any Jira write is issued.
+
+    No respx mock: any HTTP call would raise (respx inactive default passes
+    through? no -- respx inactive = unmocked httpx fails with connection
+    error). The engine is created but never contacted; the runner must raise
+    StateFileWriteError before running the first migration.
+    """
+    state = StateFile(env="dev", jira_url=BASE)
+    graph = load_migrations(FIXTURES_DIR)
+    blocker = tmp_path / "target"
+    blocker.write_text("this is a file, not a directory", encoding="utf-8")
+    engine = _engine()
+    try:
+        with pytest.raises(StateFileWriteError) as e:
+            await run_upgrade(engine, state, graph, blocker / "nested" / "state.yaml")
+    finally:
+        await engine.close()
+    assert "state.yaml" in str(e.value)
+    assert state.custom_fields == {}  # no migration ran
 
 
 @pytest.mark.asyncio
