@@ -145,7 +145,8 @@ jobs:
           shopt -s nullglob
           for f in dist/*; do
             base="$(basename "$f")"
-            if [[ "$base" != "stint-${release}"-* ]]; then
+            # Wheel: stint-<version>-py3-none-any.whl; sdist: stint-<version>.tar.gz
+            if [[ "$base" != "stint-${release}"-* && "$base" != "stint-${release}.tar.gz" ]]; then
               echo "::error file=$base::artifact does not carry the release version $release"
               exit 1
             fi
