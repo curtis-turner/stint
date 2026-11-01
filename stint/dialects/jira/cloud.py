@@ -1643,7 +1643,9 @@ class JiraCloudDialect:
         Returns a dict mapping scheme ID -> SecuritySchemeSnapshot.
         """
         result: dict[str, SecuritySchemeSnapshot] = {}
-        async for entry in common.paginate(self.client, f"{self.api_root}/issuesecurityschemes"):
+        async for entry in common.paginate(
+            self.client, f"{self.api_root}/issuesecurityschemes", envelope_key="issueSecuritySchemes"
+        ):
             scheme = common.parse_issue_security_scheme(entry)
             result[scheme.id] = scheme
         return result
