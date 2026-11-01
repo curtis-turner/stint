@@ -9,6 +9,7 @@ plan/apply layer built on top.
 
 import json
 from typing import Annotated, Literal
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -24,6 +25,7 @@ from stint.dialects.jira.tmp.internal_rest import ISSUE_LAYOUTS_PATH, SIMPLIFIED
 from stint.dialects.jira.tmp.models import TmpLayout, TmpLayoutItem, TmpLayoutOwner, TmpProjectContext, TmpSnapshot
 from stint.dialects.jira.tmp.ops import (
     TmpApplyContext,
+    _worktype_external_uuid,
     tmp_delete_field,
     tmp_set_layout,
     tmp_upsert_field,
@@ -35,6 +37,7 @@ from stint.dialects.jira.tmp.reconcile import (
     CreateWorkType,
     DeleteField,
     DeleteWorkType,
+    DropFieldMapping,
     SetLayout,
     TmpAmbiguousFieldError,
     TmpChange,
@@ -45,10 +48,10 @@ from stint.dialects.jira.tmp.reconcile import (
     sort_tmp_changes,
 )
 from stint.dialects.jira.tmp.state import TmpState
-from stint.exceptions import TransportError
+from stint.exceptions import ConfigurationError, TransportError
 from stint.fields import SelectField, TextField
 from stint.registry import registry
-from stint.state.snapshot import CustomFieldSnapshot, ServerInfoSnapshot, Snapshot
+from stint.state.snapshot import CustomFieldSnapshot, IssueTypeSnapshot, ServerInfoSnapshot, Snapshot
 
 BASE = "https://cumulusec.atlassian.net"
 GATEWAY_URL = f"{BASE}{FIELDS_GATEWAY_PATH}"
@@ -198,8 +201,23 @@ def test_plan_tmp_deletes_only_when_allow_delete():
     state = TmpState(fields={"gone": "customfield_9"}, worktypes={"gone_wt": "10099"})
     assert plan_tmp(desired, snapshot, state) == []
     changes = plan_tmp(desired, snapshot, state, allow_delete=True)
-    assert DeleteField("gone") in changes
+    # The mapped id customfield_9 is absent from the snapshot (hand-deleted
+    # in Jira): dropping the stale bookkeeping is all that's left to do,
+    # and a real DELETE would abort against the dead id on every run (M17).
+    assert DropFieldMapping("gone") in changes
     assert DeleteWorkType("gone_wt") in changes
+
+
+def test_plan_tmp_deletes_live_tracked_field_when_allow_delete():
+    desired = TmpDesired(project_key="VM")
+    snap = _empty_snapshot()
+    snap.custom_fields["customfield_9"] = CustomFieldSnapshot(id="customfield_9", name="Gone", type_id="TextField")
+    snapshot = TmpSnapshot(snapshot=snap)
+    state = TmpState(fields={"gone": "customfield_9"})
+    assert plan_tmp(desired, snapshot, state) == []
+    changes = plan_tmp(desired, snapshot, state, allow_delete=True)
+    assert DeleteField("gone") in changes
+    assert DropFieldMapping("gone") not in changes
 
 
 # ── adopt / report untracked fields (ISSUE_DRAFT delete-side gap) ────
@@ -744,7 +762,8 @@ async def test_tmp_set_layout_falls_back_to_remote_read_when_snapshot_misses():
                                                 "fieldItemId": "customfield_1",
                                                 "containerPosition": 100,
                                             }
-                                        ]
+                                        ],
+                                        "pageInfo": {"hasNextPage": False},
                                     },
                                 }
                             ],
@@ -764,7 +783,8 @@ async def test_tmp_set_layout_falls_back_to_remote_read_when_snapshot_misses():
                                             "required": False,
                                             "externalUuid": "fresh-uuid",
                                         }
-                                    ]
+                                    ],
+                                    "pageInfo": {"hasNextPage": False},
                                 }
                             }
                         },
@@ -824,6 +844,7 @@ async def test_apply_tmp_plan_layout_items_appear_for_new_worktype_end_to_end():
     changes = plan_tmp(desired, snapshot, state)
 
     respx.post(GATEWAY_URL).mock(side_effect=_field_create_dispatch())
+    respx.get(f"{BASE}/rest/api/3/issuetype/project").mock(return_value=httpx.Response(200, json=[]))
     respx.post(f"{SIMPLIFIED_URL}/project/10001/settings/issuetype").mock(
         return_value=httpx.Response(201, json={"id": "10007", "name": "Bug", "avatarId": 10321, "hierarchyLevel": 0})
     )
@@ -858,7 +879,7 @@ async def test_apply_tmp_plan_layout_items_appear_for_new_worktype_end_to_end():
                             },
                             "containers": [],
                         },
-                        "metadata": {"configuration": {"items": {"nodes": []}}},
+                        "metadata": {"configuration": {"items": {"nodes": [], "pageInfo": {"hasNextPage": False}}}},
                     }
                 }
             },
@@ -914,6 +935,7 @@ async def test_apply_tmp_plan_end_to_end():
     changes = plan_tmp(desired, snapshot, state)
 
     respx.post(GATEWAY_URL).mock(side_effect=_field_create_dispatch())
+    respx.get(f"{BASE}/rest/api/3/issuetype/project").mock(return_value=httpx.Response(200, json=[]))
     respx.post(f"{SIMPLIFIED_URL}/project/10001/settings/issuetype").mock(
         return_value=httpx.Response(201, json={"id": "10007", "name": "Bug", "avatarId": 10321, "hierarchyLevel": 0})
     )
@@ -948,7 +970,7 @@ async def test_apply_tmp_plan_end_to_end():
                             },
                             "containers": [],
                         },
-                        "metadata": {"configuration": {"items": {"nodes": []}}},
+                        "metadata": {"configuration": {"items": {"nodes": [], "pageInfo": {"hasNextPage": False}}}},
                     }
                 }
             },
@@ -992,6 +1014,7 @@ async def test_apply_tmp_plan_persists_after_each_state_mutation():
     changes = plan_tmp(desired, snapshot, state)
 
     respx.post(GATEWAY_URL).mock(side_effect=_field_create_dispatch())
+    respx.get(f"{BASE}/rest/api/3/issuetype/project").mock(return_value=httpx.Response(200, json=[]))
     respx.post(f"{SIMPLIFIED_URL}/project/10001/settings/issuetype").mock(
         return_value=httpx.Response(201, json={"id": "10007", "name": "Bug", "avatarId": 10321, "hierarchyLevel": 0})
     )
@@ -1026,7 +1049,7 @@ async def test_apply_tmp_plan_persists_after_each_state_mutation():
                             },
                             "containers": [],
                         },
-                        "metadata": {"configuration": {"items": {"nodes": []}}},
+                        "metadata": {"configuration": {"items": {"nodes": [], "pageInfo": {"hasNextPage": False}}}},
                     }
                 }
             },
@@ -1127,6 +1150,133 @@ async def test_apply_tmp_plan_state_survives_mid_plan_failure():
     assert len(checkpoints) == 1
 
     # Retry sees the prior success and plans no duplicate work for it.
-    changes_retry = plan_tmp(desired, snapshot, state)
+    # The retry plan runs against a fresh reflect, which now sees the
+    # field the first run created (M17's dead-mapping recovery keys off a
+    # full snapshot, so plan must get a complete one).
+    retry_snap = _empty_snapshot()
+    retry_snap.custom_fields["customfield_1"] = CustomFieldSnapshot(
+        id="customfield_1",
+        name="Severity",
+        type_id=SelectField.jira_type_id,
+    )
+    changes_retry = plan_tmp(desired, TmpSnapshot(snapshot=retry_snap), state)
     assert CreateField("severity") not in changes_retry
     assert CreateField("root_cause") in changes_retry  # still missing
+
+
+# ── Tracked field deleted in Jira recovers instead of dead-ending (M17) ──
+def test_plan_tmp_recovers_tracked_field_whose_id_vanished():
+    """A field deleted by hand in Jira leaves a stale state mapping; the
+    plan used to emit UpdateField against the dead id, aborting
+    identically on every run. Now it re-binds via the adoption scan or
+    creates fresh."""
+    desired = build_tmp_desired(_make_project())
+    snapshot = TmpSnapshot(snapshot=_empty_snapshot())  # nothing in Jira
+    state = TmpState(fields={"severity": "customfield_1"})
+    changes = plan_tmp(desired, snapshot, state)
+    assert UpdateField("severity") not in changes
+    assert DeleteField("severity") not in changes
+    assert CreateField("severity") in changes  # nothing same-name to adopt
+
+
+def test_plan_tmp_rebinds_desired_field_to_live_same_name_field():
+    desired = build_tmp_desired(_make_project())
+    snap = _empty_snapshot()
+    snap.custom_fields["customfield_9"] = CustomFieldSnapshot(
+        id="customfield_9",
+        name="Severity",
+        type_id=SelectField.jira_type_id,
+        options={"S1": "opt-1", "S2": "opt-2"},
+    )
+    snapshot = TmpSnapshot(snapshot=snap)
+    state = TmpState(fields={"severity": "customfield_1"})  # stale dead mapping
+    changes = plan_tmp(desired, snapshot, state)
+    assert AdoptField("severity", "customfield_9") in changes
+    assert UpdateField("severity") not in changes  # name/type/options match
+
+
+def test_plan_tmp_dead_mapping_with_allow_delete_drops_bookkeeping():
+    """--allow-delete on a field whose id is already gone from Jira must
+    not DELETE the dead id (that aborts every run); only the state
+    mapping needs removal."""
+    desired = TmpDesired(project_key="VM")
+    state = TmpState(fields={"gone": "customfield_9"})
+    snapshot = TmpSnapshot(snapshot=_empty_snapshot())
+    changes = plan_tmp(desired, snapshot, state, allow_delete=True)
+    assert changes == [DropFieldMapping("gone")]
+
+
+# ── Field drift now covers description and type (M18) ────────────────
+def test_plan_tmp_detects_description_drift():
+    desired = build_tmp_desired(_make_project())
+    snap = _empty_snapshot()
+    snap.custom_fields["customfield_1"] = CustomFieldSnapshot(
+        id="customfield_1",
+        name="Severity",
+        type_id=SelectField.jira_type_id,
+        options={"S1": "opt-1", "S2": "opt-2"},
+        description="Legacy description",  # schema declares none -> drifted
+    )
+    snapshot = TmpSnapshot(snapshot=snap)
+    state = TmpState(fields={"severity": "customfield_1"})
+    changes = plan_tmp(desired, snapshot, state)
+    assert UpdateField("severity") in changes
+
+
+def test_plan_tmp_raises_when_tracked_field_type_changed():
+    """A field's type cannot change in place under the same alias; the
+    old code silently compared nothing and never pushed the change."""
+    desired = build_tmp_desired(_make_project())
+    snap = _empty_snapshot()
+    snap.custom_fields["customfield_1"] = CustomFieldSnapshot(
+        id="customfield_1",
+        name="Severity",
+        type_id=TextField.jira_type_id,  # schema: select
+        options={},
+    )
+    snapshot = TmpSnapshot(snapshot=snap)
+    state = TmpState(fields={"severity": "customfield_1"})
+    with pytest.raises(ConfigurationError, match="type"):
+        plan_tmp(desired, snapshot, state)
+
+
+# ── Work-type create is recoverable (M19) ────────────────────────────
+def test_worktype_external_uuid_is_deterministic():
+    assert _worktype_external_uuid("p1", "bug") == _worktype_external_uuid("p1", "bug")
+    assert _worktype_external_uuid("p1", "bug") != _worktype_external_uuid("p2", "bug")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_upsert_worktype_adopts_existing_same_name_worktype():
+    """A create whose response was lost (or a crash before persist) left
+    the work type in Jira untracked; the next run used to duplicate it."""
+    create_route = respx.post(f"{SIMPLIFIED_URL}/project/10001/settings/issuetype").mock(
+        return_value=httpx.Response(201, json={"id": "10099", "name": "Bug", "hierarchyLevel": 0})
+    )
+    state = TmpState()
+    ctx = _ctx(state)
+    desired = TmpDesiredWorkType(alias="bug", name="Bug", description="A bug", field_aliases=())
+    with patch.object(
+        ctx.dialect, "list_worktypes", return_value=[IssueTypeSnapshot(id="10007", name="Bug", project_scoped=True)]
+    ):
+        await tmp_upsert_worktype(ctx, desired)
+    assert state.worktypes["bug"] == "10007"
+    assert not create_route.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_upsert_worktype_sends_deterministic_external_uuid():
+    """Same (project, alias) must re-send the same externalUuid so the
+    server can dedup a re-run after a lost response (M19)."""
+    create_route = respx.post(f"{SIMPLIFIED_URL}/project/10001/settings/issuetype").mock(
+        return_value=httpx.Response(201, json={"id": "10007", "name": "Bug", "hierarchyLevel": 0})
+    )
+    ctx = _ctx(TmpState())
+    desired = TmpDesiredWorkType(alias="bug", name="Bug", description="A bug", field_aliases=())
+    with patch.object(ctx.dialect, "list_worktypes", return_value=[]):
+        await tmp_upsert_worktype(ctx, desired)
+
+    body = json.loads(create_route.calls.last.request.content)
+    assert body["externalUuid"] == _worktype_external_uuid("proj-uuid-1", "bug")

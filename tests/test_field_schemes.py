@@ -32,8 +32,19 @@ def _paginated(values: list[Any]) -> dict[str, Any]:
 
 
 def _paginated_security_schemes(values: list[Any]) -> dict[str, Any]:
-    """Single-page response shape used by Get Issues Security Schemes endpoint."""
-    return {"issueSecuritySchemes": values}
+    """Single-page response shape used by Get Issues Security Schemes endpoint.
+
+    The endpoint carries pagination metadata even though this shape does not
+    use standard "values" pagination -- without `isLast` a non-empty page
+    would loop forever in `paginate` (the bug, incidentally, that fixed the
+    B2-era mocked shape)."""
+    return {
+        "issueSecuritySchemes": values,
+        "maxResults": 50,
+        "startAt": 0,
+        "total": len(values),
+        "isLast": True,
+    }
 
 
 def _stub_probe(mock: respx.MockRouter, response: httpx.Response) -> None:
@@ -458,3 +469,114 @@ async def test_reflect_uses_v2_schemes_and_project_bindings():
     assert snap.field_configuration_schemes["10000"].name == "Platform Field Scheme"
     # Classic endpoints must not be touched on a v2 tenant.
     assert not any("fieldconfiguration" in str(call.request.url) for call in respx.calls)
+
+
+# ── Capability probe caching (H6) ────────────────────────────────────
+@pytest.mark.asyncio
+@respx.mock
+async def test_probe_transient_failure_is_not_cached():
+    """A server error must not pin a tenant to v1 permanently (H6): the
+    value is served for this call only, and the next call re-probes, so a
+    genuine Field Schemes tenant recovers from a transient blip instead of
+    being stranded on retired endpoints."""
+    probe = respx.get(SCHEMES).mock(
+        side_effect=[
+            httpx.Response(500, text="oops"),
+            httpx.Response(200, json=_paginated([])),
+        ]
+    )
+    async with _engine() as eng:
+        assert await eng.dialect.field_config_api() == "v1"
+        assert probe.call_count == 1
+        assert await eng.dialect.field_config_api() == "v2"
+    # After the re-probe finds v2, it is cached: no third request.
+    assert probe.call_count == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_probe_caches_v1_on_a_real_absence_answer():
+    """404 is the server indicating the API is absent -- cache v1 (H6)."""
+    probe = respx.get(SCHEMES).mock(return_value=httpx.Response(404, json={"errorMessages": ["not enabled"]}))
+    async with _engine() as eng:
+        assert await eng.dialect.field_config_api() == "v1"
+        assert await eng.dialect.field_config_api() == "v1"  # served from cache
+    assert probe.call_count == 1
+
+
+# ── Retired-error retry on the remaining v1 write paths (M15) ────────
+@pytest.mark.asyncio
+@respx.mock
+async def test_delete_field_configuration_retries_on_field_schemes_after_retired_400():
+    """The create path got this recovery; every other classic write needs
+    it too (M15) -- a bare TransportError mid-apply strands the run."""
+    probe = respx.get(SCHEMES).mock(
+        side_effect=[
+            httpx.Response(404, json={"errorMessages": ["not enabled"]}),
+            httpx.Response(200, json=_paginated([])),
+        ]
+    )
+    respx.delete(f"{ROOT}/fieldconfiguration/9").mock(
+        return_value=httpx.Response(
+            400,
+            json={"errorMessages": ["Cannot create a new field configuration. Please use Field Scheme instead."]},
+        )
+    )
+    v2_delete = respx.delete(f"{SCHEMES}/9").mock(return_value=httpx.Response(204))
+    async with _engine() as eng:
+        await eng.dialect.delete_field_configuration("9")
+    assert v2_delete.called
+    assert probe.call_count == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_update_field_configuration_retries_on_field_schemes_after_retired_400():
+    probe = respx.get(SCHEMES).mock(
+        side_effect=[
+            httpx.Response(404, json={"errorMessages": ["not enabled"]}),
+            httpx.Response(200, json=_paginated([])),
+        ]
+    )
+    respx.put(f"{ROOT}/fieldconfiguration/9").mock(
+        return_value=httpx.Response(
+            400,
+            json={"errorMessages": ["Cannot create a new field configuration. Please use Field Scheme instead."]},
+        )
+    )
+    v2_update = respx.put(
+        f"{SCHEMES}/9",
+        json__eq={"name": "Renamed", "description": ""},
+    ).mock(return_value=httpx.Response(204))
+    async with _engine() as eng:
+        await eng.dialect.update_field_configuration("9", name="Renamed", description="")
+    assert v2_update.called
+    assert probe.call_count == 2
+
+
+# ── v2 removal body inspection (M14) ─────────────────────────────────
+@pytest.mark.asyncio
+@respx.mock
+async def test_remove_fields_warns_on_unexpected_per_field_failure():
+    _stub_probe(respx.mock, httpx.Response(200, json=_paginated([])))
+    respx.delete(f"{SCHEMES}/fields").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"fieldId": "customfield_1", "errorMessages": [], "errors": {}},
+                # "not associated" is the tolerated repeat-apply no-op.
+                {"fieldId": "customfield_2", "errorMessages": ["field not associated"], "errors": {}},
+                # Anything else would silently keep the desired state wrong.
+                {
+                    "fieldId": "customfield_3",
+                    "errorMessages": [],
+                    "errors": {"customfield_3": "field is locked by the scheme"},
+                },
+            ],
+        )
+    )
+    async with _engine() as eng:
+        with pytest.warns(UserWarning, match="customfield_3"):
+            await eng.dialect.remove_fields_from_field_scheme(
+                "7", field_ids=["customfield_1", "customfield_2", "customfield_3"]
+            )

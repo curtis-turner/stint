@@ -300,11 +300,18 @@ def parse_issue_security_scheme(payload: dict[str, Any]) -> SecuritySchemeSnapsh
       "self": "https://your-domain.atlassian.net/rest/api/3/issuesecurityschemes/10000"
     }
     """
+    scheme_id = payload.get("id")
+    if scheme_id is None:
+        raise ReflectionError(f"issue security scheme payload has no 'id': {str(payload)[:200]!r}")
     levels: list[SecurityLevelSnapshot] = []
     # If the entry includes levels (some API versions do), parse them
     for level_entry in payload.get("levels", []):
+        if not isinstance(level_entry, dict):
+            raise ReflectionError(f"issue security scheme payload has a non-object level: {level_entry!r}")
         members: list[SecurityLevelMemberSnapshot] = []
         for m in level_entry.get("members", []):
+            if not isinstance(m, dict):
+                raise ReflectionError(f"security level {level_entry.get('id')!r} has a non-object member: {m!r}")
             holder = m.get("holder", {})
             members.append(
                 SecurityLevelMemberSnapshot(
@@ -324,7 +331,7 @@ def parse_issue_security_scheme(payload: dict[str, Any]) -> SecuritySchemeSnapsh
         )
 
     return SecuritySchemeSnapshot(
-        id=str(payload["id"]),
+        id=str(scheme_id),
         name=str(payload.get("name", "")),
         description=str(payload.get("description", "")),
         default_security_level_id=str(payload.get("defaultSecurityLevelId", ""))
