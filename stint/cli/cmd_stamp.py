@@ -18,6 +18,7 @@ from stint.cli.cmd_reflect import _build_auth
 from stint.cli.env_config import require_resolved_connection, resolve_connection
 from stint.engine import create_engine, create_tmp_engine
 from stint.state.file import StateFile
+from stint.state.lock import StateLock
 from stint.state.snapshot import Snapshot
 
 AuthMode = Literal["pat", "basic", "api-token"]
@@ -67,27 +68,35 @@ async def stamp(
     url, auth = require_resolved_connection(env=env, url=url, auth=auth)
     load_schema_module(schema)
     state_path = Path(state)
-    state_file = StateFile.load(state_path) if state_path.exists() else StateFile(env=env, jira_url=url)
-    auth_obj = _build_auth(auth, token_env, user_env)
-    if dialect == "jira_cloud_tmp":
-        if not project_key:
-            raise SystemExit("--project-key is required for --dialect jira_cloud_tmp")
-        engine = create_tmp_engine(url, auth=auth_obj, dialect=dialect, verify_ssl=not no_verify_ssl)
-        try:
-            snapshot = await engine.reflect(project_key=project_key)
-        finally:
-            await engine.close()
-    else:
-        engine = create_engine(url, auth=auth_obj, dialect=dialect, verify_ssl=not no_verify_ssl)
-        try:
-            snapshot = await engine.reflect()
-        finally:
-            await engine.close()
+    # Fail before the (slow) reflect if the state can't be recorded.
+    StateFile.ensure_writable(state_path)
+    with StateLock(state):
+        # Load inside the lock (H3): stamp populates and saves the same
+        # whole-file state the other commands lock, so the lock must span
+        # load-stamp-save, not the reflect alone. That includes the (slow)
+        # reflect; a narrow window between reflect and save would still let
+        # a concurrent writer's mappings be clobbered by this save.
+        state_file = StateFile.load(state_path) if state_path.exists() else StateFile(env=env, jira_url=url)
+        auth_obj = _build_auth(auth, token_env, user_env)
+        if dialect == "jira_cloud_tmp":
+            if not project_key:
+                raise SystemExit("--project-key is required for --dialect jira_cloud_tmp")
+            engine = create_tmp_engine(url, auth=auth_obj, dialect=dialect, verify_ssl=not no_verify_ssl)
+            try:
+                snapshot = await engine.reflect(project_key=project_key)
+            finally:
+                await engine.close()
+        else:
+            engine = create_engine(url, auth=auth_obj, dialect=dialect, verify_ssl=not no_verify_ssl)
+            try:
+                snapshot = await engine.reflect()
+            finally:
+                await engine.close()
 
-    report = run_stamp_alg(state_file, cast(Snapshot, snapshot))
-    if revision:
-        state_file.revision = revision
-    state_file.save(state_path)
+        report = run_stamp_alg(state_file, cast(Snapshot, snapshot))
+        if revision:
+            state_file.revision = revision
+        state_file.save(state_path)
 
     for kind, alias, jira_id in report.matched:
         print(f"matched   {kind:<28} {alias!r:<30}-> {jira_id}")

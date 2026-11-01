@@ -125,52 +125,58 @@ async def apply(
 
     auth_obj = _build_auth(auth, token_env, user_env)
     state_path = Path(state)
-    state_file = StateFile.load(state_path) if state_path.exists() else StateFile(env=env, jira_url=base_url)
-    tmp_state = (
-        from_project_state(state_file.tmp_projects[project_key])
-        if project_key in state_file.tmp_projects
-        else TmpState()
-    )
-
-    lock = StateLock(state)
-    lock.acquire()
+    # Fail before the reflect/plan/prompt if the state can't be recorded:
+    # per-op checkpoints below write this path constantly (H2).
+    StateFile.ensure_writable(state_path)
+    # Construct the engine *before* acquiring the lock (H3): if construction
+    # raised while holding the lock, release() would never run and the
+    # lock file would leak (a permanent lockout with no stale detection).
     tmp_eng = create_tmp_engine(base_url, auth=auth_obj, dialect=chosen_dialect, verify_ssl=not no_verify_ssl)
     try:
-        project_ctx = await tmp_eng.dialect.resolve_project(project_key=project_key)
-        snapshot = await tmp_eng.dialect.reflect(project_key=project_key)
-        changes = plan_tmp(desired, snapshot, tmp_state, allow_delete=allow_delete)
-        untracked = find_untracked_fields(desired, snapshot, tmp_state)
-        _print_untracked_fields(untracked)
+        # Lock before load (H3): a state file read before the lock can be
+        # stale by the time we hold it, and the whole-file saves below would
+        # clobber whatever another process applied in between.
+        with StateLock(state):
+            state_file = StateFile.load(state_path) if state_path.exists() else StateFile(env=env, jira_url=base_url)
+            tmp_state = (
+                from_project_state(state_file.tmp_projects[project_key])
+                if project_key in state_file.tmp_projects
+                else TmpState()
+            )
+            project_ctx = await tmp_eng.dialect.resolve_project(project_key=project_key)
+            snapshot = await tmp_eng.dialect.reflect(project_key=project_key)
+            changes = plan_tmp(desired, snapshot, tmp_state, allow_delete=allow_delete)
+            untracked = find_untracked_fields(desired, snapshot, tmp_state)
+            _print_untracked_fields(untracked)
 
-        if not changes:
-            print("No schema changes. The team-managed project already matches the schema.")
-            return 0
+            if not changes:
+                print("No schema changes. The team-managed project already matches the schema.")
+                return 0
 
-        _print_plan(changes)
+            _print_plan(changes)
 
-        if dry_run:
-            return 0
-        if not auto_approve and not _confirm_apply():
-            print("Apply cancelled.")
-            return 1
+            if dry_run:
+                return 0
+            if not auto_approve and not _confirm_apply():
+                print("Apply cancelled.")
+                return 1
 
-        ctx = TmpApplyContext(
-            dialect=tmp_eng.dialect,
-            project=project_ctx,
-            state=tmp_state,
-            on_state_changed=_make_persist(state_file, state_path, tmp_state, project_key, to_project_state),
-        )
-        await apply_tmp_plan(ctx, changes, desired, snapshot)
+            ctx = TmpApplyContext(
+                dialect=tmp_eng.dialect,
+                project=project_ctx,
+                state=tmp_state,
+                on_state_changed=_make_persist(state_file, state_path, tmp_state, project_key, to_project_state),
+            )
+            await apply_tmp_plan(ctx, changes, desired, snapshot)
 
-        # Final snapshot keeps ``project.projects`` (the CMP-style mapping)
-        # in sync even though per-op persist already wrote ``tmp_projects``.
-        state_file.projects[project_key] = ProjectMapping(
-            id=project_ctx.project_id, style="team-managed", key=project_ctx.key
-        )
-        state_file.save(state_path)
+            # Final snapshot keeps ``project.projects`` (the CMP-style mapping)
+            # in sync even though per-op persist already wrote ``tmp_projects``.
+            state_file.projects[project_key] = ProjectMapping(
+                id=project_ctx.project_id, style="team-managed", key=project_ctx.key
+            )
+            state_file.save(state_path)
     finally:
         await tmp_eng.close()
-        lock.release()
 
     _print_summary(changes)
     print(f"wrote {state_path}")

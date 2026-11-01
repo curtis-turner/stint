@@ -56,16 +56,17 @@ async def upgrade(
     )
     url, auth = require_resolved_connection(env=env, url=url, auth=auth)
     graph = load_migrations(migrations_dir)
-    state_file = _load_or_init_state(state, env=env, jira_url=url)
     auth_obj = _build_auth(auth, token_env, user_env)
     engine = create_engine(url, auth=auth_obj, dialect=dialect, verify_ssl=not no_verify_ssl)
-    lock = StateLock(state)
-    lock.acquire()
     try:
-        applied = await run_upgrade(engine, state_file, graph, state, target=to)
+        # Lock before load (H3): a state file read before the lock can be
+        # stale by the time we hold it, and this file's whole-file saves
+        # would clobber whatever another process applied in between.
+        with StateLock(state):
+            state_file = _load_or_init_state(state, env=env, jira_url=url)
+            applied = await run_upgrade(engine, state_file, graph, state, target=to)
     finally:
         await engine.close()
-        lock.release()
     if not applied:
         print(f"already at revision {state_file.revision!r}; nothing to do")
         return 0
@@ -110,23 +111,22 @@ async def downgrade(
     )
     url, auth = require_resolved_connection(env=env, url=url, auth=auth)
     graph = load_migrations(migrations_dir)
-    state_file = _load_or_init_state(state, env=env, jira_url=url)
     auth_obj = _build_auth(auth, token_env, user_env)
     engine = create_engine(url, auth=auth_obj, dialect=dialect, verify_ssl=not no_verify_ssl)
     target: str | None = None if revision == "base" else revision
-    lock = StateLock(state)
-    lock.acquire()
     try:
-        reversed_migrations = await run_downgrade(
-            engine,
-            state_file,
-            graph,
-            state,
-            target=target,
-        )
+        # Lock before load (H3) — same stale-state hazard as `upgrade` above.
+        with StateLock(state):
+            state_file = _load_or_init_state(state, env=env, jira_url=url)
+            reversed_migrations = await run_downgrade(
+                engine,
+                state_file,
+                graph,
+                state,
+                target=target,
+            )
     finally:
         await engine.close()
-        lock.release()
     if not reversed_migrations:
         print(f"already at revision {state_file.revision!r}; nothing to do")
         return 0

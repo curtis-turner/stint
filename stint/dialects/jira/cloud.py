@@ -813,6 +813,99 @@ class JiraCloudDialect:
             json=body,
         )
 
+    async def set_issuetype_scheme_issuetypes(
+        self,
+        scheme_id: str,
+        *,
+        issuetype_ids: list[str],
+    ) -> None:
+        """Reconcile the scheme's member issuetype list to ``issuetype_ids``.
+
+        Cloud has no single "replace members" call, so this composes three
+        primitives:
+          - ``PUT /issuetypescheme/{id}/issuetype`` adds missing members. The
+            endpoint appends to the scheme and rejects any id it already
+            contains, so only absent ids are sent.
+          - ``DELETE /issuetypescheme/{id}/issuetype/{issueTypeId}`` removes
+            each surplus member. Jira 400s removals it cannot do (member in
+            use by issues, last standard member, members of the global
+            default scheme); that surfaces as a TransportError rather than
+            being swallowed.
+          - ``PUT /issuetypescheme/{id}/issuetype/move`` fixes the ordering.
+        """
+        desired = list(dict.fromkeys(issuetype_ids))
+        current = await self._reflect_issuetype_scheme_members(scheme_id)
+        to_add = [i for i in desired if i not in set(current)]
+        to_remove = [i for i in current if i not in set(desired)]
+        if to_add:
+            await self.client.put_json(
+                f"{self.api_root}/issuetypescheme/{scheme_id}/issuetype",
+                json={"issueTypeIds": to_add},
+            )
+        for issue_type_id in to_remove:
+            await self.client.delete(f"{self.api_root}/issuetypescheme/{scheme_id}/issuetype/{issue_type_id}")
+        # Expected server order after the mutations: survivors keep their
+        # relative order, adds are appended in the order they were sent.
+        members = [i for i in current if i not in to_remove] + to_add
+        if members == desired:
+            return
+        await self._reorder_issuetype_scheme_members(scheme_id, members, desired)
+
+    @staticmethod
+    def _sim_move(
+        members: list[str],
+        issue_type_id: str,
+        *,
+        after: str | None = None,
+        position: str | None = None,
+    ) -> list[str]:
+        """Mirror of the documented effect of one ``/issuetype/move`` call:
+        take ``issue_type_id`` out and insert it after ``after`` (or at
+        ``position``). Used to decide whether a move is still needed."""
+        rest = [i for i in members if i != issue_type_id]
+        if position == "First":
+            index = 0
+        elif position == "Last":
+            index = len(rest)
+        else:
+            index = rest.index(after or "") + 1
+        rest.insert(index, issue_type_id)
+        return rest
+
+    async def _reorder_issuetype_scheme_members(
+        self,
+        scheme_id: str,
+        current: list[str],
+        desired: list[str],
+    ) -> None:
+        """Issue ``/issuetype/move`` calls until members match ``desired``.
+
+        The move endpoint places the listed ids directly after ``after`` (or
+        at ``position``), keeping their relative order. Fix the head with a
+        First move, then walk the tail: each out-of-place member moves to
+        directly follow its desired predecessor.
+        """
+        if current[0] != desired[0]:
+            await self.client.put_json(
+                f"{self.api_root}/issuetypescheme/{scheme_id}/issuetype/move",
+                json={"issueTypeIds": [desired[0]], "position": "First"},
+            )
+            current = self._sim_move(current, desired[0], position="First")
+        for i in range(1, len(desired)):
+            member = desired[i]
+            if i < len(current) and current[i] == member:
+                continue
+            anchor = desired[i - 1]
+            await self.client.put_json(
+                f"{self.api_root}/issuetypescheme/{scheme_id}/issuetype/move",
+                json={"issueTypeIds": [member], "after": anchor},
+            )
+            current = self._sim_move(current, member, after=anchor)
+        if current != desired:
+            raise ReflectionError(
+                f"reordering issuetype scheme {scheme_id} did not converge: expected {desired}, computed {current}"
+            )
+
     async def delete_issuetype_scheme(self, scheme_id: str) -> None:
         await self.client.delete(f"{self.api_root}/issuetypescheme/{scheme_id}")
 

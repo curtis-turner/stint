@@ -19,7 +19,9 @@ Per-field-type rules:
 
 The function emits ``fields`` only for attributes the caller asked for via
 ``only=`` (used on UPDATE for dirty fields). For INSERT, the caller passes
-``only=None`` to include everything that isn't ``key``.
+``only=None`` to include everything that isn't ``key``. Unset optional
+fields are skipped only on INSERT; on UPDATE (``only=`` given) an explicit
+None is emitted so Jira clears the field.
 
 Insert-specific system fields (project, issuetype) are added by
 ``build_insert_payload`` based on the model class.
@@ -77,7 +79,9 @@ def build_fields_payload(
     """Return the ``fields`` mapping. Caller wraps as ``{"fields": ...}``.
 
     ``only``: attribute names to include. ``None`` means everything except
-    ``key``. Use ``only={...}`` on update with the dirty set.
+    ``key``. Use ``only={...}`` on update with the dirty set; the update path
+    also admits explicit ``None`` values (null clears the field in Jira)
+    instead of skipping them like the insert path does.
     """
     model = type(instance)
     payload: dict[str, Any] = {}
@@ -87,8 +91,11 @@ def build_fields_payload(
         if only is not None and attr_name not in only:
             continue
         value = getattr(instance, attr_name, None)
-        if value is None and not field_info.is_required():
-            # Skip unset optionals to avoid clearing existing Jira data.
+        if value is None and not field_info.is_required() and only is None:
+            # INSERT path: skip unset optionals to avoid clearing existing
+            # Jira data. On UPDATE (`only` is the caller's dirty set) a None
+            # is a deliberate clear — emit null, which Jira accepts for most
+            # fields.
             continue
         cf = _custom_field_meta(field_info)
         if cf is None:
@@ -176,6 +183,10 @@ def _emit_custom_field(
     *,
     is_cloud: bool,
 ) -> Any:
+    if value is None:
+        # Null clears the field server-side; never wrap None in a shape
+        # ({"value": "None"}, {"accountId": "None"}, ...).
+        return None
     if field_type in (SelectField, RadioButtonsField):
         return {"value": str(value)}
     if field_type in (MultiSelectField, CheckboxesField):
@@ -232,13 +243,16 @@ def _emit_system_field(
 
     Most system fields share the attribute name (summary, description, priority,
     reporter, assignee). A few need transformation:
+      - None values pass through as null (deliberate clear on update).
       - description on Cloud: wrap in ADF.
       - reporter/assignee: {"accountId":...} on Cloud; {"name":...} is the
         legacy fallback.
       - priority: {"name": "High"}.
     """
+    if value is None:
+        return attr_name, None
     if attr_name == "description" and is_cloud:
-        return attr_name, wrap_plain_text(str(value) if value is not None else "")
+        return attr_name, wrap_plain_text(str(value))
     if attr_name in ("reporter", "assignee", "creator"):
         if is_cloud:
             return attr_name, {"accountId": str(value)}

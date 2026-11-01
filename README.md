@@ -36,8 +36,9 @@ CI applies that file to staging, then production, from the same source. A
 bad change rolls back to a known revision. The schema lives in your repo
 next to the code that depends on it.
 
-Status: `0.3.0`. Runs on Python 3.10 through 3.14. Validated against a live
-Jira Cloud tenant for `0.1.0`. The API may still change within `0.x`.
+Status: `0.6.0`. Runs on Python 3.10 through 3.14. Live-tenant (Jira Cloud)
+validation through `0.5.0`; `0.6.0` is CI-covered only. The API may still
+change within `0.x`.
 
 **Primary target: Jira Cloud.** Company-managed (CMP) projects are the
 primary, migration-based path. Team-managed (TMP) projects are the secondary,
@@ -70,8 +71,8 @@ deferred annotation evaluation (the default from 3.14) so the schema metaclass
 can catch mistakes like a CustomField that shadows its attribute name with a
 tailored error. That specific diagnostic degrades to a plain `NameError` on
 3.10–3.13; everything else behaves identically. Runtime deps are `pydantic`
-(2.7+, with the `email` extra), `pydantic-settings`, `httpx`, `pyyaml`, and
-`cyclopts` (4.0+) for the CLI. `cyclopts` pulls in `rich` for terminal output.
+(2.7+), `httpx`, `pyyaml`, and `cyclopts` (4.0+) for the CLI. `cyclopts`
+pulls in `rich` for terminal output.
 
 ## Why
 
@@ -196,7 +197,12 @@ async def downgrade():
 Apply it:
 
 ```bash
-stint upgrade --env dev
+stint upgrade \
+    --migrations-dir migrations/ \
+    --state state/dev.yaml \
+    --env dev \
+    --url jira_cloud+https://you.atlassian.net \
+    --auth api-token
 ```
 
 Then query and write issues through the same classes:

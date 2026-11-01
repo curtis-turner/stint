@@ -14,6 +14,7 @@ from stint import (
     create_engine,
     op,
 )
+from stint.cli.main import main
 from stint.engine import Engine
 from stint.migrations.context import MigrationContext, reset_context, set_context
 from stint.registry import registry
@@ -180,7 +181,7 @@ def test_state_lock_acquires_and_releases(tmp_path):
     assert not lock_file.exists()
     lock.acquire()
     assert lock_file.exists()
-    body = lock_file.read_text()
+    body = lock_file.read_text(encoding="utf-8")
     assert f"pid={os.getpid()}" in body
     lock.release()
     assert not lock_file.exists()
@@ -207,6 +208,227 @@ def test_state_lock_context_manager_releases_on_exception(tmp_path):
             assert lock_file.exists()
             raise RuntimeError("boom")
     assert not lock_file.exists()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# H3: lock ordering — the state lock is acquired before the state file
+# is read, and a mid-flight failure cannot leak the lock file.
+# ──────────────────────────────────────────────────────────────────────
+def _hold_lock(tmp_path):
+    """Pre-create ``<state>.lock`` as if another process holds it."""
+    state_path = tmp_path / "state.yaml"
+    (tmp_path / "state.yaml.lock").write_text("pid=999999\nacquired_at=2000-01-01T00:00:00+00:00\n", encoding="utf-8")
+    return state_path
+
+
+def _migration_dir(tmp_path):
+    mig_dir = tmp_path / "migrations"
+    mig_dir.mkdir()
+    (mig_dir / "a.py").write_text(
+        "revision = 'r1'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
+    )
+    return mig_dir
+
+
+def test_cli_downgrade_refuses_when_state_lock_held(tmp_path, monkeypatch, capsys):
+    """H3: downgrade takes the lock before loading state. No respx mocks —
+    if the engine ran before the lock check, an HTTP error would surface
+    instead of StateLockError."""
+    monkeypatch.setenv("STINT_TOKEN", "tok")
+    mig_dir = _migration_dir(tmp_path)
+    state_path = _hold_lock(tmp_path)
+    rc = main(
+        [
+            "downgrade",
+            "--migrations-dir",
+            str(mig_dir),
+            "--state",
+            str(state_path),
+            "--env",
+            "dev",
+            "--url",
+            f"jira_cloud+{BASE}",
+            "--auth",
+            "pat",
+            "--revision",
+            "base",
+        ]
+    )
+    assert rc == 1
+    assert "locked by" in capsys.readouterr().err
+    assert not state_path.exists()  # lock comes first; nothing loaded or written
+
+
+def test_cli_upgrade_loads_state_only_after_lock_acquired(tmp_path, monkeypatch):
+    """H3 ('lock then load'): StateFile.load must run while this process
+    already holds ``<state>.lock``. A state read before the lock can be
+    stale by the time we hold it, and upgrading off it clobbers whichever
+    writer applied in between (whole-file save, all projects)."""
+    monkeypatch.setenv("STINT_TOKEN", "tok")
+    mig_dir = _migration_dir(tmp_path)
+    state_path = tmp_path / "state.yaml"
+    StateFile(env="dev", jira_url=BASE, revision="r1").save(state_path)
+    lock_path = tmp_path / "state.yaml.lock"
+
+    real_load = StateFile.load.__func__
+
+    def _spy(cls, route_path):
+        body = lock_path.read_text(encoding="utf-8")  # FileNotFoundError = loaded too early
+        assert f"pid={os.getpid()}" in body, "state loaded before the lock was acquired"
+        return real_load(cls, route_path)
+
+    monkeypatch.setattr(StateFile, "load", classmethod(_spy))
+    rc = main(
+        [
+            "upgrade",
+            "--migrations-dir",
+            str(mig_dir),
+            "--state",
+            str(state_path),
+            "--env",
+            "dev",
+            "--url",
+            f"jira_cloud+{BASE}",
+            "--auth",
+            "pat",
+        ]
+    )
+    assert rc == 0
+    assert not lock_path.exists()  # released on exit
+
+
+def test_cli_downgrade_loads_state_only_after_lock_acquired(tmp_path, monkeypatch):
+    """H3 ('lock then load'): same property for the downgrade path."""
+    monkeypatch.setenv("STINT_TOKEN", "tok")
+    mig_dir = _migration_dir(tmp_path)
+    state_path = tmp_path / "state.yaml"
+    StateFile(env="dev", jira_url=BASE, revision="r1").save(state_path)
+    lock_path = tmp_path / "state.yaml.lock"
+
+    real_load = StateFile.load.__func__
+
+    def _spy(cls, route_path):
+        body = lock_path.read_text(encoding="utf-8")
+        assert f"pid={os.getpid()}" in body, "state loaded before the lock was acquired"
+        return real_load(cls, route_path)
+
+    monkeypatch.setattr(StateFile, "load", classmethod(_spy))
+    rc = main(
+        [
+            "downgrade",
+            "--migrations-dir",
+            str(mig_dir),
+            "--state",
+            str(state_path),
+            "--env",
+            "dev",
+            "--url",
+            f"jira_cloud+{BASE}",
+            "--auth",
+            "pat",
+            "--revision",
+            "base",
+        ]
+    )
+    assert rc == 0
+    assert not lock_path.exists()
+
+
+def test_cli_upgrade_refuses_when_state_lock_held(tmp_path, monkeypatch, capsys):
+    """H3: upgrade takes the lock before loading state (same run as above,
+    forward direction)."""
+    monkeypatch.setenv("STINT_TOKEN", "tok")
+    mig_dir = _migration_dir(tmp_path)
+    state_path = _hold_lock(tmp_path)
+    rc = main(
+        [
+            "upgrade",
+            "--migrations-dir",
+            str(mig_dir),
+            "--state",
+            str(state_path),
+            "--env",
+            "dev",
+            "--url",
+            f"jira_cloud+{BASE}",
+            "--auth",
+            "pat",
+        ]
+    )
+    assert rc == 1
+    assert "locked by" in capsys.readouterr().err
+    assert not state_path.exists()
+
+
+_APPLY_SCHEMA = """
+from typing import Annotated
+
+from stint import CustomField, IssueType, Project
+from stint.fields import TextField
+
+root_cause_cf = CustomField(alias="root_cause", name="Root Cause", type=TextField)
+
+
+class Bug(IssueType):
+    __alias__ = "bug"
+    __title__ = "Bug"
+    root_cause: Annotated[str, root_cause_cf]
+
+
+class Vuln(Project):
+    __key__ = "VM"
+    __style__ = "team-managed"
+    __issuetypes__ = [Bug]
+"""
+
+
+def _apply_args(tmp_path, state_path):
+    schema = tmp_path / "schema.py"
+    schema.write_text(_APPLY_SCHEMA, encoding="utf-8")
+    return [
+        "apply",
+        "--schema",
+        str(schema),
+        "--project-key",
+        "VM",
+        "--state",
+        str(state_path),
+        "--env",
+        "prod",
+        "--url",
+        f"jira_cloud_tmp+{BASE}",
+        "--auth",
+        "api-token",
+    ]
+
+
+def test_cli_apply_refuses_when_state_lock_held(tmp_path, monkeypatch, capsys):
+    """H3: apply takes the lock before loading state. No HTTP mocks at all —
+    anything touching Jira would raise instead of StateLockError."""
+    monkeypatch.setenv("STINT_TOKEN", "tok")
+    monkeypatch.setenv("STINT_USER", "you@example.com")
+    state_path = _hold_lock(tmp_path)
+    rc = main(_apply_args(tmp_path, state_path))
+    assert rc == 1
+    assert "locked by" in capsys.readouterr().err
+    assert not state_path.exists()
+
+
+def test_cli_apply_engine_construction_failure_leaves_no_lock(tmp_path, monkeypatch):
+    """H3: create_tmp_engine runs before the lock is acquired, so a
+    construction failure cannot leak ``<state>.lock`` — which had no
+    stale-lock detection and would block every later command."""
+    monkeypatch.setenv("STINT_TOKEN", "tok")
+    monkeypatch.setenv("STINT_USER", "you@example.com")
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("construction boom")
+
+    monkeypatch.setattr("stint.cli.cmd_apply.create_tmp_engine", _boom)
+    with pytest.raises(RuntimeError, match="construction boom"):
+        main(_apply_args(tmp_path, tmp_path / "state.yaml"))
+    assert not (tmp_path / "state.yaml.lock").exists()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -410,7 +632,9 @@ def test_env_config_fills_in_missing_flags(tmp_path, monkeypatch):
     """When ~/.stint/envs/prod.yaml exists, --env prod fills in url/auth."""
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
-    (cfg_dir / "prod.yaml").write_text("url: https://jira.example.com\nauth: pat\ndialect: jira_cloud\n")
+    (cfg_dir / "prod.yaml").write_text(
+        "url: https://jira.example.com\nauth: pat\ndialect: jira_cloud\n", encoding="utf-8"
+    )
     monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
 
     import argparse
@@ -435,7 +659,7 @@ def test_env_config_fills_in_missing_flags(tmp_path, monkeypatch):
 def test_env_config_explicit_flags_override(tmp_path, monkeypatch):
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
-    (cfg_dir / "prod.yaml").write_text("url: https://from-config\n")
+    (cfg_dir / "prod.yaml").write_text("url: https://from-config\n", encoding="utf-8")
     monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
 
     import argparse
@@ -479,7 +703,7 @@ def test_env_config_rejects_unknown_keys(tmp_path, monkeypatch):
 
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
-    (cfg_dir / "prod.yaml").write_text("url: x\nnonsense: 1\n")
+    (cfg_dir / "prod.yaml").write_text("url: x\nnonsense: 1\n", encoding="utf-8")
     monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
 
     from stint.cli.env_config import load_env_config
@@ -501,7 +725,8 @@ def test_resolve_connection_reads_token_and_user_env_from_yaml(tmp_path, monkeyp
         "auth: api-token\n"
         "dialect: jira_cloud\n"
         "token_env: STINT_CLOUD_TOKEN\n"
-        "user_env: STINT_CLOUD_EMAIL\n"
+        "user_env: STINT_CLOUD_EMAIL\n",
+        encoding="utf-8",
     )
     monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
     from stint.cli.env_config import resolve_connection
@@ -526,7 +751,8 @@ def test_resolve_connection_explicit_cli_overrides_yaml(tmp_path, monkeypatch):
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
     (cfg_dir / "cloud.yaml").write_text(
-        "url: https://x.atlassian.net\nauth: api-token\ntoken_env: FROM_YAML_T\nuser_env: FROM_YAML_U\n"
+        "url: https://x.atlassian.net\nauth: api-token\ntoken_env: FROM_YAML_T\nuser_env: FROM_YAML_U\n",
+        encoding="utf-8",
     )
     monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
     from stint.cli.env_config import resolve_connection
@@ -548,7 +774,7 @@ def test_resolve_connection_falls_back_to_defaults_when_unset(tmp_path, monkeypa
     """No YAML token_env/user_env and no CLI override → defaults apply."""
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
-    (cfg_dir / "cloud.yaml").write_text("url: https://x.atlassian.net\nauth: api-token\n")
+    (cfg_dir / "cloud.yaml").write_text("url: https://x.atlassian.net\nauth: api-token\n", encoding="utf-8")
     monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
     from stint.cli.env_config import resolve_connection
 
@@ -625,7 +851,8 @@ def test_cli_reflect_reads_connection_from_env_config(tmp_path, monkeypatch, cap
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
     (cfg_dir / "dev.yaml").write_text(
-        "url: jira_cloud+https://jira.example.com\nauth: pat\ndialect: jira_cloud\ntoken_env: STINT_DEV_TOKEN\n"
+        "url: jira_cloud+https://jira.example.com\nauth: pat\ndialect: jira_cloud\ntoken_env: STINT_DEV_TOKEN\n",
+        encoding="utf-8",
     )
     monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
     monkeypatch.setenv("STINT_DEV_TOKEN", "test-pat-from-env-config")
@@ -658,9 +885,11 @@ def test_cli_reflect_reads_connection_from_env_config(tmp_path, monkeypatch, cap
             f"{dc_root}/fieldconfiguration",
             f"{dc_root}/fieldconfigurationscheme",
             f"{dc_root}/fieldconfigurationscheme/project",
-            f"{dc_root}/issuesecurityschemes",
         ):
             mock.get(path).mock(return_value=httpx.Response(200, json=_paginated([])))
+        mock.get(f"{dc_root}/issuesecurityschemes").mock(
+            return_value=httpx.Response(200, json={"issueSecuritySchemes": []})
+        )
 
         rc = main(["reflect", "--env", "dev"])
 
@@ -689,12 +918,14 @@ def test_cli_stamp_reads_connection_from_env_config(tmp_path, monkeypatch):
 
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
-    (cfg_dir / "dev.yaml").write_text("url: jira_cloud+https://jira.example.com\nauth: pat\ndialect: jira_cloud\n")
+    (cfg_dir / "dev.yaml").write_text(
+        "url: jira_cloud+https://jira.example.com\nauth: pat\ndialect: jira_cloud\n", encoding="utf-8"
+    )
     monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
     monkeypatch.setenv("STINT_TOKEN", "test-pat")
 
     schema_path = tmp_path / "schema.py"
-    schema_path.write_text("# empty schema\n")
+    schema_path.write_text("# empty schema\n", encoding="utf-8")
 
     base = "https://jira.example.com"
     dc_root = f"{base}/rest/api/3"
@@ -721,9 +952,11 @@ def test_cli_stamp_reads_connection_from_env_config(tmp_path, monkeypatch):
             f"{dc_root}/fieldconfiguration",
             f"{dc_root}/fieldconfigurationscheme",
             f"{dc_root}/fieldconfigurationscheme/project",
-            f"{dc_root}/issuesecurityschemes",
         ):
             mock.get(path).mock(return_value=httpx.Response(200, json=_paginated([])))
+        mock.get(f"{dc_root}/issuesecurityschemes").mock(
+            return_value=httpx.Response(200, json={"issueSecuritySchemes": []})
+        )
 
         rc = main(
             [
@@ -750,12 +983,14 @@ def test_cli_revision_autogenerate_reads_connection_from_env_config(tmp_path, mo
 
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
-    (cfg_dir / "dev.yaml").write_text("url: jira_cloud+https://jira.example.com\nauth: pat\ndialect: jira_cloud\n")
+    (cfg_dir / "dev.yaml").write_text(
+        "url: jira_cloud+https://jira.example.com\nauth: pat\ndialect: jira_cloud\n", encoding="utf-8"
+    )
     monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
     monkeypatch.setenv("STINT_TOKEN", "test-pat")
 
     schema_path = tmp_path / "schema.py"
-    schema_path.write_text("# empty schema\n")
+    schema_path.write_text("# empty schema\n", encoding="utf-8")
 
     base = "https://jira.example.com"
     dc_root = f"{base}/rest/api/3"
@@ -782,9 +1017,11 @@ def test_cli_revision_autogenerate_reads_connection_from_env_config(tmp_path, mo
             f"{dc_root}/fieldconfiguration",
             f"{dc_root}/fieldconfigurationscheme",
             f"{dc_root}/fieldconfigurationscheme/project",
-            f"{dc_root}/issuesecurityschemes",
         ):
             mock.get(path).mock(return_value=httpx.Response(200, json=_paginated([])))
+        mock.get(f"{dc_root}/issuesecurityschemes").mock(
+            return_value=httpx.Response(200, json={"issueSecuritySchemes": []})
+        )
 
         rc = main(
             [
@@ -813,7 +1050,7 @@ def test_cli_revision_autogenerate_errors_with_missing_connection(tmp_path, monk
 
     monkeypatch.setenv("STINT_CONFIG_DIR", str(tmp_path / "nonexistent"))
     schema_path = tmp_path / "schema.py"
-    schema_path.write_text("# empty\n")
+    schema_path.write_text("# empty\n", encoding="utf-8")
     with pytest.raises(SystemExit) as e:
         main(
             [

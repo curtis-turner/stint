@@ -555,6 +555,32 @@ async def test_delete_worktype_refuses_when_not_safe():
     assert not delete_route.called
 
 
+@pytest.mark.asyncio
+@respx.mock
+@pytest.mark.parametrize(
+    ("status", "body", "json_mode"),
+    [
+        pytest.param(200, [42], True, id="list-body"),
+        pytest.param(200, {}, True, id="missing-safeToDelete-key"),
+        pytest.param(200, "false", True, id="string-safeToDelete"),
+        pytest.param(200, "ok", True, id="non-object-body"),
+        pytest.param(200, "", False, id="empty-body"),
+        pytest.param(204, "", False, id="no-content"),
+    ],
+)
+async def test_delete_worktype_fails_closed_on_unexpected_preflight_shape(status, body, json_mode):
+    """H5: the preflight must fail closed. Only an object with `safeToDelete
+    is True` permits the DELETE; any other shape raises without deleting."""
+    if json_mode:
+        respx.get(f"{ISSUETYPE_URL}/checkDelete/10080").mock(return_value=httpx.Response(status, json=body))
+    else:
+        respx.get(f"{ISSUETYPE_URL}/checkDelete/10080").mock(return_value=httpx.Response(status, content=body.encode()))
+    delete_route = respx.delete(f"{ISSUETYPE_URL}/10080").mock(return_value=httpx.Response(204))
+    with pytest.raises(TmpApiError, match="refusing to delete"):
+        await _dialect().delete_worktype(project_id="10001", worktype_id="10080")
+    assert not delete_route.called
+
+
 # ── write_layout ─────────────────────────────────────────────────────────
 def _sample_layout() -> TmpLayout:
     return TmpLayout(

@@ -46,9 +46,11 @@ def _stub_empty(mock: respx.MockRouter) -> None:
         f"{CLOUD_ROOT}/fieldconfiguration",
         f"{CLOUD_ROOT}/fieldconfigurationscheme",
         f"{CLOUD_ROOT}/fieldconfigurationscheme/project",
-        f"{CLOUD_ROOT}/issuesecurityschemes",
     ):
         mock.get(path).mock(return_value=httpx.Response(200, json=_paginated([])))
+    mock.get(f"{CLOUD_ROOT}/issuesecurityschemes").mock(
+        return_value=httpx.Response(200, json={"issueSecuritySchemes": []})
+    )
 
 
 @respx.mock

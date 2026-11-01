@@ -8,7 +8,8 @@ def _write_initial(mig_dir, rev: str = "initial1234") -> None:
     """Seed a migration dir with one base migration."""
     mig_dir.mkdir(parents=True, exist_ok=True)
     (mig_dir / f"2026_05_20_1200_{rev}.py").write_text(
-        f"revision = {rev!r}\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
+        f"revision = {rev!r}\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
     )
 
 
@@ -77,10 +78,12 @@ def test_revision_merge_writes_tuple_down_revision(tmp_path, capsys):
     mig_dir = tmp_path / "migrations"
     mig_dir.mkdir()
     (mig_dir / "a.py").write_text(
-        "revision = 'a_rev'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
+        "revision = 'a_rev'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
     )
     (mig_dir / "b.py").write_text(
-        "revision = 'b_rev'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
+        "revision = 'b_rev'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
     )
     rc = main(
         [
@@ -106,13 +109,16 @@ def test_revision_merge_rejects_non_head(tmp_path, capsys):
     mig_dir = tmp_path / "migrations"
     mig_dir.mkdir()
     (mig_dir / "a.py").write_text(
-        "revision = 'a_rev'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
+        "revision = 'a_rev'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
     )
     (mig_dir / "child.py").write_text(
-        "revision = 'child'\ndown_revision = 'a_rev'\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
+        "revision = 'child'\ndown_revision = 'a_rev'\nasync def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
     )
     (mig_dir / "b.py").write_text(
-        "revision = 'b_rev'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n"
+        "revision = 'b_rev'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
     )
     rc = main(
         [
