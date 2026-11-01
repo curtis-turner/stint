@@ -275,7 +275,7 @@ def _write_migration(mig_dir: Path, message: str, source: str, revision: str) ->
     if path.exists():
         print(f"ERROR: target file already exists: {path}")
         return 1
-    path.write_text(source)
+    path.write_text(source, encoding="utf-8")
     print(f"wrote {path}")
     print(f"  revision={revision}")
     return 0

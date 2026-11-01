@@ -9,13 +9,15 @@ sub-mappings — custom field options, screen tabs, scheme entries.
 
 from __future__ import annotations
 
+import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from stint.exceptions import StateFileCorruptError
+from stint.exceptions import StateFileCorruptError, StateFileWriteError
 
 SCHEMA_VERSION = 1
 
@@ -213,11 +215,57 @@ class StateFile:
         )
 
     def save(self, path: str | Path) -> None:
-        Path(path).write_text(self.to_yaml())
+        """Atomically write the state file, creating parent directories.
+
+        Content goes to a sibling temp file in the target's directory (so
+        ``os.replace`` never crosses a filesystem), is fsync()ed, then is
+        moved onto the target with ``os.replace`` -- atomic on POSIX and
+        Windows. A crash, Ctrl-C, or full disk mid-write leaves either the
+        previous complete file or the complete new one, never a truncated
+        half-file: this file is the only record of alias -> Jira ID
+        mappings. Failures raise ``StateFileWriteError`` (a ``StintError``),
+        not a raw ``OSError``, so the CLI prints a message rather than a
+        traceback.
+        """
+        p = Path(path)
+        StateFile.ensure_writable(p)
+        try:
+            fd, tmp_name = tempfile.mkstemp(dir=p.parent, prefix=f".{p.name}.", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(self.to_yaml())
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_name, p)
+            except BaseException:
+                # Never strand a partial temp file beside the state file.
+                Path(tmp_name).unlink(missing_ok=True)
+                raise
+        except OSError as e:
+            raise StateFileWriteError(f"failed to write state file {p}: {e}") from e
+
+    @staticmethod
+    def ensure_writable(path: str | Path) -> None:
+        """Fail fast if the state file path cannot be written.
+
+        Creates parent directories (``stint upgrade --state state/dev.yaml``
+        previously mutated Jira first and only then died on the missing
+        ``state/``) and proves the directory accepts files by creating and
+        removing a throwaway temp file -- the same thing ``save()`` does, so
+        this is a true preflight. Call this before issuing any Jira writes.
+        """
+        p = Path(path)
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            fd, probe = tempfile.mkstemp(dir=p.parent, prefix=f".{p.name}.probe-", suffix=".tmp")
+            os.close(fd)
+            os.unlink(probe)
+        except OSError as e:
+            raise StateFileWriteError(f"state file path {p} is not writable: {e}") from e
 
     @classmethod
     def load(cls, path: str | Path) -> StateFile:
         p = Path(path)
         if not p.exists():
             raise StateFileCorruptError(f"state file does not exist: {p}")
-        return cls.from_yaml(p.read_text())
+        return cls.from_yaml(p.read_text(encoding="utf-8"))

@@ -6,6 +6,8 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-31
+
 ### Added
 
 - Jira Cloud's Field Schemes API (v2, `/rest/api/3/config/fieldschemes`)
@@ -58,6 +60,63 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   credentials) showing an orphan adopted without duplication, a
   leftover reported, and the adopted field reaching the normal
   `DeleteField` path.
+
+### Fixed
+
+- Auth secrets no longer leak through dataclass `repr()`. `PATAuth.token`,
+  `BasicAuth.password`, and `APITokenAuth.token` are now declared with
+  `field(repr=False)`, so logging or echoing a credential object shows
+  `APITokenAuth(email='you@example.com')` instead of the raw token. The
+  fields stay required, participate in equality/hash as before, and remain
+  visible to `dataclasses.asdict()` for serialization paths that
+  consciously want the value. `tests/test_auth.py` covers masking,
+  equality semantics, and `asdict`.
+- State file writes are now atomic and create parent directories.
+  `StateFile.save()` previously used `Path.write_text` — truncating in
+  place — so a crash, Ctrl-C, or full disk mid-write could corrupt the file
+  that is the only record of alias→Jira-ID mappings, and
+  `stint upgrade --state state/dev.yaml` mutated Jira first and then failed
+  on a raw `FileNotFoundError` when `state/` did not exist yet. Writes now
+  go through a fsync'd sibling temp file moved onto the target with
+  `os.replace` (atomic on POSIX and Windows, no temp file abandoned next to
+  the state file on failure), parent directories are created eagerly, and
+  errors surface as `StateFileWriteError` (a `StintError`), not raw
+  tracebacks. `stint upgrade`/`downgrade`, `stint stamp`, and `stint apply`
+  additionally validate the state path is writable *before* issuing any
+  Jira writes, and state/migration-file I/O is pinned to UTF-8 regardless
+  of locale (cp1252 no longer corrupts non-ASCII schema names on Windows).
+- IssueTypeScheme membership drift is now applied instead of silently
+  dropped. Autogenerate detected the drift (reordering a Project's
+  `__issuetypes__`, or removing a member already in Jira) and emitted
+  `op.update_issuetype_scheme(alias=...)`, but the op had no membership
+  handling and the Jira scheme-update endpoint only accepts
+  name/description/default — the migration made zero HTTP calls,
+  reported success, and every subsequent autogenerate re-detected the
+  same drift forever. The emitter now renders the declared member list,
+  `op.update_issuetype_scheme` accepts `issuetypes=[...]` (validated to
+  be non-empty and to contain the default), and the Cloud dialect
+  reconciles the scheme's members via Jira's add endpoint
+  (`PUT /issuetypescheme/{id}/issuetype`), per-member removal
+  (`DELETE /issuetypescheme/{id}/issuetype/{issueTypeId}`), and the
+  reorder endpoint (`PUT /issuetypescheme/{id}/issuetype/move`), so
+  applying the migration actually converges. Jira still refuses
+  removals it cannot perform (member in use by issues, last standard
+  member) — that 400 now surfaces at apply time instead of being
+  silently swallowed.
+- State file locking now covers state loading and all writer commands
+  execute lock-safe. `stint upgrade`, `stint downgrade`, and `stint
+  apply` previously read the state file *before* acquiring the
+  `<state>.lock` file, so a process that loaded state, waited for the
+  lock, and then held it would carry a stale in-memory copy and clobber
+  — on its next whole-file save — whatever a concurrently finished
+  process had written, for every project in the file. State is now
+  loaded inside the locked region. `stint stamp` populated and saved
+  the same state file without ever taking the lock; the lock now spans
+  its load-reflect-stamp-save. Finally, `stint apply` constructed its
+  TMP engine between lock acquisition and the cleanup handler, so a
+  construction failure leaked the lock file permanently (no
+  stale-lock detection); construction now happens before the lock is
+  acquired.
 
 ## [0.5.0] - 2026-09-27
 
@@ -128,6 +187,12 @@ specified` from the live mutation. `tools/tmp_type_probe.py` is the
 
 ### Changed
 
+- Dropped dead dependencies from `pyproject.toml`:
+  `pydantic-settings` (never imported), the duplicate `pydantic[email]`
+  pin (the `email` extra and `EmailStr` are unused), and the `stint[jira]`
+  optional extra (the official `jira` SDK is never imported — the client
+  is built on `httpx`). Installed environments shrink accordingly with no
+  behavior change.
 - Collapses the Jira dialect layer to a single `JiraCloudDialect`
   class in `stint/dialects/jira/cloud.py` and deletes the legacy
   `JiraDialectBase` (`_base.py`). DC-specific ClassVar defaults
@@ -147,7 +212,19 @@ specified` from the live mutation. `tools/tmp_type_probe.py` is the
 
 ### Added
 
-- Support for Jira Cloud team-managed (
+- Ten more standard Jira custom field types in `stint.fields`, closing the
+  gap between stint's declarative model and Jira's built-in field type
+  catalog: `RadioButtonsField`, `CheckboxesField`, `LabelsField`,
+  `URLField`, `VersionField`, `MultiVersionField`, `GroupField`,
+  `MultiGroupField`, `MultiUserField`, `ReadOnlyField`. Each is wired
+  through schema validation (`CustomField` options rules,
+  Literal-vs-options checks for the option-style types), write payloads,
+  read hydration, and autogenerate's reflect-back type lookup. (Closes
+  #15.)
+- Experimental support for Atlassian Data Format (ADF) rich text fields in
+  `stint.fields.ADFTextField`. This field type enables storage and retrieval
+  of ADF-formatted content in Jira custom fields, supporting complex formatting
+  including inline styles, block types, and embedded content. (Closes #16.)
 
 ## [0.3.0] - 2026-07-05
 
@@ -325,5 +402,13 @@ end-to-end against Jira Data Center and Jira Cloud.
 - TMP awareness: project style tracked in state, CMP-only ops raise
   `UnsupportedTMPOpError` with a deep link to the Jira UI.
 
-[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.1.0a0...HEAD
+[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/curtis-turner/stint/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/curtis-turner/stint/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/curtis-turner/stint/compare/0.3.0...v0.4.0
+[0.3.0]: https://github.com/curtis-turner/stint/compare/0.2.0...0.3.0
+[0.2.0]: https://github.com/curtis-turner/stint/compare/0.1.0...0.2.0
+[0.1.0]: https://github.com/curtis-turner/stint/compare/v0.1.0a2...0.1.0
+[0.1.0a2]: https://github.com/curtis-turner/stint/compare/v0.1.0a1...v0.1.0a2
+[0.1.0a1]: https://github.com/curtis-turner/stint/releases/tag/v0.1.0a1
 [0.1.0a0]: https://github.com/curtis-turner/stint/releases/tag/v0.1.0a0

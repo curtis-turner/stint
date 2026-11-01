@@ -25,7 +25,7 @@ def _reset_registry():
 
 def _write_schema(tmp_path: Path, body: str) -> Path:
     p = tmp_path / "schema.py"
-    p.write_text(textwrap.dedent(body))
+    p.write_text(textwrap.dedent(body), encoding="utf-8")
     return p
 
 

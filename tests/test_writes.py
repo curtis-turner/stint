@@ -187,6 +187,32 @@ def test_update_payload_only_dirty_fields():
     assert set(body["fields"]) == {"customfield_10044"}
 
 
+# ── Explicit None-clearing on update ─────────────────────────────────
+def test_update_payload_emits_null_for_deliberate_clear():
+    """Dirty-tracked None is a deliberate clear: the update path emits null
+    for optional fields rather than silently dropping them (B4)."""
+    import examples.company_managed.platform as p
+
+    state = _platform_state()
+    bug = p.Bug(summary="x", reporter="alice", severity="S1", assignee="acc-1")
+    bug.assignee = None
+    body = build_update_payload(bug, state, is_cloud=False, dirty={"assignee"})
+    assert body["fields"] == {"assignee": None}
+
+
+def test_update_payload_null_for_optional_custom_field_clear():
+    import examples.company_managed.platform as p
+
+    state = _platform_state()
+    state.custom_fields["bug_root_cause"] = CustomFieldMapping(
+        id="customfield_10045",
+    )
+    bug = p.Bug(summary="x", reporter="alice", severity="S1", root_cause="cache")
+    bug.root_cause = None
+    body = build_update_payload(bug, state, is_cloud=True, dirty={"root_cause"})
+    assert body["fields"] == {"customfield_10045": None}
+
+
 # ── Project inference / __projects__ linkage ─────────────────────────
 def test_project_meta_sets_projects_on_issuetype():
     import examples.company_managed.platform as p
@@ -335,6 +361,52 @@ async def test_dirty_tracking_emits_minimal_put():
 
     # Only the dirty field appears in the PUT body.
     assert captured_body[0]["fields"] == {"customfield_10044": {"value": "S3"}}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_dirty_none_assignment_puts_null_to_clear():
+    """Setting an optional field to None on a hydrated instance must PUT a
+    null once (clearing the field server-side), not skip the field and
+    silently report success while losing the change (B4)."""
+    import json
+
+    import examples.company_managed.platform as p
+
+    respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "key": "PLAT-1",
+                "fields": {
+                    "summary": "x",
+                    "reporter": {"accountId": "acc-1"},
+                    "assignee": {"accountId": "acc-2"},
+                    "customfield_10044": {"value": "S1"},
+                },
+            },
+        )
+    )
+    captured_body: list[dict] = []
+
+    def _record(request):
+        captured_body.append(json.loads(request.content))
+        return httpx.Response(204)
+
+    respx.put(f"{CLOUD_ROOT}/issue/PLAT-1").mock(side_effect=_record)
+
+    engine = _cloud_engine()
+    state = _platform_state()
+    async with AsyncSession(engine, state) as session:
+        try:
+            bug = await session.get(p.Bug, "PLAT-1")
+            assert bug is not None
+            bug.assignee = None
+            await session.commit()
+        finally:
+            await engine.close()
+
+    assert captured_body[0]["fields"] == {"assignee": None}
 
 
 @pytest.mark.asyncio

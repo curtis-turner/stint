@@ -1,10 +1,11 @@
 """State file load/save round-trip."""
 
+import os
 from pathlib import Path
 
 import pytest
 
-from stint import StateFile, StateFileCorruptError
+from stint import StateFile, StateFileCorruptError, StateFileWriteError
 from stint.state.file import CustomFieldMapping, ProjectMapping, ScreenMapping, SimpleMapping
 
 
@@ -47,6 +48,67 @@ def test_state_file_save_load_round_trip(tmp_path: Path):
     loaded = StateFile.load(target)
     assert loaded.env == "staging"
     assert loaded.custom_fields["x"].id == "customfield_99999"
+
+
+# ── H2: atomic, parent-dir-creating save() ────────────────────────────
+
+
+def test_state_file_save_creates_parent_dirs(tmp_path: Path):
+    """`stint upgrade --state state/dev.yaml` works when state/ is absent."""
+    sf = StateFile(env="dev", jira_url="https://dev.example.com")
+    target = tmp_path / "state" / "dev.yaml"
+    sf.save(target)
+    assert target.exists()
+    assert StateFile.load(target).env == "dev"
+
+
+def test_state_file_save_overwrites_and_leaves_no_temp_files(tmp_path: Path):
+    save_dir = tmp_path / "state"
+    sf = StateFile(env="dev", jira_url="https://dev.example.com")
+    target = save_dir / "dev.yaml"
+    sf.save(target)
+    StateFile(env="prod", jira_url="https://prod.example.com").save(target)
+    assert StateFile.load(target).env == "prod"
+    assert [q.name for q in save_dir.iterdir()] == ["dev.yaml"]
+
+
+def test_state_file_save_mid_write_crash_keeps_previous_file(tmp_path: Path, monkeypatch):
+    """A failure between temp-file creation and os.replace must leave the
+    previously saved state file byte-identical, with no temp file stranded."""
+
+    def boom(_fileno: int) -> None:
+        raise OSError("disk full")
+
+    sf = StateFile(env="dev", jira_url="https://dev.example.com")
+    target = tmp_path / "dev.yaml"
+    sf.save(target)
+    original = target.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(os, "fsync", boom)
+    with pytest.raises(StateFileWriteError):
+        sf.save(target)
+
+    assert target.read_text(encoding="utf-8") == original
+    assert [q.name for q in tmp_path.iterdir()] == ["dev.yaml"]
+
+
+def test_state_file_save_unwritable_path_raises_stint_error(tmp_path: Path):
+    """OSError surfaces as StateFileWriteError, not a raw traceback."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("this is a file, not a directory", encoding="utf-8")
+    sf = StateFile(env="dev", jira_url="https://dev.example.com")
+    with pytest.raises(StateFileWriteError) as e:
+        sf.save(blocker / "state" / "dev.yaml")
+    assert "dev.yaml" in str(e.value)
+
+
+def test_state_file_non_ascii_round_trips_utf8(tmp_path: Path):
+    sf = StateFile(env="devé", jira_url="https://dé.example.com")
+    target = tmp_path / "dev.yaml"
+    sf.save(target)
+    parsed = StateFile.load(target)
+    assert parsed.env == "devé"
+    assert parsed.jira_url == "https://dé.example.com"
 
 
 def test_state_file_missing_path_raises():

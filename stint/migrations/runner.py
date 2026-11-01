@@ -43,6 +43,10 @@ async def upgrade(
     pending = graph.chain_from(state.revision)
     if target is not None:
         pending = _truncate_to_target(pending, target)
+    if not pending:
+        return []
+    # Fail (before any Jira write) if the state file path cannot be recorded.
+    StateFile.ensure_writable(state_path)
     applied: list[Migration] = []
     for migration in pending:
         await _run_one(
@@ -90,6 +94,8 @@ async def downgrade(
     if target == state.revision:
         return []
     chain = _build_downgrade_chain(graph, state.revision, target)
+    # Fail (before any Jira write) if the state file path cannot be recorded.
+    StateFile.ensure_writable(state_path)
     reversed_migrations: list[Migration] = []
     for migration in chain:
         await _run_one(

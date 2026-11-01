@@ -36,6 +36,7 @@ async def paginate(
     client: JiraHTTPClient,
     path: str,
     *,
+    envelope_key: str = "values",
     page_size: int = 50,
     extra_params: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
@@ -65,10 +66,10 @@ async def paginate(
                 yield item
             return
 
-        if not isinstance(resp, dict) or "values" not in resp:
+        if not isinstance(resp, dict) or envelope_key not in resp:
             raise ReflectionError(
                 f"{path} returned an unrecognized pagination envelope: "
-                f"expected a list or a dict with a 'values' key, got "
+                f"expected a list or a dict with a '{envelope_key}' key, got "
                 f"{type(resp).__name__}: {str(resp)[:200]!r}"
             )
         if "startAt" in resp and resp["startAt"] != start:
@@ -77,7 +78,7 @@ async def paginate(
                 f"startAt={start}; refusing to advance to a page we did not ask for"
             )
 
-        values = resp.get("values") or []
+        values = resp.get(envelope_key) or []
         for item in values:
             yield item
 

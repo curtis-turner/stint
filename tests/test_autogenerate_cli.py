@@ -54,9 +54,11 @@ def _stub_empty_jira(mock):
         "/fieldconfiguration",
         "/fieldconfigurationscheme",
         "/fieldconfigurationscheme/project",
-        "/issuesecurityschemes",
     ):
         mock.get(f"{CLOUD_ROOT}{path}").mock(return_value=httpx.Response(200, json=_paginated([])))
+    mock.get(f"{CLOUD_ROOT}/issuesecurityschemes").mock(
+        return_value=httpx.Response(200, json={"issueSecuritySchemes": []})
+    )
 
 
 @respx.mock
@@ -100,7 +102,7 @@ def test_autogenerate_greenfield_writes_full_migration(tmp_path, monkeypatch, ca
 
     # Inspect source for sanity.
     files = list(mig_dir.glob("*.py"))
-    source = files[0].read_text()
+    source = files[0].read_text(encoding="utf-8")
     assert "from stint import op" in source
     assert "from stint.fields import SelectField, TextField" in source
     assert "op.create_custom_field" in source
@@ -260,7 +262,8 @@ def test_autogenerate_scopes_to_schema_module_projects(tmp_path, monkeypatch, ca
         "class ProjB(Project):\n"
         "    __key__ = 'BBB'\n"
         "    __style__ = 'company-managed'\n"
-        "    __issuetypes__ = [TaskB]\n"
+        "    __issuetypes__ = [TaskB]\n",
+        encoding="utf-8",
     )
     (tmp_path / "schema_a.py").write_text(
         "import schema_b  # noqa: F401 -- reuse import; registers ProjB as a side effect\n"
@@ -272,7 +275,8 @@ def test_autogenerate_scopes_to_schema_module_projects(tmp_path, monkeypatch, ca
         "class ProjA(Project):\n"
         "    __key__ = 'AAA'\n"
         "    __style__ = 'company-managed'\n"
-        "    __issuetypes__ = [TaskA]\n"
+        "    __issuetypes__ = [TaskA]\n",
+        encoding="utf-8",
     )
     monkeypatch.syspath_prepend(str(tmp_path))
 
@@ -305,7 +309,7 @@ def test_autogenerate_scopes_to_schema_module_projects(tmp_path, monkeypatch, ca
 
     files = list(mig_dir.glob("*.py"))
     assert len(files) == 1
-    src = files[0].read_text()
+    src = files[0].read_text(encoding="utf-8")
     assert "key='AAA'" in src
     assert "alias='task_a'" in src
     assert "key='BBB'" not in src
@@ -349,5 +353,5 @@ def test_autogenerate_allow_delete_emits_delete(tmp_path, monkeypatch, capsys):
     assert rc == 0
     files = list(mig_dir.glob("*.py"))
     assert len(files) == 1
-    src = files[0].read_text()
+    src = files[0].read_text(encoding="utf-8")
     assert "op.delete_custom_field(alias='orphan')" in src
