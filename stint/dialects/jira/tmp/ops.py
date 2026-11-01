@@ -114,22 +114,42 @@ async def tmp_delete_field(ctx: TmpApplyContext, alias: str) -> None:
 
 
 async def tmp_upsert_worktype(ctx: TmpApplyContext, desired: TmpDesiredWorkType) -> None:
-    """Create the work type if unseen.
+    """Create the work type if unseen; adopt an untracked same-name work
+    type otherwise.
 
+    Two recovery paths keep a lost create from duplicating (M19):
+    - ``externalUuid`` is derived deterministically from
+      ``(project_uuid, alias)``, so a re-run after a lost response re-sends
+      the same id, which the server dedups (a fresh random UUID per call
+      defeated that).
+    - Before creating, this project's work types are scanned for an exact
+      name match and adopted: covers work types created before ids were
+      deterministic, or a crash between the wire call and ``ctx.persist()``.
     No update branch: there is no work-type update endpoint (see
     ``TmpDialect.create_worktype``'s docstring) -- renaming happens through
     ``tmp_set_layout``'s owner data instead.
     """
     if desired.alias in ctx.state.worktypes:
         return
+    for wt in await ctx.dialect.list_worktypes(project_id=ctx.project.project_id):
+        if wt.name == desired.name:
+            ctx.state.worktypes[desired.alias] = wt.id
+            ctx.persist()
+            return
     result = await ctx.dialect.create_worktype(
         project_id=ctx.project.project_id,
         project_uuid=ctx.project.project_uuid,
         name=desired.name,
         description=desired.description,
+        external_uuid=_worktype_external_uuid(ctx.project.project_uuid, desired.alias),
     )
     ctx.state.worktypes[desired.alias] = result.id
     ctx.persist()
+
+
+def _worktype_external_uuid(project_uuid: str, alias: str) -> str:
+    """Deterministic per (project, work-type alias) creation marker (M19)."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"stint:worktype:{project_uuid}:{alias}"))
 
 
 async def tmp_delete_worktype(ctx: TmpApplyContext, alias: str) -> None:

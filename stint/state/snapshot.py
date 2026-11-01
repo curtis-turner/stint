@@ -27,6 +27,7 @@ class CustomFieldSnapshot:
     name: str  # display name in Jira
     type_id: str  # e.g. "...customfieldtypes:select"
     options: dict[str, str] = field(default_factory=dict)  # option name -> option id
+    description: str = ""  # TMP reflect fills this; CMP endpoints omit it
 
 
 @dataclass(frozen=True)

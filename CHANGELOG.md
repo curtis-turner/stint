@@ -6,6 +6,83 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-31
+
+### Fixed
+
+- The HTTP client now maps transport-level failures (`httpx.RequestError`:
+  connect errors, DNS failures, read timeouts) to `TransportError` with
+  `status_code=None` after applying the existing backoff — library users
+  can `except StintError` for every network failure, dialect handlers
+  catching `TransportError` finally see network errors, and transient
+  timeouts are retried like 429/503 (H7).
+- Retry policy tightened (M12): 503 is retried only for idempotent methods
+  (GET/PUT/DELETE). A 503 can arrive after Jira committed a POST write, so
+  retrying `POST /project`, `/field`, or `/issue` could create duplicates
+  the state file never learns about. 429 stays safe for all methods.
+- The Field Schemes capability probe only caches positive determinations
+  (H6): `v2` on a successful probe, `v1` only when the server itself
+  answers 404/400. Timeouts, auth errors, and other transient failures are
+  served as v1 for that call but never cached, so one network blip at
+  startup can no longer pin a genuine Field Schemes tenant to retired v1
+  endpoints for the lifetime of the engine.
+- Issue security scheme reflection now actually reflects security levels
+  and members (H8): the list endpoint never carries `levels`, so each
+  scheme is fetched with the single-scheme GET (members inline, or via the
+  level-member endpoint otherwise). Reflect no longer reports
+  `levels=[]` for every scheme, which made declared levels diff as
+  permanent phantom drift.
+- Bulk `projectId` filters are chunked (batch 50) across reflection and
+  the Field Schemes project endpoints (M10). Jira caps these filters
+  around 100 ids; larger tenants failed reflection outright (400) or
+  silently truncated bindings, fabricating scheme drift.
+- The v2 bulk field-removal DELETE inspects the 200 response body (M14):
+  only the tolerated "not associated" per-field failure is silent; any
+  other per-field rejection is surfaced as a warning naming the field ids,
+  instead of discarding the body and recording a wrong desired state.
+- `new delete_json()` (M14) lets callers read DELETE response bodies.
+- Non-JSON 2xx bodies (captive portals, proxies, wrong base URLs) raise
+  `TransportError` instead of a raw `json.JSONDecodeError`.
+- Every classic (v1) field-configuration write — delete, update, set-item,
+  scheme-mapping, scheme-create, project-binding — now carries the same
+  retired-API detection + re-probe/retry the create path had (M15). A
+  tenant migrated between probe and write no longer fails mid-apply with
+  a bare `TransportError 400`.
+- The work-type id cache is invalidated on issuetype create/delete (M11),
+  so "visible everywhere except X" field restrictions no longer silently
+  exclude freshly created work types.
+- `create_issue_security_scheme` validates the create response id with the
+  shared helper (M16); an empty 2xx body raises a clear error instead of
+  an untracked scheme plus `AttributeError`. `_server_info` and the
+  security-level/member parsers also reject unexpected payload shapes
+  with `ReflectionError` instead of raw `AttributeError`/`TypeError`/`KeyError`.
+- TMP: `read_layout` selects `pageInfo { hasNextPage }` on both item
+  connections and raises on truncation (H4) — the layout PUT is a
+  full-replacement write built from this read, so truncated reads
+  silently removed untouched fields from work-type layouts. A missing
+  `pageInfo` is rejected too, rather than re-opening the silent hole.
+- TMP: the GraphQL client validates that a 200 body carries a dict
+  `data` object (M20). Envelope drift, `{"data": null}`, or non-dict
+  bodies now raise `TmpApiError` at the client boundary — including
+  inside `check_capabilities`' friendly broken-tenant report — instead of
+  escaping as `TypeError`/`KeyError` tracebacks. `enumerate_fields` also
+  guards the unknown-project-key (`jiraProjectByKey: null`) response.
+- TMP: a tracked field whose id was deleted by hand in Jira is a
+  recoverable dead end (M17): the plan re-binds a same-name field via the
+  adoption scan, else creates fresh, instead of emitting an update that
+  aborts identically on every run. `--allow-delete` on a dead mapping now
+  drops only the bookkeeping (`DropFieldMapping`) instead of DELETEing an
+  id Jira no longer knows.
+- TMP: field drift now covers `description` (the enumeration read selects
+  it and `CustomFieldSnapshot` carries it) and `type_id`, which raises a
+  precise plan-time error since a field's type cannot change in place
+  (M18). Description-only changes no longer report "No schema changes"
+  forever.
+- TMP: work-type creation is recoverable (M19): `externalUuid` is derived
+  deterministically from `(project_uuid, alias)` so a re-run re-sends the
+  same id for server-side dedup, and `tmp_upsert_worktype` adopts an
+  existing same-name work type instead of duplicating it.
+
 ## [0.6.0] - 2026-10-31
 
 ### Added
@@ -402,7 +479,8 @@ end-to-end against Jira Data Center and Jira Cloud.
 - TMP awareness: project style tracked in state, CMP-only ops raise
   `UnsupportedTMPOpError` with a deep link to the Jira UI.
 
-[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/curtis-turner/stint/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/curtis-turner/stint/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/curtis-turner/stint/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/curtis-turner/stint/compare/0.3.0...v0.4.0

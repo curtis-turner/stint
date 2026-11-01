@@ -30,8 +30,19 @@ def _paginated(values: list[Any]) -> dict[str, Any]:
 
 
 def _paginated_security_schemes(values: list[Any]) -> dict[str, Any]:
-    """Single-page response shape used by Get Issues Security Schemes endpoint."""
-    return {"issueSecuritySchemes": values}
+    """Single-page response shape used by Get Issues Security Schemes endpoint.
+
+    The endpoint carries pagination metadata even though this shape does not
+    use standard "values" pagination -- without `isLast` a non-empty page
+    would loop forever in `paginate` (the bug, incidentally, that fixed the
+    B2-era mocked shape)."""
+    return {
+        "issueSecuritySchemes": values,
+        "maxResults": 50,
+        "startAt": 0,
+        "total": len(values),
+        "isLast": True,
+    }
 
 
 def _stub_empty_admin(mock: respx.MockRouter, root: str = CLOUD_ROOT) -> None:
