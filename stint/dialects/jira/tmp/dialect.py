@@ -133,7 +133,10 @@ query StintTmpLayoutRead($projectId: Long!, $extraDefinerId: Long!) {
         }
         containers {
           containerType
-          items { nodes { __typename ... on JiraIssueItemFieldItem { fieldItemId containerPosition } } }
+          items {
+            nodes { __typename ... on JiraIssueItemFieldItem { fieldItemId containerPosition } }
+            pageInfo { hasNextPage }
+          }
         }
       }
       metadata {
@@ -150,6 +153,7 @@ query StintTmpLayoutRead($projectId: Long!, $extraDefinerId: Long!) {
                 provider { key name }
               }
             }
+            pageInfo { hasNextPage }
           }
         }
       }
@@ -394,7 +398,7 @@ class TmpDialect:
                 fieldAssociationWithIssueTypes(first: {int(page_size)}) {{
                   edges {{
                     node {{
-                      field {{ fieldId name scope typeKey }}
+                      field {{ fieldId name scope typeKey description }}
                       fieldOptions {{ edges {{ node {{ optionId value color @optIn(to: "JiraColorfulSingleSelect")
                      {{ colorKey }} }} }} }}
                     }}
@@ -412,7 +416,13 @@ class TmpDialect:
             operation_name="StintTmpFieldEnumeration",
             extra_headers=_FIELD_ENUMERATION_HEADERS,
         )
-        conn = data["jira"]["jiraProjectByKey"]["projectWithVisibleIssueTypeIds"]["fieldAssociationWithIssueTypes"]
+        project = data.get("jira", {}).get("jiraProjectByKey")
+        if not isinstance(project, dict):
+            raise TmpApiError(
+                f"field enumeration returned no project for key {project_key!r} -- "
+                "unknown project key, or the token cannot see it"
+            )
+        conn = project["projectWithVisibleIssueTypeIds"]["fieldAssociationWithIssueTypes"]
         if conn["pageInfo"].get("hasNextPage"):
             raise TmpApiError(
                 f"field enumeration for {project_key!r} has more than {page_size} fields; "
@@ -424,6 +434,7 @@ class TmpDialect:
                 name=str(e["node"]["field"].get("name", "")),
                 scope=str(e["node"]["field"].get("scope", "")),
                 type_key=str(e["node"]["field"].get("typeKey", "")),
+                description=str(e["node"]["field"].get("description", "")),
                 options=tuple(
                     _parse_field_option(o["node"]) for o in ((e["node"].get("fieldOptions") or {}).get("edges") or [])
                 ),
@@ -433,7 +444,14 @@ class TmpDialect:
 
     async def read_layout(self, *, project_id: str, issuetype_id: int) -> TmpLayout:
         """SwiftJswTmpInitial-equivalent read: the layoutId, work-type owner
-        metadata, and per-field position + config for one issue type's layout."""
+        metadata, and per-field position + config for one issue type's layout.
+
+        Both item connections select `pageInfo { hasNextPage }` and raise
+        on truncation (H4): ``write_layout`` is a full-replacement PUT
+        built from this read, so every un-returned field — including
+        system fields the user never touched — would silently vanish from
+        the layout on the next apply.
+        """
         data = await self._graphql.query(
             LAYOUT_READ_PATH,
             query=_LAYOUT_READ_QUERY,
@@ -445,11 +463,49 @@ class TmpDialect:
             raise TmpApiError(f"unexpected issueLayoutConfiguration typename: {cfg.get('__typename')!r}")
         result = cfg["issueLayoutResult"]
 
+        # Both item connections are truncated by any default connection cap
+        # the gateway applies, and write_layout is a full-replacement PUT
+        # built from this read: every un-returned field — including system
+        # fields the user never touched — would silently vanish from the
+        # layout on the next apply. Fail loud like enumerate_fields (H4):
+        # a missing pageInfo is itself unexpected shape drift, so it, too,
+        # raises rather than re-opening the silent-truncation hole.
+        for i, container in enumerate(result["containers"]):
+            page_info = container["items"].get("pageInfo")
+            if not isinstance(page_info, dict):
+                raise TmpApiError(
+                    f"layout {result.get('id')!r} container {i} ({container['containerType']!r}) "
+                    f"items connection returned no pageInfo: {str(container['items'])[:200]!r}"
+                )
+            if page_info.get("hasNextPage"):
+                raise TmpApiError(
+                    f"layout {result.get('id')!r} container {i} ({container['containerType']!r}) "
+                    "has more items than the gateway returned (pageInfo.hasNextPage); "
+                    "cursor pagination is not implemented -- see read_layout docstring"
+                )
+        configuration_items = cfg["metadata"]["configuration"]["items"]
+        if not isinstance(configuration_items.get("pageInfo"), dict):
+            raise TmpApiError(
+                f"layout {result.get('id')!r} configuration items connection returned "
+                f"no pageInfo: {str(configuration_items)[:200]!r}"
+            )
+        if configuration_items["pageInfo"].get("hasNextPage"):
+            raise TmpApiError(
+                f"layout {result.get('id')!r} configuration has more items than the gateway "
+                "returned (pageInfo.hasNextPage); cursor pagination is not implemented -- "
+                "see read_layout docstring"
+            )
+
         owner_node = next(
-            (e["node"]["layoutOwners"][0] for e in result["usageInfo"]["edges"] if e["currentProject"]), None
+            (
+                e["node"]["layoutOwners"][0]
+                for e in result["usageInfo"]["edges"]
+                if e["currentProject"] and e["node"].get("layoutOwners")
+            ),
+            None,
         )
         if owner_node is None:
-            raise TmpApiError(f"layout {result.get('id')!r} usageInfo has no currentProject edge")
+            raise TmpApiError(f"layout {result.get('id')!r} usageInfo has no currentProject owner edge")
         owner = TmpLayoutOwner(
             id=str(owner_node["id"]),
             name=str(owner_node.get("name", "")),
@@ -503,16 +559,21 @@ class TmpDialect:
         name: str,
         description: str = "",
         avatar_id: int = _DEFAULT_WORKTYPE_AVATAR,
+        external_uuid: str | None = None,
     ) -> TmpWorkType:
         """POST .../settings/issuetype: a project-scoped work type.
 
         No captured field controls hierarchy (subtask vs. standard vs. epic)
         on this endpoint -- every capture created a standard work type, so
         subtask/epic creation is not supported here pending a fresh capture.
+
+        ``external_uuid``: the server dedups on it, so callers that re-send
+        after a lost response pass a deterministic value instead of letting
+        this endpoint mint a fresh random one (M19).
         """
         body = {
             "projectUuid": project_uuid,
-            "externalUuid": str(uuid.uuid4()),
+            "externalUuid": external_uuid or str(uuid.uuid4()),
             "name": name,
             "description": description,
             "avatarId": avatar_id,
@@ -696,6 +757,7 @@ class TmpDialect:
                 name=f.name,
                 type_id=f.type_key,
                 options={o.value: o.option_id for o in f.options if o.option_id is not None},
+                description=f.description,
             )
             for f in fields
             if f.scope == "PROJECT"

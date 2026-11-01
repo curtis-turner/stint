@@ -193,7 +193,14 @@ def _stub_full_apply(mock: respx.MockRouter) -> None:
                             },
                             "containers": [],
                         },
-                        "metadata": {"configuration": {"items": {"nodes": []}}},
+                        "metadata": {
+                            "configuration": {
+                                "items": {
+                                    "nodes": [],
+                                    "pageInfo": {"hasNextPage": False},
+                                }
+                            },
+                        },
                     }
                 }
             },

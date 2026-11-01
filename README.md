@@ -36,8 +36,8 @@ CI applies that file to staging, then production, from the same source. A
 bad change rolls back to a known revision. The schema lives in your repo
 next to the code that depends on it.
 
-Status: `0.6.0`. Runs on Python 3.10 through 3.14. Live-tenant (Jira Cloud)
-validation through `0.5.0`; `0.6.0` is CI-covered only. The API may still
+Status: `0.6.1`. Runs on Python 3.10 through 3.14. Live-tenant (Jira Cloud)
+validation through `0.5.0`; `0.6.x` is CI-covered only. The API may still
 change within `0.x`.
 
 **Primary target: Jira Cloud.** Company-managed (CMP) projects are the

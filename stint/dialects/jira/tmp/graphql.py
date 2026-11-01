@@ -50,4 +50,10 @@ class GraphQLClient:
         errors = body.get("errors") if isinstance(body, dict) else None
         if errors:
             raise TmpApiError(f"{operation_name} ({path}) returned GraphQL errors: {errors!r}")
+        # A 200 body without a usable ``data`` object (envelope drift, HTML
+        # error page, `{"data": null}`) would otherwise escape as TypeError
+        # or KeyError from whichever consumer unwraps it next -- including
+        # from inside check_capabilities' friendly-report handler (M20).
+        if not isinstance(body, dict) or not isinstance(body.get("data"), dict):
+            raise TmpApiError(f"{operation_name} ({path}) returned no GraphQL `data` object: {str(body)[:200]!r}")
         return body["data"]

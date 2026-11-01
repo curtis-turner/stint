@@ -51,6 +51,7 @@ class TmpFieldAssociation:
     scope: str
     type_key: str
     options: tuple[TmpFieldOption, ...] = ()
+    description: str = ""
 
 
 @dataclass(frozen=True)

@@ -15,7 +15,9 @@ from stint import (
     op,
 )
 from stint.cli.main import main
+from stint.client.http import JiraHTTPClient
 from stint.engine import Engine
+from stint.exceptions import TransportError
 from stint.migrations.context import MigrationContext, reset_context, set_context
 from stint.registry import registry
 from stint.state.file import (
@@ -434,6 +436,11 @@ def test_cli_apply_engine_construction_failure_leaves_no_lock(tmp_path, monkeypa
 # ──────────────────────────────────────────────────────────────────────
 # HTTP retry/backoff
 # ──────────────────────────────────────────────────────────────────────
+def _raw_client() -> JiraHTTPClient:
+    """A bare JiraHTTPClient (no Engine/dialect union to narrow)."""
+    return JiraHTTPClient(BASE, auth=PATAuth("tok"))
+
+
 @pytest.mark.asyncio
 @respx.mock
 async def test_retry_on_429_then_success():
@@ -489,8 +496,6 @@ async def test_retry_on_503_then_success():
 @respx.mock
 async def test_retry_gives_up_after_max_retries():
     """4 consecutive 429s (default max_retries=3) → TransportError."""
-    from stint.exceptions import TransportError
-
     respx.get(f"{CLOUD_ROOT}/serverInfo").mock(
         return_value=httpx.Response(429, headers={"Retry-After": "0"}),
     )
@@ -520,6 +525,85 @@ async def test_no_retry_on_non_retryable_status():
     finally:
         await engine.close()
     assert respx.calls.call_count == 1
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_post_503_is_not_retried():
+    """503 on a non-idempotent POST returns after one attempt (M12): the
+    response may follow a committed write, and a retry could duplicate the
+    created object."""
+    respx.post(f"{CLOUD_ROOT}/fieldconfiguration").mock(
+        return_value=httpx.Response(503, headers={"Retry-After": "0"}),
+    )
+    engine = _engine()
+    try:
+        with pytest.raises(TransportError) as exc_info:
+            await engine.dialect.create_field_configuration(name="X")
+        assert exc_info.value.status_code == 503
+    finally:
+        await engine.close()
+    assert respx.calls.call_count == 1
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_put_503_is_retried():
+    """503 on an idempotent PUT is retried (503#2 then success). (M12)"""
+    respx.put(f"{CLOUD_ROOT}/fieldconfiguration/123").mock(
+        side_effect=[
+            httpx.Response(503, headers={"Retry-After": "0"}),
+            httpx.Response(204),
+        ]
+    )
+    engine = _engine()
+    try:
+        await engine.dialect.update_field_configuration("123", name="X", description="")
+    finally:
+        await engine.close()
+    assert respx.calls.call_count == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_transport_error_raised_as_transporterror():
+    """httpx.ConnectError is retried then re-raised as
+    TransportError(status_code=None) — never a raw httpx exception. (H7)"""
+    respx.get(f"{CLOUD_ROOT}/serverInfo").mock(
+        side_effect=httpx.ConnectError("connection refused"),
+    )
+    engine = _engine()
+    try:
+        with pytest.raises(TransportError) as exc_info:
+            await engine.detect()
+        assert exc_info.value.status_code is None
+        assert "connection refused" in str(exc_info.value)
+    finally:
+        await engine.close()
+    # Original + 3 retries = 4 attempts.
+    assert respx.calls.call_count == 4
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_delete_json_returns_body():
+    """delete_json surfaces a 2xx JSON body for endpoints that report
+    per-item failures in-band. (M14)"""
+    respx.delete(f"{CLOUD_ROOT}/config/fieldschemes/scheme/123/fields").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"fieldId": "customfield_1", "errorMessages": [], "errors": {}},
+                {"fieldId": "customfield_2", "errorMessages": ["not associated"], "errors": {}},
+            ],
+        )
+    )
+    client = _raw_client()
+    try:
+        body = await client.delete_json(f"{CLOUD_ROOT}/config/fieldschemes/scheme/123/fields", json={})
+    finally:
+        await client.close()
+    assert isinstance(body, list) and len(body) == 2
 
 
 # ──────────────────────────────────────────────────────────────────────

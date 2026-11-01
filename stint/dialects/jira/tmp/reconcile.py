@@ -63,6 +63,18 @@ class DeleteField:
 
 
 @dataclass(frozen=True)
+class DropFieldMapping:
+    """Remove only the stale alias->id mapping (bookkeeping, no wire call).
+
+    Emitted instead of ``DeleteField`` when ``--allow-delete`` would remove
+    a field whose mapped id is already gone from Jira (hand-deleted in the
+    UI): a real DELETE against the stale id aborts identically on every
+    run (M17)."""
+
+    alias: str
+
+
+@dataclass(frozen=True)
 class CreateWorkType:
     alias: str
 
@@ -77,7 +89,16 @@ class SetLayout:
     alias: str  # work-type alias
 
 
-TmpChange = CreateField | AdoptField | UpdateField | DeleteField | CreateWorkType | DeleteWorkType | SetLayout
+TmpChange = (
+    CreateField
+    | AdoptField
+    | UpdateField
+    | DeleteField
+    | DropFieldMapping
+    | CreateWorkType
+    | DeleteWorkType
+    | SetLayout
+)
 
 
 @dataclass(frozen=True)
@@ -116,6 +137,7 @@ _APPLY_PHASE: dict[type, int] = {
     SetLayout: 2,
     DeleteWorkType: 3,
     DeleteField: 4,
+    DropFieldMapping: 4,
 }
 
 
@@ -123,8 +145,16 @@ def sort_tmp_changes(changes: list[TmpChange]) -> list[TmpChange]:
     return sorted(changes, key=lambda c: _APPLY_PHASE[type(c)])
 
 
-def _field_drifted(current: CustomFieldSnapshot, desired_options: tuple[str, ...], desired_name: str) -> bool:
+def _field_drifted(
+    current: CustomFieldSnapshot,
+    desired_options: tuple[str, ...],
+    desired_name: str,
+    *,
+    desired_description: str = "",
+) -> bool:
     if current.name != desired_name:
+        return True
+    if current.description != desired_description:
         return True
     return set(current.options) != set(desired_options)
 
@@ -230,6 +260,11 @@ def plan_tmp(
     it. No match creates a new field; more than one match raises
     ``TmpAmbiguousFieldError`` rather than guessing.
 
+    A tracked mapping whose id is no longer in Jira (the field was
+    hand-deleted in the UI) is an equally recoverable dead end (M17): the
+    alias re-binds via the same adoption scan or creates fresh, so an
+    ``UpdateField`` against the stale id can no longer abort every run.
+
     Deletions are opt-in (``allow_delete``, mirroring ``autogen.diff``'s same
     safety default) since TMP writes have no undo.
     """
@@ -247,17 +282,52 @@ def plan_tmp(
             changes.append(AdoptField(alias, candidate.id))
             # Adopted fields can still have drifted (renamed, options changed
             # since the orphan was created); let the normal update path fix it.
-            if _field_drifted(candidate, df.options, df.name):
+            if _field_drifted(candidate, df.options, df.name, desired_description=df.description):
                 changes.append(UpdateField(alias))
             continue
         current = snapshot.snapshot.custom_fields.get(state.fields[alias])
-        if current is None or _field_drifted(current, df.options, df.name):
+        if current is not None and current.type_id != df.type_key:
+            # A field's type cannot be edited in place; reusing the mapping
+            # would edit the wrong kind of field or 400. A type change under
+            # the same alias is a new field, and aliasing it to the old one
+            # would silently keep the old object. Recover the same way the
+            # adoption path does when the id has vanished: the user deletes
+            # or renames the Jira field, then apply re-binds or creates. (M18)
+            raise ConfigurationError(
+                f"custom field {alias!r}: mapped Jira field {current.id!r} has type "
+                f"{current.type_id!r} but the schema declares {df.type_key!r}. "
+                f"Jira cannot change a field's type in place; delete or rename the "
+                f"Jira field (or the schema), then re-run apply to re-bind or create."
+            )
+        if current is None:
+            # The tracked id is gone from Jira (hand-deleted in the UI) (M17).
+            # Emitting UpdateField against the stale id aborts identically on
+            # every run, and --allow-delete can't reach a mapping whose id
+            # Jira doesn't know either. Check for a same-name field to
+            # re-bind (the adoption scan), else create fresh; either way the
+            # stale mapping is overwritten at apply time.
+            candidate = _adoption_candidate(df, untracked_by_name, claimed_ids)
+            if candidate is None:
+                changes.append(CreateField(alias))
+            else:
+                claimed_ids.add(candidate.id)
+                changes.append(AdoptField(alias, candidate.id))
+                if _field_drifted(candidate, df.options, df.name, desired_description=df.description):
+                    changes.append(UpdateField(alias))
+            continue
+        if _field_drifted(current, df.options, df.name, desired_description=df.description):
             changes.append(UpdateField(alias))
 
     if allow_delete:
         for alias in state.fields:
             if alias not in desired.fields:
-                changes.append(DeleteField(alias))
+                if state.fields[alias] in snapshot.snapshot.custom_fields:
+                    changes.append(DeleteField(alias))
+                else:
+                    # The mapped id is already gone from Jira: the reconciliation
+                    # goal is met; only the stale bookkeeping remains. A real
+                    # DELETE would abort against the dead id on every run (M17).
+                    changes.append(DropFieldMapping(alias))
 
     for alias, dw in desired.worktypes.items():
         if alias not in state.worktypes:
@@ -311,6 +381,10 @@ async def apply_tmp_plan(
             )
         elif isinstance(change, DeleteField):
             await tmp_delete_field(ctx, change.alias)
+        elif isinstance(change, DropFieldMapping):
+            # No wire call: the mapped id is already absent from Jira.
+            ctx.state.fields.pop(change.alias, None)
+            ctx.persist()
         elif isinstance(change, CreateWorkType):
             await tmp_upsert_worktype(ctx, desired.worktypes[change.alias])
         elif isinstance(change, DeleteWorkType):

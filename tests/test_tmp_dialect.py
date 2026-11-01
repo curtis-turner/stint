@@ -22,7 +22,7 @@ from stint.dialects.jira.tmp.dialect import _gql_enum, _gql_options, _gql_or_nul
 from stint.dialects.jira.tmp.graphql import FIELDS_GATEWAY_PATH, LAYOUT_READ_PATH, GraphQLClient
 from stint.dialects.jira.tmp.internal_rest import ISSUE_LAYOUTS_PATH, SIMPLIFIED_PATH
 from stint.dialects.jira.tmp.models import TmpFieldOption, TmpLayout, TmpLayoutItem, TmpLayoutOwner
-from stint.exceptions import TmpApiError
+from stint.exceptions import TmpApiError, TransportError
 
 BASE = "https://cumulusec.atlassian.net"
 GATEWAY_URL = f"{BASE}{FIELDS_GATEWAY_PATH}"
@@ -356,7 +356,8 @@ async def test_enumerate_fields_raises_loud_on_truncation():
 
 # ── read_layout ──────────────────────────────────────────────────────────
 def _layout_response() -> dict:
-    """Shaped after the live-confirmed 2026-07-05 capture (Task work type, VM/10001)."""
+    """Shaped after the live-confirmed 2026-07-05 capture (Task work type, VM/10001),
+    updated for the `pageInfo` selections read_layout now sends (H4)."""
     return {
         "data": {
             "issueLayoutConfiguration": {
@@ -393,7 +394,8 @@ def _layout_response() -> dict:
                                         "fieldItemId": "summary",
                                         "containerPosition": 100,
                                     }
-                                ]
+                                ],
+                                "pageInfo": {"hasNextPage": False},
                             },
                         },
                         {
@@ -405,7 +407,8 @@ def _layout_response() -> dict:
                                         "fieldItemId": "assignee",
                                         "containerPosition": 100,
                                     }
-                                ]
+                                ],
+                                "pageInfo": {"hasNextPage": False},
                             },
                         },
                     ],
@@ -442,7 +445,8 @@ def _layout_response() -> dict:
                                     "operations": {"editable": False, "removable": True},
                                     "provider": {"key": "jira-platform", "name": "Jira"},
                                 },
-                            ]
+                            ],
+                            "pageInfo": {"hasNextPage": False},
                         }
                     }
                 },
@@ -492,7 +496,44 @@ async def test_read_layout_raises_when_no_current_project_owner():
     resp = _layout_response()
     resp["data"]["issueLayoutConfiguration"]["issueLayoutResult"]["usageInfo"]["edges"][0]["currentProject"] = False
     respx.post(GIRA_URL).mock(return_value=httpx.Response(200, json=resp))
-    with pytest.raises(TmpApiError, match="no currentProject edge"):
+    with pytest.raises(TmpApiError, match="no currentProject owner edge"):
+        await _dialect().read_layout(project_id="10001", issuetype_id=10007)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_read_layout_raises_on_container_truncation():
+    """A truncated item connection must fail loud (H4): write_layout is a
+    full-replacement PUT built from this read, so un-returned items would
+    silently vanish from the layout on the next apply."""
+    resp = _layout_response()
+    resp["data"]["issueLayoutConfiguration"]["issueLayoutResult"]["containers"][0]["items"]["pageInfo"][
+        "hasNextPage"
+    ] = True
+    respx.post(GIRA_URL).mock(return_value=httpx.Response(200, json=resp))
+    with pytest.raises(TmpApiError, match="hasNextPage"):
+        await _dialect().read_layout(project_id="10001", issuetype_id=10007)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_read_layout_raises_on_configuration_truncation():
+    resp = _layout_response()
+    resp["data"]["issueLayoutConfiguration"]["metadata"]["configuration"]["items"]["pageInfo"]["hasNextPage"] = True
+    respx.post(GIRA_URL).mock(return_value=httpx.Response(200, json=resp))
+    with pytest.raises(TmpApiError, match="hasNextPage"):
+        await _dialect().read_layout(project_id="10001", issuetype_id=10007)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_read_layout_raises_when_pageinfo_shape_drifts():
+    """A connection without pageInfo cannot prove it is not truncated -- a
+    shape drift must raise instead of re-opening the silent hole."""
+    resp = _layout_response()
+    del resp["data"]["issueLayoutConfiguration"]["issueLayoutResult"]["containers"][0]["items"]["pageInfo"]
+    respx.post(GIRA_URL).mock(return_value=httpx.Response(200, json=resp))
+    with pytest.raises(TmpApiError, match="no pageInfo"):
         await _dialect().read_layout(project_id="10001", issuetype_id=10007)
 
 
@@ -956,3 +997,61 @@ async def test_check_capabilities_skips_layout_check_when_no_worktypes():
     assert report.ok is True
     layout_check = next(c for c in report.checks if c.name == "layout_read")
     assert "no work types yet" in layout_check.detail
+
+
+# ── GraphQL envelope validation (M20) ────────────────────────────────
+@pytest.mark.asyncio
+@respx.mock
+async def test_graphql_client_raises_on_missing_data():
+    """A 200 body without a usable `data` object must surface as a
+    TmpApiError at the client boundary, not as a KeyError/TypeError from
+    whichever consumer unwraps it -- those previously escaped even
+    check_capabilities' friendly-report handler (except StintError)."""
+    respx.post(GATEWAY_URL).mock(return_value=httpx.Response(200, json={"errors": []}))
+    client = GraphQLClient(_client())
+    with pytest.raises(TmpApiError, match="no GraphQL `data` object"):
+        await client.query(GATEWAY_URL, query="query Q {}", operation_name="Q")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_graphql_client_raises_on_null_data():
+    respx.post(GATEWAY_URL).mock(return_value=httpx.Response(200, json={"data": None}))
+    client = GraphQLClient(_client())
+    with pytest.raises(TmpApiError, match="no GraphQL `data` object"):
+        await client.query(GATEWAY_URL, query="query Q {}", operation_name="Q")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_graphql_client_raises_on_non_object_body():
+    """A text/HTML 200 (proxy, captive portal) is rejected at the HTTP
+    layer as a TransportError; a JSON body without `data` is rejected at
+    the GraphQL layer. Either way no raw TypeError/KeyError escapes."""
+    respx.post(GATEWAY_URL).mock(return_value=httpx.Response(200, text="<html>proxy says hi</html>"))
+    client = GraphQLClient(_client())
+    with pytest.raises(TransportError, match="non-JSON response"):
+        await client.query(GATEWAY_URL, query="query Q {}", operation_name="Q")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_graphql_client_raises_on_json_body_without_data_object():
+    """A dict body without a dict `data` (e.g. shape drift to a bare
+    payload) reaches the GraphQL boundary and fails loud there (M20)."""
+    respx.post(GATEWAY_URL).mock(return_value=httpx.Response(200, json={"payload": "flat"}))
+    client = GraphQLClient(_client())
+    with pytest.raises(TmpApiError, match="no GraphQL `data` object"):
+        await client.query(GATEWAY_URL, query="query Q {}", operation_name="Q")
+
+
+# ── enumerate_fields guards an unknown project key (M20) ────────────
+@pytest.mark.asyncio
+@respx.mock
+async def test_enumerate_fields_raises_on_unknown_project_key():
+    """`jiraProjectByKey` comes back null (HTTP 200) for an unknown key;
+    the old code crashed with TypeError deep in the meta-expression."""
+    respx.post(GATEWAY_URL).mock(return_value=httpx.Response(200, json={"data": {"jira": {"jiraProjectByKey": None}}}))
+    dialect = _dialect()
+    with pytest.raises(TmpApiError, match="unknown project key"):
+        await dialect.enumerate_fields(cloud_id="cloud-1", project_key="NOPE", page_size=10)
