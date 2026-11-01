@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import dataclasses
 import warnings
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, ClassVar
 
 from stint.client.http import JiraHTTPClient
 from stint.dialects.jira import common
 from stint.exceptions import (
     ConfigurationError,
+    NotFoundError,
     PermissionError,
     ReflectionError,
     TransportError,
@@ -61,6 +62,10 @@ class JiraCloudDialect:
     FIELD_SCHEMES_SEGMENT: ClassVar[str] = "config/fieldschemes"
     # The v2 bulk endpoints cap each request at 100 top-level field ids.
     FIELD_SCHEME_BATCH_SIZE: ClassVar[int] = 100
+    # Endpoints taking a repeated ``projectId`` query filter cap it around
+    # 100 ids per request; beyond that they 400 (all reflection fails) or
+    # silently truncate (missing bindings fabricate scheme drift). (M10)
+    PROJECT_FILTER_BATCH_SIZE: ClassVar[int] = 50
 
     def __init__(self, client: JiraHTTPClient) -> None:
         self.client = client
@@ -81,6 +86,12 @@ class JiraCloudDialect:
 
     async def _server_info(self) -> ServerInfoSnapshot:
         payload = await self.client.get_json(f"{self.api_root}/serverInfo")
+        if not isinstance(payload, dict):
+            # An empty body or a non-object payload (proxy, captive portal)
+            # must raise a StintError, not an AttributeError. (M16)
+            raise ReflectionError(
+                f"{self.api_root}/serverInfo returned {type(payload).__name__} instead of a JSON object"
+            )
         return ServerInfoSnapshot(
             deployment_type=str(payload.get("deploymentType", "")),
             version=str(payload.get("version", "")),
@@ -92,16 +103,22 @@ class JiraCloudDialect:
         """Return which field-configuration API this tenant speaks.
 
         ``v2`` means Field Schemes (``/config/fieldschemes``), ``v1`` means
-        the classic field-configuration endpoints. Probed once and cached on
-        the dialect instance; pass ``force=True`` to re-probe after a
-        retired-API error.
+        the classic field-configuration endpoints. Only *positive*
+        determinations are cached on the dialect instance (H6): ``v2`` on a
+        successful probe, and ``v1`` only when the server's answer itself
+        indicates the new API is absent (404/400). Any other failure —
+        timeouts, connection errors, exhaustion of 429/503 retries, auth —
+        returns ``v1`` for this call *without caching*, so the next call
+        re-probes instead of pinning a genuine v2 tenant to retired v1
+        endpoints. Pass ``force=True`` to re-probe after a retired-API
+        error (``_probe_after_retired_error``).
 
-        A failed probe intentionally falls back to ``v1`` rather than
-        raising. Tenants that predate the Field Schemes feature flag answer
+        A failed probe still falls back to ``v1`` rather than raising:
+        tenants that predate the Field Schemes feature flag answer
         404/400 here, and a transient failure should not make every
-        field-configuration read fail. If v1 has actually been retired, the
-        create path detects the specific 400 and retries on v2 (see
-        ``_probe_after_retired_error``).
+        field-configuration read fail. If v1 has actually been retired,
+        the write paths detect the specific 400 and retry on v2 (see
+        ``_retry_v2_after_retired``).
         """
         if self._field_config_api_cache is not None and not force:
             return self._field_config_api_cache
@@ -110,11 +127,26 @@ class JiraCloudDialect:
                 f"{self.api_root}/{self.FIELD_SCHEMES_SEGMENT}",
                 params={"startAt": 0, "maxResults": 1},
             )
+        except NotFoundError:
+            # 404 = the tenant does not expose the Field Schemes API.
+            version = self.FIELD_CONFIG_API_V1
+            self._field_config_api_cache = version
+        except TransportError as exc:
+            if exc.status_code == 400:
+                # A 400 from the probe itself is a server-side answer that
+                # the API is not available here — cache v1 for this run.
+                version = self.FIELD_CONFIG_API_V1
+                self._field_config_api_cache = version
+            else:
+                # Transient/infra failure: answer v1 for this call only,
+                # without caching, so the next call re-probes (H6).
+                version = self.FIELD_CONFIG_API_V1
         except Exception:  # noqa: BLE001 - capability probes must never break a run
+            # Same rule: never cache on unexpected failures.
             version = self.FIELD_CONFIG_API_V1
         else:
             version = self.FIELD_CONFIG_API_V2
-        self._field_config_api_cache = version
+            self._field_config_api_cache = version
         return version
 
     async def _field_config_api_is_v2(self) -> bool:
@@ -252,11 +284,20 @@ class JiraCloudDialect:
             )
         return result
 
+    @staticmethod
+    def _chunked_ids(project_ids: list[str], size: int) -> list[list[str]]:
+        """Split an id list into request-sized chunks for bulk filters."""
+        return [project_ids[i : i + size] for i in range(0, len(project_ids), size)]
+
     async def _reflect_project_field_configuration_bindings(
         self,
         project_ids: list[str],
     ) -> dict[str, str]:
-        """project_id → field-scheme/configuration id map, for whichever API."""
+        """project_id → field-scheme/configuration id map, for whichever API.
+
+        The repeated ``projectId`` filter is chunked (M10): one request with
+        every id on the tenant 400s or silently truncates beyond Jira's cap.
+        """
         if not project_ids:
             return {}
         if not await self._field_config_api_is_v2():
@@ -266,15 +307,16 @@ class JiraCloudDialect:
                 scheme_key="fieldConfigurationScheme",
             )
         out: dict[str, str] = {}
-        async for entry in common.paginate(
-            self.client,
-            f"{self.api_root}/{self.FIELD_SCHEMES_SEGMENT}/projects",
-            extra_params={"projectId": [_as_api_int(pid) for pid in project_ids]},
-        ):
-            project_id = entry.get("projectId")
-            scheme_id = entry.get("schemeId")
-            if project_id is not None and scheme_id is not None:
-                out[str(project_id)] = str(scheme_id)
+        for chunk in self._chunked_ids(project_ids, self.PROJECT_FILTER_BATCH_SIZE):
+            async for entry in common.paginate(
+                self.client,
+                f"{self.api_root}/{self.FIELD_SCHEMES_SEGMENT}/projects",
+                extra_params={"projectId": [_as_api_int(pid) for pid in chunk]},
+            ):
+                project_id = entry.get("projectId")
+                scheme_id = entry.get("schemeId")
+                if project_id is not None and scheme_id is not None:
+                    out[str(project_id)] = str(scheme_id)
         return out
 
     async def _reflect_project_scheme_bindings(
@@ -289,21 +331,25 @@ class JiraCloudDialect:
         The endpoint returns ``{values: [{<scheme_key>: {id, ...}, projectIds: [...]}, ...]}``.
         Entries without ``<scheme_key>`` are treated as "no explicit binding" and skipped
         — those projects use Jira's default scheme and the ProjectSnapshot field stays None.
+
+        The repeated ``projectId`` filter is chunked and the per-chunk maps
+        merged (M10).
         """
         out: dict[str, str] = {}
-        async for entry in common.paginate(
-            self.client,
-            path,
-            extra_params={"projectId": project_ids},
-        ):
-            scheme = entry.get(scheme_key)
-            if not isinstance(scheme, dict):
-                continue
-            scheme_id = scheme.get("id")
-            if scheme_id is None:
-                continue
-            for pid in entry.get("projectIds") or []:
-                out[str(pid)] = str(scheme_id)
+        for chunk in self._chunked_ids(project_ids, self.PROJECT_FILTER_BATCH_SIZE):
+            async for entry in common.paginate(
+                self.client,
+                path,
+                extra_params={"projectId": chunk},
+            ):
+                scheme = entry.get(scheme_key)
+                if not isinstance(scheme, dict):
+                    continue
+                scheme_id = scheme.get("id")
+                if scheme_id is None:
+                    continue
+                for pid in entry.get("projectIds") or []:
+                    out[str(pid)] = str(scheme_id)
         return out
 
     # ── Screens ──────────────────────────────────────────────────────
@@ -951,11 +997,30 @@ class JiraCloudDialect:
             raise _maybe_wrap_retired_field_configuration(exc) from exc
         return _expect_id(result, f"POST {self.api_root}/fieldconfiguration")
 
+    async def _retry_v2_after_retired(
+        self,
+        exc: TransportError,
+        v2: Callable[[], Awaitable[Any]],
+    ) -> Any:
+        """Shared tail for a classic (v1) field-configuration write rejected
+        by the retired-API 400 (M15): re-probe; when the tenant actually
+        speaks Field Schemes, redo the write there; otherwise surface the
+        actionable retirement error. Every v1 write gets this, not just
+        create — a bare ``TransportError`` mid-apply leaves earlier steps
+        unrolled back.
+        """
+        if _is_retired_field_configuration_error(exc) and await self._probe_after_retired_error():
+            return await v2()
+        raise _maybe_wrap_retired_field_configuration(exc) from exc
+
     async def delete_field_configuration(self, fc_id: str) -> None:
-        if await self._field_config_api_is_v2():
-            await self.delete_field_scheme(fc_id)
+        if not await self._field_config_api_is_v2():
+            try:
+                await self.client.delete(f"{self.api_root}/fieldconfiguration/{fc_id}")
+            except TransportError as exc:
+                await self._retry_v2_after_retired(exc, lambda: self.delete_field_configuration(fc_id))
             return
-        await self.client.delete(f"{self.api_root}/fieldconfiguration/{fc_id}")
+        await self.delete_field_scheme(fc_id)
 
     async def update_field_configuration(
         self,
@@ -965,17 +1030,23 @@ class JiraCloudDialect:
         description: str | None = None,
     ) -> None:
         """Rename/re-describe a classic field configuration or a field scheme."""
-        if await self._field_config_api_is_v2():
-            await self.update_field_scheme(fc_id, name=name, description=description)
+        if not await self._field_config_api_is_v2():
+            body: dict[str, Any] = {}
+            if name is not None:
+                body["name"] = name
+            if description is not None:
+                body["description"] = description
+            if not body:
+                return
+            try:
+                await self.client.put_json(f"{self.api_root}/fieldconfiguration/{fc_id}", json=body)
+            except TransportError as exc:
+                await self._retry_v2_after_retired(
+                    exc,
+                    lambda: self.update_field_configuration(fc_id, name=name, description=description),
+                )
             return
-        body: dict[str, Any] = {}
-        if name is not None:
-            body["name"] = name
-        if description is not None:
-            body["description"] = description
-        if not body:
-            return
-        await self.client.put_json(f"{self.api_root}/fieldconfiguration/{fc_id}", json=body)
+        await self.update_field_scheme(fc_id, name=name, description=description)
 
     async def set_field_configuration_item(
         self,
@@ -986,27 +1057,39 @@ class JiraCloudDialect:
         hidden: bool = False,
         description: str = "",
     ) -> None:
-        if await self._field_config_api_is_v2():
-            await self._set_field_scheme_item(
-                fc_id,
-                field_id=field_id,
-                required=required,
-                hidden=hidden,
-                description=description,
-            )
+        if not await self._field_config_api_is_v2():
+            try:
+                await self.client.put_json(
+                    f"{self.api_root}/fieldconfiguration/{fc_id}/fields",
+                    json={
+                        "fieldConfigurationItems": [
+                            {
+                                "id": field_id,
+                                "isRequired": required,
+                                "isHidden": hidden,
+                                "description": description,
+                            }
+                        ]
+                    },
+                )
+            except TransportError as exc:
+                await self._retry_v2_after_retired(
+                    exc,
+                    lambda: self.set_field_configuration_item(
+                        fc_id,
+                        field_id=field_id,
+                        required=required,
+                        hidden=hidden,
+                        description=description,
+                    ),
+                )
             return
-        await self.client.put_json(
-            f"{self.api_root}/fieldconfiguration/{fc_id}/fields",
-            json={
-                "fieldConfigurationItems": [
-                    {
-                        "id": field_id,
-                        "isRequired": required,
-                        "isHidden": hidden,
-                        "description": description,
-                    }
-                ]
-            },
+        await self._set_field_scheme_item(
+            fc_id,
+            field_id=field_id,
+            required=required,
+            hidden=hidden,
+            description=description,
         )
 
     async def _set_field_scheme_item(
@@ -1043,20 +1126,32 @@ class JiraCloudDialect:
         name: str,
         description: str = "",
     ) -> str:
-        if await self._field_config_api_is_v2():
-            return await self.create_field_scheme(name=name, description=description)
-        body: dict[str, Any] = {"name": name, "description": description}
-        result = await self.client.post_json(
-            f"{self.api_root}/fieldconfigurationscheme",
-            json=body,
-        )
-        return _expect_id(result, f"POST {self.api_root}/fieldconfigurationscheme")
+        if not await self._field_config_api_is_v2():
+            body: dict[str, Any] = {"name": name, "description": description}
+            try:
+                result = await self.client.post_json(
+                    f"{self.api_root}/fieldconfigurationscheme",
+                    json=body,
+                )
+            except TransportError as exc:
+                result = await self._retry_v2_after_retired(
+                    exc,
+                    lambda: self.create_field_configuration_scheme(name=name, description=description),
+                )
+                # The re-entry routes to create_field_scheme, which returns
+                # the id as a plain string.
+                return str(result)
+            return _expect_id(result, f"POST {self.api_root}/fieldconfigurationscheme")
+        return await self.create_field_scheme(name=name, description=description)
 
     async def delete_field_configuration_scheme(self, scheme_id: str) -> None:
-        if await self._field_config_api_is_v2():
-            await self.delete_field_scheme(scheme_id)
+        if not await self._field_config_api_is_v2():
+            try:
+                await self.client.delete(f"{self.api_root}/fieldconfigurationscheme/{scheme_id}")
+            except TransportError as exc:
+                await self._retry_v2_after_retired(exc, lambda: self.delete_field_configuration_scheme(scheme_id))
             return
-        await self.client.delete(f"{self.api_root}/fieldconfigurationscheme/{scheme_id}")
+        await self.delete_field_scheme(scheme_id)
 
     async def update_field_configuration_scheme(
         self,
@@ -1065,20 +1160,26 @@ class JiraCloudDialect:
         name: str | None = None,
         description: str | None = None,
     ) -> None:
-        if await self._field_config_api_is_v2():
-            await self.update_field_scheme(scheme_id, name=name, description=description)
+        if not await self._field_config_api_is_v2():
+            body: dict[str, Any] = {}
+            if name is not None:
+                body["name"] = name
+            if description is not None:
+                body["description"] = description
+            if not body:
+                return
+            try:
+                await self.client.put_json(
+                    f"{self.api_root}/fieldconfigurationscheme/{scheme_id}",
+                    json=body,
+                )
+            except TransportError as exc:
+                await self._retry_v2_after_retired(
+                    exc,
+                    lambda: self.update_field_configuration_scheme(scheme_id, name=name, description=description),
+                )
             return
-        body: dict[str, Any] = {}
-        if name is not None:
-            body["name"] = name
-        if description is not None:
-            body["description"] = description
-        if not body:
-            return
-        await self.client.put_json(
-            f"{self.api_root}/fieldconfigurationscheme/{scheme_id}",
-            json=body,
-        )
+        await self.update_field_scheme(scheme_id, name=name, description=description)
 
     async def set_field_configuration_scheme_mappings(
         self,
@@ -1090,13 +1191,19 @@ class JiraCloudDialect:
 
         At least one entry must have issueTypeId == "default".
         """
-        if await self._field_config_api_is_v2():
-            await self._set_field_scheme_mappings(scheme_id, mappings=mappings)
+        if not await self._field_config_api_is_v2():
+            try:
+                await self.client.put_json(
+                    f"{self.api_root}/fieldconfigurationscheme/{scheme_id}/mapping",
+                    json={"mappings": mappings},
+                )
+            except TransportError as exc:
+                await self._retry_v2_after_retired(
+                    exc,
+                    lambda: self.set_field_configuration_scheme_mappings(scheme_id, mappings=mappings),
+                )
             return
-        await self.client.put_json(
-            f"{self.api_root}/fieldconfigurationscheme/{scheme_id}/mapping",
-            json={"mappings": mappings},
-        )
+        await self._set_field_scheme_mappings(scheme_id, mappings=mappings)
 
     async def set_project_field_configuration_scheme(
         self,
@@ -1104,15 +1211,21 @@ class JiraCloudDialect:
         project_id: str,
         scheme_id: str,
     ) -> None:
-        if await self._field_config_api_is_v2():
-            await self.associate_projects_with_field_scheme(
-                scheme_id,
-                project_ids=[project_id],
-            )
+        if not await self._field_config_api_is_v2():
+            try:
+                await self.client.put_json(
+                    f"{self.api_root}/fieldconfigurationscheme/project",
+                    json={"fieldConfigurationSchemeId": scheme_id, "projectId": project_id},
+                )
+            except TransportError as exc:
+                await self._retry_v2_after_retired(
+                    exc,
+                    lambda: self.set_project_field_configuration_scheme(project_id=project_id, scheme_id=scheme_id),
+                )
             return
-        await self.client.put_json(
-            f"{self.api_root}/fieldconfigurationscheme/project",
-            json={"fieldConfigurationSchemeId": scheme_id, "projectId": project_id},
+        await self.associate_projects_with_field_scheme(
+            scheme_id,
+            project_ids=[project_id],
         )
 
     # ── Field Schemes API (Cloud v2, /config/fieldschemes) ───────────
@@ -1126,13 +1239,21 @@ class JiraCloudDialect:
         *,
         project_ids: list[str] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        extra_params = {"projectId": [_as_api_int(pid) for pid in project_ids]} if project_ids else None
-        async for entry in common.paginate(
-            self.client,
-            self._field_schemes_path(),
-            extra_params=extra_params,
-        ):
-            yield entry
+        if not project_ids:
+            async for entry in common.paginate(
+                self.client,
+                self._field_schemes_path(),
+            ):
+                yield entry
+            return
+        # Chunked so large tenants stay within the ``projectId`` cap. (M10)
+        for chunk in self._chunked_ids(project_ids, self.PROJECT_FILTER_BATCH_SIZE):
+            async for entry in common.paginate(
+                self.client,
+                self._field_schemes_path(),
+                extra_params={"projectId": [_as_api_int(pid) for pid in chunk]},
+            ):
+                yield entry
 
     async def _all_field_ids(self) -> frozenset[str]:
         """Every system/custom field id, cached for the dialect session.
@@ -1285,17 +1406,46 @@ class JiraCloudDialect:
         Removing an association that is already absent is tolerated: Jira
         reports a per-field failure rather than a hard error, and a repeat
         apply must be a no-op.
+
+        The 200 response body carries the per-field outcome (M14), so it is
+        fetched and inspected: only "not associated" failures are tolerated
+        (that is the repeat-apply no-op); any other per-field failure is
+        reported as a warning listing the rejected field ids, because the
+        DELETE has already partially applied and the caller cannot unwind.
+        A field we asked to remove that is still associated afterwards
+        would silently keep the desired state wrong.
         """
         if not field_ids:
             return
         body = {field_id: {"schemeIds": [_as_api_int(scheme_id)]} for field_id in field_ids}
         for batch in _field_scheme_batches(body, self.FIELD_SCHEME_BATCH_SIZE):
-            try:
-                await self.client.delete(self._field_schemes_path("fields"), json=batch)
-            except TransportError as exc:
-                if exc.status_code == 400 and "not associated" in str(exc).lower():
-                    continue
-                raise
+            result = await self.client.delete_json(self._field_schemes_path("fields"), json=batch)
+            self._raise_field_removal_failures(result)
+
+    @staticmethod
+    def _raise_field_removal_failures(result: Any) -> None:
+        """Warn on per-field failures that are not the tolerated
+        ``"not associated"`` case, with the offending field ids."""
+        if not isinstance(result, list):
+            return
+        rejected: list[str] = []
+        for entry in result:
+            if not isinstance(entry, dict):
+                continue
+            field_id = str(entry.get("fieldId", ""))
+            messages = [str(m) for m in entry.get("errorMessages", [])]
+            errors = entry.get("errors") or {}
+            messages += [str(v) for v in errors.values()] if isinstance(errors, dict) else []
+            if not messages:
+                continue
+            if all("not associated" in m.lower() for m in messages):
+                continue
+            rejected.append(f"{field_id or '?'}: {'; '.join(messages)}")
+        if rejected:
+            warnings.warn(
+                "field-scheme removal partially rejected: " + "; ".join(rejected),
+                stacklevel=3,
+            )
 
     async def set_field_scheme_field_parameters(
         self,
@@ -1351,15 +1501,16 @@ class JiraCloudDialect:
         if not project_ids:
             return {}
         out: dict[str, str] = {}
-        async for entry in common.paginate(
-            self.client,
-            self._field_schemes_path("projects"),
-            extra_params={"projectId": [_as_api_int(pid) for pid in project_ids]},
-        ):
-            project_id = entry.get("projectId")
-            scheme_id = entry.get("schemeId")
-            if project_id is not None and scheme_id is not None:
-                out[str(project_id)] = str(scheme_id)
+        for chunk in self._chunked_ids(project_ids, self.PROJECT_FILTER_BATCH_SIZE):
+            async for entry in common.paginate(
+                self.client,
+                self._field_schemes_path("projects"),
+                extra_params={"projectId": [_as_api_int(pid) for pid in chunk]},
+            ):
+                project_id = entry.get("projectId")
+                scheme_id = entry.get("schemeId")
+                if project_id is not None and scheme_id is not None:
+                    out[str(project_id)] = str(scheme_id)
         return out
 
     async def search_field_scheme_projects(self, scheme_id: str) -> list[str]:
@@ -1544,10 +1695,17 @@ class JiraCloudDialect:
             "type": "subtask" if subtask else "standard",
         }
         result = await self.client.post_json(f"{self.api_root}/issuetype", json=body)
+        # A fresh work type won't be in the cached id list; without this,
+        # "visible everywhere except X" restrictions silently exclude it. (M11)
+        self._work_type_ids_cache = None
         return _expect_id(result, f"POST {self.api_root}/issuetype")
 
     async def delete_issuetype(self, issuetype_id: str) -> None:
         await self.client.delete(f"{self.api_root}/issuetype/{issuetype_id}")
+        # The cached list still holds the deleted id, which would silently
+        # appear in "all except" restrictions. Invalidate, mirroring the
+        # field-id cache reset in create_custom_field/delete_custom_field. (M11)
+        self._work_type_ids_cache = None
 
     async def update_issuetype(
         self,
@@ -1734,43 +1892,69 @@ class JiraCloudDialect:
         """Reflect all issue security schemes from the Jira instance.
 
         Returns a dict mapping scheme ID -> SecuritySchemeSnapshot.
+
+        The list endpoint never includes ``levels`` (H8), so each scheme is
+        fetched individually with the single-scheme GET which embeds them;
+        without this every reflect produced ``levels=[]`` and any declared
+        levels diffed as phantom drift forever.
         """
         result: dict[str, SecuritySchemeSnapshot] = {}
         async for entry in common.paginate(
             self.client, f"{self.api_root}/issuesecurityschemes", envelope_key="issueSecuritySchemes"
         ):
             scheme = common.parse_issue_security_scheme(entry)
+            scheme = dataclasses.replace(
+                scheme,
+                levels=list((await self._reflect_issue_security_levels(scheme.id)).values()),
+            )
             result[scheme.id] = scheme
         return result
 
     async def _reflect_issue_security_levels(self, scheme_id: str) -> dict[str, SecurityLevelSnapshot]:
         """Reflect all security levels for a given issue security scheme.
 
-        Returns a dict mapping level ID -> SecurityLevelSnapshot.
+        Returns a dict mapping level ID -> SecurityLevelSnapshot, in the
+        order the scheme lists them.
+
+        The list endpoint omits ``levels`` entirely, so this uses the
+        single-scheme GET (``GET /issuesecurityschemes/{id}``), whose
+        payload embeds them; a level without inline ``members`` falls back
+        to the level-member endpoint (H8).
         """
         result: dict[str, SecurityLevelSnapshot] = {}
-        # Query: GET /rest/api/3/issuesecurityschemes/level?id=<scheme_id>
-        payload = await self.client.get_json(
-            f"{self.api_root}/issuesecurityschemes/level",
-            params={"id": [scheme_id]},
-        )
-        for level in payload.get("values", []):
-            members: list[SecurityLevelMemberSnapshot] = []
-            for m in level.get("members", []):
-                holder = m.get("holder", {})
-                m_type = holder.get("type", "unknown")
-                members.append(
-                    SecurityLevelMemberSnapshot(
-                        id=str(m.get("id", "")),
-                        type=m_type,
-                        name=str(holder.get("name", "")),
-                    )
+        payload = await self.client.get_json(f"{self.api_root}/issuesecurityschemes/{scheme_id}")
+        if not isinstance(payload, dict):
+            raise ReflectionError(
+                f"GET {self.api_root}/issuesecurityschemes/{scheme_id} returned "
+                f"{type(payload).__name__} instead of a scheme payload"
+            )
+        for level_entry in payload.get("levels") or []:
+            if not isinstance(level_entry, dict):
+                raise ReflectionError(
+                    f"GET {self.api_root}/issuesecurityschemes/{scheme_id} included "
+                    f"a non-object level entry: {str(level_entry)[:200]!r}"
                 )
-            result[level["id"]] = SecurityLevelSnapshot(
-                id=str(level["id"]),
-                name=str(level["name"]),
-                description=str(level.get("description", "")),
-                is_default=level.get("isDefault", False),
+            level_id = str(level_entry.get("id", ""))
+            raw_members = level_entry.get("members")
+            if raw_members is None:
+                members_by_id = await self._reflect_issue_security_level_members(scheme_id, level_id)
+                members = list(members_by_id.values())
+            else:
+                members = []
+                for m in raw_members:
+                    holder = m.get("holder", {}) if isinstance(m, dict) else {}
+                    members.append(
+                        SecurityLevelMemberSnapshot(
+                            id=str(m.get("id", "")),
+                            type=str(holder.get("type", "unknown")),
+                            name=str(holder.get("name", "")),
+                        )
+                    )
+            result[level_id] = SecurityLevelSnapshot(
+                id=level_id,
+                name=str(level_entry.get("name", "")),
+                description=str(level_entry.get("description", "")),
+                is_default=level_entry.get("isDefault", False),
                 members=tuple(members),
             )
         return result
@@ -1789,12 +1973,21 @@ class JiraCloudDialect:
             f"{self.api_root}/issuesecurityschemes/level/member",
             params={"schemeId": scheme_id, "levelId": level_id},
         )
+        if not isinstance(payload, dict):
+            raise ReflectionError(
+                f"GET {self.api_root}/issuesecurityschemes/level/member returned "
+                f"{type(payload).__name__} instead of an envelope"
+            )
         for member in payload.get("values", []):
+            if not isinstance(member, dict):
+                raise ReflectionError(
+                    f"security level {level_id!r} of scheme {scheme_id!r} included "
+                    f"a non-object member entry: {str(member)[:200]!r}"
+                )
             holder = member.get("holder", {})
-            m_type = holder.get("type", "unknown")
-            result[member.get("id", "")] = SecurityLevelMemberSnapshot(
+            result[str(member.get("id", ""))] = SecurityLevelMemberSnapshot(
                 id=str(member.get("id", "")),
-                type=m_type,
+                type=str(holder.get("type", "unknown")),
                 name=str(holder.get("name", "")),
             )
         return result
@@ -1818,7 +2011,10 @@ class JiraCloudDialect:
         if levels:
             body["levels"] = levels
         result = await self.client.post_json(f"{self.api_root}/issuesecurityschemes", json=body)
-        return str(result["id"])
+        # The only create in this dialect that parsed `result["id"]` raw: an
+        # empty 2xx body would crash with AttributeError and leave the scheme
+        # created but untracked. Use the shared validator (M16).
+        return _expect_id(result, f"POST {self.api_root}/issuesecurityschemes")
 
     async def update_issue_security_scheme(
         self, scheme_id: str, *, name: str | None = None, description: str | None = None
