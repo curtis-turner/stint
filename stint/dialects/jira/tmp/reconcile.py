@@ -14,6 +14,7 @@ design record this implements.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 
 from stint.dialects.jira.tmp.desired import TmpDesired, TmpDesiredField, TmpDesiredWorkType
@@ -242,6 +243,20 @@ def _layout_drifted(current: TmpLayout, desired: TmpDesiredWorkType, desired_fie
     return current_custom_ids != desired_field_ids
 
 
+def _patch_renamed_items(layout: TmpLayout, renamed: dict[str, str]) -> TmpLayout:
+    """Patch layout items carrying a name renamed earlier in the same apply
+    run (L26): ``tmp_set_layout`` builds a full-replacement PUT and the
+    server echoes ``data.name`` back, so a pre-rename item name would
+    reinstate the old display name in the layout UI."""
+    if not renamed:
+        return layout
+    patched = tuple(
+        dataclasses.replace(item, name=renamed[item.field_id]) if item.field_id in renamed else item
+        for item in layout.items
+    )
+    return dataclasses.replace(layout, items=patched)
+
+
 def plan_tmp(
     desired: TmpDesired,
     snapshot: TmpSnapshot,
@@ -361,6 +376,7 @@ async def apply_tmp_plan(
     ctx: TmpApplyContext, changes: list[TmpChange], desired: TmpDesired, snapshot: TmpSnapshot
 ) -> None:
     """Execute a plan produced by ``plan_tmp``, in a safe (already-sorted) order."""
+    renamed: dict[str, str] = {}  # field_id -> post-rename name (L26)
     for change in changes:
         if isinstance(change, CreateField):
             await tmp_upsert_field(ctx, desired.fields[change.alias], current_field_id=None)
@@ -379,6 +395,11 @@ async def apply_tmp_plan(
                 current_field_id=current_id,
                 current_options=current.options if current else None,
             )
+            # L26: remember the rename so the SetLayout written below (phase
+            # 2) does not push the *pre-rename* item name — a stale
+            # ``data.name`` the server would echo back, making the rename
+            # self-defeating in the layout.
+            renamed[current_id] = desired.fields[change.alias].name
         elif isinstance(change, DeleteField):
             await tmp_delete_field(ctx, change.alias)
         elif isinstance(change, DropFieldMapping):
@@ -400,7 +421,7 @@ async def apply_tmp_plan(
                 ctx,
                 change.alias,
                 desired.worktypes[change.alias],
-                current_layout,
+                _patch_renamed_items(current_layout, renamed),
                 snapshot=snapshot,
                 desired_all=desired,
             )

@@ -21,6 +21,10 @@ class Screen:
     name: str
     fields: list[ScreenFieldRef] = field(default_factory=list)
     description: str = ""
+    # Module that created this Screen (recorded by Registry.register_screen
+    # via frame inspection); scoped autogenerate uses it to keep
+    # declared-but-unreferenced screens in scope (M5).
+    _declared_module: str = field(default="", repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.alias:
@@ -42,6 +46,8 @@ class ScreenScheme:
     edit: Screen
     view: Screen
     description: str = ""
+    # Declaring module for scoped autogenerate (see Screen._declared_module).
+    _declared_module: str = field(default="", repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.alias:

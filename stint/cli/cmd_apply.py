@@ -137,7 +137,13 @@ async def apply(
         # stale by the time we hold it, and the whole-file saves below would
         # clobber whatever another process applied in between.
         with StateLock(state):
-            state_file = StateFile.load(state_path) if state_path.exists() else StateFile(env=env, jira_url=base_url)
+            if state_path.exists():
+                state_file = StateFile.load(state_path)
+                # Refuse a tenant/env mismatch (M7) — same wrong-tenant hazard
+                # as the migration paths.
+                state_file.validate_target(env=env, jira_url=base_url, state_path=state_path)
+            else:
+                state_file = StateFile(env=env, jira_url=base_url)
             tmp_state = (
                 from_project_state(state_file.tmp_projects[project_key])
                 if project_key in state_file.tmp_projects
@@ -194,11 +200,13 @@ def _make_persist(
 
     Each successful op calls this; if the plan crashes halfway through,
     every change that already wrote to Jira is also on disk in
-    ``state_file.tmp_projects[project_key]``. A retry sees those ids in
-    ``tmp_state.fields``/``worktypes``/``layout_ids`` and skips them; a
+    ``state_file.tmp_projects[project_key]``. A retry sees the field and
+    work-type ids in ``tmp_state.fields``/``worktypes`` and skips them; a
     later ``--allow-delete`` run can target anything left orphaned from a
-    previous attempt. Fields orphaned before this checkpoint existed are
-    adopted by name/type on the next plan, then become deletable normally.
+    previous attempt. (``layout_ids`` is persisted for diagnostics only; a
+    layout write always re-reads the id.) Fields orphaned before any
+    checkpoint existed are adopted by name/type on the next plan, then
+    become deletable normally.
 
     ``to_project_state`` is passed in (rather than imported here) so this
     helper stays at module scope while the TMP package import itself

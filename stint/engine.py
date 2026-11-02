@@ -156,8 +156,14 @@ def create_engine(
     # about ``object.__init__()`` (no positional args). The cast is local
     # to the registry indirection -- the runtime call is correct.
     dialect_cls = cast("Callable[[JiraHTTPClient], CmpDialect]", _CMP_DIALECT_REGISTRY[chosen])
-    dialect_obj = dialect_cls(client)
-    return Engine(base_url=base_url, dialect=dialect_obj, client=client)
+    try:
+        dialect_obj = dialect_cls(client)
+        return Engine(base_url=base_url, dialect=dialect_obj, client=client)
+    except Exception:
+        # L9: a dialect/engine construction failure must not strand the
+        # freshly constructed httpx pool (ResourceWarning on GC).
+        client.close_sync()
+        raise
 
 
 def create_tmp_engine(
@@ -180,7 +186,13 @@ def create_tmp_engine(
     from stint.dialects.jira.tmp.dialect import TmpDialect  # deferred: see module docstring
 
     client = JiraHTTPClient(base_url, auth=auth, verify_ssl=verify_ssl, timeout=timeout)
-    return TmpEngine(base_url=base_url, dialect=TmpDialect(client), client=client)
+    try:
+        return TmpEngine(base_url=base_url, dialect=TmpDialect(client), client=client)
+    except Exception:
+        # L9: see create_engine — close the unused pool on any construction
+        # failure instead of leaving it to a ResourceWarning.
+        client.close_sync()
+        raise
 
 
 def _split_dialect_prefix(url: str) -> tuple[str, str | None]:
@@ -193,3 +205,15 @@ def _split_dialect_prefix(url: str) -> tuple[str, str | None]:
         return url, None
     dialect, _, scheme = head.partition("+")
     return f"{scheme}://{tail}", dialect
+
+
+def base_url_of(url: str) -> str:
+    """The Jira base URL to record in the state file's ``jira_url`` (M9).
+
+    Strips a dialect prefix (``jira_cloud+https://you.atlassian.net`` →
+    ``https://you.atlassian.net``) so the recorded value never carries a
+    dialect tag. Some state writers used to persist the prefixed form while
+    ``cmd_apply`` persisted the bare URL, so state files disagreed with each
+    other and deep links built from ``jira_url`` on error paths were invalid.
+    """
+    return _split_dialect_prefix(url)[0]

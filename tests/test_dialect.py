@@ -30,19 +30,12 @@ def _paginated(values: list[Any]) -> dict[str, Any]:
 
 
 def _paginated_security_schemes(values: list[Any]) -> dict[str, Any]:
-    """Single-page response shape used by Get Issues Security Schemes endpoint.
+    """Bare response shape of GET /issuesecurityschemes (Cloud v3 docs).
 
-    The endpoint carries pagination metadata even though this shape does not
-    use standard "values" pagination -- without `isLast` a non-empty page
-    would loop forever in `paginate` (the bug, incidentally, that fixed the
-    B2-era mocked shape)."""
-    return {
-        "issueSecuritySchemes": values,
-        "maxResults": 50,
-        "startAt": 0,
-        "total": len(values),
-        "isLast": True,
-    }
+    No ``startAt``/``isLast`` -- the endpoint is not paginated. It must not
+    go through ``common.paginate`` (page-2 requests are ignored; a fake
+    metadata-bearing helper body here hid that for tests)."""
+    return {"issueSecuritySchemes": values}
 
 
 def _stub_empty_admin(mock: respx.MockRouter, root: str = CLOUD_ROOT) -> None:
@@ -78,6 +71,8 @@ def _stub_empty_admin(mock: respx.MockRouter, root: str = CLOUD_ROOT) -> None:
     mock.get(f"{root}/issuesecurityschemes").mock(
         return_value=httpx.Response(200, json=_paginated_security_schemes([]))
     )
+    # Project→scheme binding lookup (part of project reflection).
+    mock.get(f"{root}/issuesecurityschemes/project").mock(return_value=httpx.Response(200, json=_paginated([])))
 
 
 # ── reflect(): custom fields ──────────────────────────────────────────

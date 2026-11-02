@@ -2,10 +2,12 @@
 
 import os
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
 from stint import StateFile, StateFileCorruptError, StateFileWriteError
+from stint.exceptions import ConfigurationError
 from stint.state.file import CustomFieldMapping, ProjectMapping, ScreenMapping, SimpleMapping
 
 
@@ -182,3 +184,145 @@ def test_empty_mapping_sections_omitted_from_yaml():
     parsed = StateFile.from_yaml(text)
     assert parsed.custom_fields == {}
     assert parsed.projects == {}
+
+
+# ── validate_target: env/connection mismatch refusal (M7) ─────────────
+def test_validate_target_refuses_env_mismatch(tmp_path):
+    sf = StateFile(env="prod", jira_url="https://jira.example.com")
+    with pytest.raises(ConfigurationError) as e:
+        sf.validate_target(env="dev", jira_url="https://jira.example.com", state_path=tmp_path / "dev.yaml")
+    assert "records env 'prod'" in str(e.value)
+    assert "dev.yaml" in str(e.value)
+
+
+def test_validate_target_refuses_url_mismatch(tmp_path):
+    sf = StateFile(env="dev", jira_url="https://jira.example.com")
+    with pytest.raises(ConfigurationError) as e:
+        sf.validate_target(env="dev", jira_url="https://other.example.com", state_path=tmp_path / "s.yaml")
+    assert "https://jira.example.com" in str(e.value)
+    assert "https://other.example.com" in str(e.value)
+
+
+def test_validate_target_tolerates_prefix_and_trailing_slash(tmp_path):
+    """Pre-M9 files may record a dialect-prefixed URL, and trailing slashes
+    vary with how the env config spelled the URL. Neither is a mismatch."""
+    sf = StateFile(env="dev", jira_url="jira_cloud+https://jira.example.com")
+    sf.validate_target(env="dev", jira_url="https://jira.example.com/", state_path=tmp_path / "s.yaml")  # no raise
+    sf.validate_target(env="dev", jira_url="https://jira.example.com", state_path=tmp_path / "s.yaml")
+
+
+# ── M8: corrupt/incomplete state files raise StateFileCorruptError ────
+def test_missing_top_level_keys_raise_corrupt_not_keyerror():
+    """A state file missing `env`/`jira_url` used to escape from_yaml as a
+    bare KeyError (a raw traceback, not a StintError). (M8)"""
+    for text in ("schema_version: 1\n", "env: dev\n", "jira_url: https://x\n"):
+        with pytest.raises(StateFileCorruptError) as e:
+            StateFile.from_yaml(text)
+        msg = str(e.value)
+        assert "state file is corrupt" in msg
+        assert "missing required key" in msg
+
+
+def test_missing_mapping_id_raises_corrupt_with_path():
+    """The corruption message must name the exact path: which mapping kind
+    and which alias — not a bare 'id' from an unnamed dict."""
+    text = "schema_version: 1\nenv: dev\njira_url: https://x\nmappings:\n  custom_fields:\n    sev: {}\n"
+    with pytest.raises(StateFileCorruptError) as e:
+        StateFile.from_yaml(text)
+    assert "mappings.custom_fields['sev']" in str(e.value)
+    assert "'id'" in str(e.value)
+
+
+def test_missing_project_mapping_id_raises_corrupt_with_path():
+    """ProjectMapping.from_dict is its own class-level path (M8)."""
+    text = "schema_version: 1\nenv: dev\njira_url: https://x\nmappings:\n  projects:\n    PLAT: {style: team-managed}\n"
+    with pytest.raises(StateFileCorruptError) as e:
+        StateFile.from_yaml(text)
+    assert "mappings.projects['PLAT']" in str(e.value)
+
+
+def test_non_mapping_entry_raises_corrupt_with_path():
+    """A mapping entry whose value is a scalar is corruption too — and must
+    not escape as a TypeError from `key not in raw`."""
+    text = "schema_version: 1\nenv: dev\njira_url: https://x\nmappings:\n  issuetypes:\n    bug: 10001\n"
+    with pytest.raises(StateFileCorruptError) as e:
+        StateFile.from_yaml(text)
+    assert "mappings.issuetypes['bug'] must be a mapping, got int" in str(e.value)
+
+
+def test_non_mapping_tmp_project_state_raises_corrupt():
+    from stint.state.file import TmpProjectState
+
+    with pytest.raises(StateFileCorruptError) as e:
+        TmpProjectState.from_dict(cast("dict[str, Any]", "nope"), where="mappings.tmp_projects['VM']")
+    assert "mappings.tmp_projects['VM'] must be a mapping, got str" in str(e.value)
+
+
+def test_corrupt_state_file_cli_reports_stint_error(tmp_path, monkeypatch, capsys):
+    """End to end: upgrade against a truncated state file exits 1 with the
+    friendly message, not a raw KeyError traceback."""
+    from stint.cli.main import main
+
+    monkeypatch.setenv("STINT_TOKEN", "tok")
+    mig_dir = tmp_path / "migrations"
+    mig_dir.mkdir()
+    (mig_dir / "a.py").write_text(
+        "revision = 'r1'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
+    )
+    state_path = tmp_path / "state.yaml"
+    state_path.write_text("schema_version: 1\n", encoding="utf-8")  # env/jira_url missing
+    rc = main(
+        [
+            "upgrade",
+            "--migrations-dir",
+            str(mig_dir),
+            "--state",
+            str(state_path),
+            "--env",
+            "dev",
+            "--url",
+            "jira_cloud+https://jira.example.com",
+            "--auth",
+            "pat",
+        ]
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "missing required key" in err
+    assert "KeyError" not in err
+
+
+# ── Snapshots are honestly immutable (L17) ───────────────────────────
+def test_snapshot_dict_fields_reject_mutation():
+    """frozen=True snapshots carried plain dicts (shallow immutability):
+    an in-place mutation silently poisoned later comparisons in the same
+    run. The mapping fields are now read-only views."""
+    from types import MappingProxyType
+
+    from stint.state.snapshot import (
+        CustomFieldSnapshot,
+        FieldConfigurationItemSnapshot,
+        FieldConfigurationSnapshot,
+        ScreenSchemeSnapshot,
+    )
+
+    cf = CustomFieldSnapshot(id="customfield_9", name="Severity", type_id="select", options={"S1": "1"})
+    opts = cast("dict[str, str]", cf.options)
+    with pytest.raises(TypeError):
+        opts["S2"] = "2"
+    assert isinstance(cf.options, MappingProxyType)
+    # Consumers keep comparing against plain dicts.
+    assert cf.options == {"S1": "1"}
+
+    ss = ScreenSchemeSnapshot(id="1", name="S", mappings={"default": "10"})
+    ss_maps = cast("dict[str, str]", ss.mappings)
+    with pytest.raises(TypeError):
+        ss_maps["create"] = "11"
+
+    fc = FieldConfigurationSnapshot(
+        id="1", name="F", items={"summary": FieldConfigurationItemSnapshot(field_id="summary")}
+    )
+    fc_items = cast("dict[str, FieldConfigurationItemSnapshot]", fc.items)
+    with pytest.raises(TypeError):
+        fc_items["customfield_9"] = FieldConfigurationItemSnapshot(field_id="customfield_9")

@@ -42,6 +42,7 @@ from stint.dialects.jira.tmp.reconcile import (
     TmpAmbiguousFieldError,
     TmpChange,
     UpdateField,
+    _patch_renamed_items,
     apply_tmp_plan,
     find_untracked_fields,
     plan_tmp,
@@ -634,6 +635,46 @@ async def test_tmp_set_layout_attaches_distinct_subsets_to_multiple_new_worktype
         )
         for alias, wt_id in worktype_ids.items()
     }
+    # The template-hunt reads sibling layouts (L25: a read failure now
+    # propagates instead of being swallowed), so mock the read POST with a
+    # valid layout carrying no custom items.
+    respx.post(GIRA_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "issueLayoutConfiguration": {
+                        "__typename": "JiraIssueLayoutConfigurationResult",
+                        "issueLayoutResult": {
+                            "id": "layout-sibling",
+                            "name": "Sibling",
+                            "usageInfo": {
+                                "edges": [
+                                    {
+                                        "currentProject": True,
+                                        "node": {
+                                            "layoutOwners": [
+                                                {
+                                                    "__typename": "JiraIssueLayoutIssueTypeOwner",
+                                                    "id": "10008",
+                                                    "name": "Other",
+                                                    "description": "",
+                                                    "avatarId": "1",
+                                                    "iconUrl": "x",
+                                                }
+                                            ]
+                                        },
+                                    }
+                                ]
+                            },
+                            "containers": [],
+                        },
+                        "metadata": {"configuration": {"items": {"nodes": [], "pageInfo": {"hasNextPage": False}}}},
+                    }
+                }
+            },
+        )
+    )
 
     for alias in subsets:
         await tmp_set_layout(
@@ -1280,3 +1321,50 @@ async def test_upsert_worktype_sends_deterministic_external_uuid():
 
     body = json.loads(create_route.calls.last.request.content)
     assert body["externalUuid"] == _worktype_external_uuid("proj-uuid-1", "bug")
+
+
+# ── L26: same-run rename must reach the layout write ─────────────────
+def test_patch_renamed_items_updates_stale_names_in_layout():
+    """SetLayout is a full-replacement PUT and the server echoes data.name
+    back; a rename earlier in the same run must patch the item name or the
+    layout reinstates the old display name."""
+    item_old = TmpLayoutItem(
+        field_id="customfield_1",
+        key="customfield_1",
+        name="Old Name",
+        type_key=SelectField.jira_type_id,
+        custom=True,
+        global_=False,
+        required=False,
+        section="primary",
+        position=0,
+        external_uuid="u1",
+        description="",
+        operations={},
+        provider={},
+    )
+    other = TmpLayoutItem(
+        field_id="customfield_2",
+        key="customfield_2",
+        name="Untouched",
+        type_key=SelectField.jira_type_id,
+        custom=True,
+        global_=False,
+        required=False,
+        section="primary",
+        position=100,
+        external_uuid="u2",
+        description="",
+        operations={},
+        provider={},
+    )
+    layout = TmpLayout(
+        layout_id="l1",
+        owner=TmpLayoutOwner(id="10007", name="Bug", description="", avatar_id="1", icon_url="x"),
+        items=(item_old, other),
+    )
+    patched = _patch_renamed_items(layout, {"customfield_1": "New Name"})
+    names = {i.field_id: i.name for i in patched.items}
+    assert names == {"customfield_1": "New Name", "customfield_2": "Untouched"}
+    # Patchless ids are the original objects (positions untouched).
+    assert patched.items[1] is other

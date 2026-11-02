@@ -18,7 +18,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from stint.autogen.desired import (
-    DesiredCustomField,
     DesiredSnapshot,
 )
 
@@ -45,6 +44,7 @@ class CreateCustomField(Change):
     type_id: str
     description: str
     options: tuple[str, ...]
+    searcher_key: str = ""
 
 
 @dataclass
@@ -52,6 +52,7 @@ class UpdateCustomField(Change):
     alias: str
     name: str | None = None
     description: str | None = None
+    searcher_key: str | None = None
 
 
 @dataclass
@@ -244,6 +245,11 @@ class DeleteFieldConfigurationScheme(Change):
     alias: str
 
 
+@dataclass
+class DeleteIssueSecurityScheme(Change):
+    alias: str
+
+
 # Projects
 @dataclass
 class CreateProject(Change):
@@ -278,6 +284,66 @@ class SetProjectIssueTypeScreenScheme(Change):
 @dataclass
 class SetProjectFieldConfigurationScheme(Change):
     project_alias: str
+    scheme_alias: str
+
+
+@dataclass
+class SetProjectIssueSecurityScheme(Change):
+    project_alias: str
+    scheme_alias: str
+
+
+# Issue security schemes
+@dataclass
+class CreateIssueSecurityScheme(Change):
+    alias: str
+    name: str
+    description: str
+    levels: tuple[tuple[str, str, str], ...]  # (alias, name, description), declaration order
+    default_level: str | None  # level alias; applied inline as isDefault on create
+
+
+@dataclass
+class UpdateIssueSecurityScheme(Change):
+    alias: str
+    name: str | None = None
+    description: str | None = None
+
+
+@dataclass
+class AddSecurityLevel(Change):
+    scheme_alias: str
+    level_alias: str
+    level_name: str
+    description: str = ""
+    is_default: bool = False
+
+
+@dataclass
+class AddSecurityLevelMember(Change):
+    scheme_alias: str
+    level_alias: str
+    member_type: str  # "user" or "group"
+    member_value: str  # group name, user email, or raw accountId
+
+
+@dataclass
+class SetDefaultSecurityLevel(Change):
+    scheme_alias: str
+    level_alias: str
+
+
+@dataclass
+class ClearDefaultSecurityLevel(Change):
+    """Reset a scheme's default level to *none*.
+
+    Jira then creates issues with no issue-security level, which — unlike a
+    level with no members — is visible to everyone who can browse the
+    project. Needed because "remove the default" has no schema spelling
+    other than ``default_level=None``; before this, a declared default could
+    be set but never unset, so every new issue stayed locked behind it.
+    """
+
     scheme_alias: str
 
 
@@ -327,6 +393,7 @@ def diff(
     _diff_itss(r, desired, snapshot, state, allow_delete)
     _diff_fcs(r, desired, snapshot, state, allow_delete)
     _diff_projects(r, desired, snapshot, state, allow_delete)
+    _diff_security_schemes(r, desired, snapshot, state, allow_delete)
     return r
 
 
@@ -338,6 +405,12 @@ def _diff_custom_fields(
     state: StateFile,
     allow_delete: bool,
 ) -> None:
+    """Diff desired custom fields against reflection.
+
+    Field comments: ``POST /field`` ignores the ``description`` parameter
+    (only name/type/searcherKey), so the create op applies the description
+    via the documented ``PUT /field/{id}`` right after creating; that makes
+    fresh fields match the schema immediately, no phantom re-emission."""
     for alias, want in desired.custom_fields.items():
         if alias not in state.custom_fields:
             r.changes.append(
@@ -347,6 +420,7 @@ def _diff_custom_fields(
                     type_id=want.type_id,
                     description=want.description,
                     options=want.options,
+                    searcher_key=want.searcher_key,
                 )
             )
             continue
@@ -360,17 +434,23 @@ def _diff_custom_fields(
             continue
         # Attribute diff
         name_change = want.name if actual.name != want.name else None
-        desc_change = (
-            want.description
-            if actual.type_id and want.description != "" and not _descriptions_match(actual, want)
+        desc_change = want.description if actual.description != want.description else None
+        # A field with no searcher (search template None) can be written and
+        # read but never used in JQL. Repair it when the reflected value is
+        # missing or different. Only compare when the declaration has one, so
+        # an unknown type never emits a no-op churn update.
+        searcher_change = (
+            want.searcher_key
+            if want.searcher_key and actual.searcher_key is not None and actual.searcher_key != want.searcher_key
             else None
         )
-        if name_change is not None or desc_change is not None:
+        if name_change is not None or desc_change is not None or searcher_change is not None:
             r.changes.append(
                 UpdateCustomField(
                     alias=alias,
                     name=name_change,
                     description=desc_change,
+                    searcher_key=searcher_change,
                 )
             )
         # Option diff (additions / removals)
@@ -403,13 +483,6 @@ def _diff_custom_fields(
             state.custom_fields,
             desired.custom_fields,
         )
-
-
-def _descriptions_match(actual: Any, want: DesiredCustomField) -> bool:
-    """CustomFieldSnapshot doesn't carry description; treat as match.
-    This is a known gap: description drift in Jira can't be detected from
-    reflection. Updates that only change description are no-ops until then."""
-    return True  # snapshot has no description field
 
 
 # ── Issue types ──────────────────────────────────────────────────────
@@ -499,10 +572,19 @@ def _diff_screens(
                     description=desc_change,
                 )
             )
-        # Note: tab/field changes on existing screens are NOT diffed in 0.1.
-        # The Snapshot.screens[id].tabs use Jira IDs but want.tabs use aliases —
-        # the comparison requires bidirectional id↔alias resolution that adds
-        # complexity without changing the common case. Documented gap.
+        # L21: tab/field membership of existing screens used to be a silent
+        # gap ("no changes detected" while members had drifted). Op-level
+        # membership updates are still not emitted (op surface has no
+        # remove-reorder path), but checkable drift must not go unreported:
+        # warn naming every declared field absent from the reflected screen.
+        missing = _missing_screen_fields(want, actual, state)
+        if missing:
+            r.warnings.append(
+                f"screen {alias!r}: declared field(s) {', '.join(missing)} "
+                f"are not on the reflected screen in Jira; membership changes "
+                f"are not emitted — add them in the Jira UI, delete and "
+                f"recreate the screen, or edit its migration by hand"
+            )
 
     if allow_delete:
         for alias in sorted(state.screens):
@@ -779,6 +861,17 @@ def _diff_field_configurations(
                 f"field_configuration {alias!r}: state references id {existing_id!r} but it's not present in Jira"
             )
             continue
+        # L21: FC item changes of existing configurations used to be a
+        # silent gap. Op-level item updates for existing FCs still need an
+        # alias→field_id round-trip, but checkable drift must be reported:
+        # required/hidden flags and missing declared items.
+        item_drift = _field_configuration_item_drift(want, actual, state)
+        if item_drift:
+            r.warnings.append(
+                f"field_configuration {alias!r}: {item_drift}; item changes "
+                f"on existing configurations are not emitted — set them in "
+                f"the Jira UI or edit the migration by hand"
+            )
         name_change = want.name if actual.name != want.name else None
         desc_change = want.description if actual.description != want.description else None
         if name_change is not None or desc_change is not None:
@@ -844,6 +937,13 @@ def _diff_projects(
                         scheme_alias=want.field_configuration_scheme,
                     )
                 )
+            if want.security_scheme is not None:
+                r.changes.append(
+                    SetProjectIssueSecurityScheme(
+                        project_alias=alias,
+                        scheme_alias=want.security_scheme,
+                    )
+                )
             continue
         # Existing project — name/lead/description diff.
         existing_id = state.projects[alias].id
@@ -871,6 +971,12 @@ def _diff_projects(
         # with a hand-written migration. (#7 follow-up)
         if name_change is not None:
             r.changes.append(UpdateProject(alias=alias, name=name_change))
+        # L21: description drift used to be silently undetectable because
+        # ProjectSnapshot carried no description; /project/search provides
+        # it now. Team-managed snapshots leave description "" (lives in the
+        # work-type, not PUT /project), so skips there.
+        if actual.description != want.description and state.projects[alias].style != "team-managed":
+            r.changes.append(UpdateProject(alias=alias, description=want.description))
         # Scheme rebinds when the project's actual binding drifts from desired.
         # Skip when the desired scheme alias isn't yet in state — the create-
         # side change emits the binding for newly-created schemes.
@@ -898,6 +1004,14 @@ def _diff_projects(
             actual_id=actual.field_configuration_scheme_id,
             change_cls=SetProjectFieldConfigurationScheme,
         )
+        _maybe_emit_set_scheme(
+            r,
+            project_alias=alias,
+            desired_scheme=want.security_scheme,
+            state_table=state.security_schemes,
+            actual_id=actual.issue_security_scheme_id,
+            change_cls=SetProjectIssueSecurityScheme,
+        )
 
     if allow_delete:
         for alias in sorted(state.projects):
@@ -907,6 +1021,134 @@ def _diff_projects(
                 r.changes.append(DeleteProject(alias=alias, key=key))
     else:
         _warn_orphans(r, "project", state.projects, desired.projects)
+
+
+# ── Issue security schemes ───────────────────────────────────────────
+def _diff_security_schemes(
+    r: DiffResult,
+    desired: DesiredSnapshot,
+    snapshot: Snapshot,
+    state: StateFile,
+    allow_delete: bool,
+) -> None:
+    for alias, want in desired.security_schemes.items():
+        if want.project is not None and want.project not in desired.projects:
+            r.warnings.append(
+                f"security_scheme {alias!r}: link target project {want.project!r} "
+                f"is not a declared Project key; the associate op will fail until "
+                f"the schema declares it (Project alias is authoritative)."
+            )
+        if alias not in state.security_schemes:
+            r.changes.append(
+                CreateIssueSecurityScheme(
+                    alias=alias,
+                    name=want.name,
+                    description=want.description,
+                    levels=tuple((lv.alias, lv.name, lv.description) for lv in want.levels),
+                    default_level=want.default_level,
+                )
+            )
+            # The binding for an existing project fires on the project side
+            # (`_diff_projects` → _maybe_emit_set_scheme), which covers both
+            # a pending scheme (phase-ordered create → bind) and a drifted
+            # one; a newly-created project binds on its own create path.
+            continue
+        mapping = state.security_schemes[alias]
+        actual = snapshot.security_schemes.get(mapping.id)
+        if actual is None:
+            r.warnings.append(
+                f"security_scheme {alias!r}: state references id {mapping.id!r} "
+                f"but it's not present in Jira (out-of-band delete?)"
+            )
+            continue
+        name_change = want.name if actual.name != want.name else None
+        desc_change = want.description if actual.description != want.description else None
+        if name_change is not None or desc_change is not None:
+            r.changes.append(UpdateIssueSecurityScheme(alias=alias, name=name_change, description=desc_change))
+        # Level diff (adds only; level/member removal is destructive and is
+        # hand-written in a migration).
+        actual_by_id = {lv.id: lv for lv in actual.levels}
+        actual_by_name = {lv.name: lv for lv in actual.levels}
+        for level in want.levels:
+            want_id = mapping.level_ids.get(level.alias)
+            found = actual_by_id.get(want_id) if want_id else None
+            if found is None:
+                # State has no stored id (fresh create) or it drifted: match
+                # by name, which Jira keeps unique within a scheme.
+                found = actual_by_name.get(level.name)
+            if found is None:
+                r.changes.append(
+                    AddSecurityLevel(
+                        scheme_alias=alias,
+                        level_alias=level.alias,
+                        level_name=level.name,
+                        description=level.description,
+                        is_default=level.is_default,
+                    )
+                )
+                continue
+            # Member adds against an existing level. Recorded member_values
+            # are the resolved parameters the op already sent (idempotency
+            # anchor for email→accountId resolution); reflection supplies
+            # holder.parameter for everything else.
+            recorded = set(mapping.member_values.get(level.alias, []))
+            actual_params = {m.parameter: m.type for m in found.members if m.parameter}
+            for member in level.members:
+                if member.value in recorded:
+                    continue
+                if actual_params.get(member.value) is not None:
+                    continue
+                r.changes.append(
+                    AddSecurityLevelMember(
+                        scheme_alias=alias,
+                        level_alias=level.alias,
+                        member_type=member.type,
+                        member_value=member.value,
+                    )
+                )
+        # Default-level drift on an existing scheme.
+        _diff_security_default_level(r, want, actual, mapping)
+
+    if allow_delete:
+        for alias in sorted(state.security_schemes):
+            if alias not in desired.security_schemes:
+                r.changes.append(DeleteIssueSecurityScheme(alias=alias))
+    else:
+        _warn_orphans(r, "security_scheme", state.security_schemes, desired.security_schemes)
+
+
+def _diff_security_default_level(
+    r: DiffResult,
+    want: Any,
+    actual: Any,
+    mapping: Any,
+) -> None:
+    """Emit Set/ClearDefaultSecurityLevel when the default drifts.
+
+    The desired designation resolves through stored level ids first (exact
+    once-applied reality), then through the reflected scheme's level names —
+    a fresh scheme's ids aren't in state until the create op captures them,
+    and name matching (unique per scheme) substitutes safely.
+
+    ``default_level=None`` means "no default": new issues get no security
+    level and are visible to anyone who can browse the project. A live
+    default left behind from an earlier schema (or set in the Jira UI) must
+    be cleared explicitly — leaving it makes every issue the data plane
+    creates invisible to JQL and to ``GET /issue`` (live tenant, 2026-11).
+    """
+    if not actual.levels:
+        return
+    if want.default_level is None:
+        if actual.default_security_level_id is not None:
+            r.changes.append(ClearDefaultSecurityLevel(scheme_alias=want.alias))
+        return
+    want_level_id = mapping.level_ids.get(want.default_level)
+    if want_level_id is None:
+        match = next((lv for lv in actual.levels if lv.name.lower() == want.default_level.lower()), None)
+        want_level_id = match.id if match else None
+    if not want_level_id or actual.default_security_level_id == want_level_id:
+        return
+    r.changes.append(SetDefaultSecurityLevel(scheme_alias=want.alias, level_alias=want.default_level))
 
 
 def _resolve_project_key(
@@ -931,21 +1173,21 @@ def _maybe_emit_set_scheme(
     change_cls: type,
 ) -> None:
     """Emit a SetProject*Scheme change when the existing project's binding
-    drifts from what the schema declares.
+    differs from what the schema declares.
 
-    Skipped (no-op) when:
-      - the schema doesn't declare a scheme for this project (nothing to bind)
-      - the desired scheme alias isn't in state yet (it's being created in the
-        same migration; the create-side handles the binding)
-      - the actual binding already matches the desired one (in-sync)
-    """
+    Skipped only when the binding is already in sync. When the desired
+    scheme's alias is not yet in state (it's being created in the same
+    migration, by a lower-phase op), the RE-BIND still must fire: this is the
+    brownfield path (a Project that already exists in Jira gains a new
+    scheme), and here no create-side change will ever emit the binding that
+    a brand-new project's create path emits. Phase ordering guarantees the
+    create op runs (and records its id in state) before the binding op
+    resolves it at apply time."""
     if desired_scheme is None:
         return
     desired_mapping = state_table.get(desired_scheme)
-    if desired_mapping is None:
-        return
-    if actual_id == desired_mapping.id:
-        return
+    if actual_id is not None and desired_mapping is not None and actual_id == desired_mapping.id:
+        return  # in-sync
     r.changes.append(change_cls(project_alias=project_alias, scheme_alias=desired_scheme))
 
 
@@ -1021,3 +1263,48 @@ def _warn_orphans(
                 f"{type_name} {alias!r} is in state but not in schema. "
                 f"Re-run with --allow-delete to drop, or restore it to the schema."
             )
+
+
+def _missing_screen_fields(
+    want: Any,
+    actual: Any,
+    state: StateFile,
+) -> list[str]:
+    """L21 helper: declared screen fields (aliases) whose resolved Jira field
+    id appears on no tab of the reflected screen. Resolution goes through
+    state (custom-field alias → id); anything else is treated as a Jira
+    field id directly (system fields are addressed by name)."""
+    actual_fields: set[str] = set()
+    for tab in actual.tabs:
+        actual_fields.update(tab.fields)
+    missing: list[str] = []
+    for tab in want.tabs:
+        for ref in tab.field_refs:
+            mapping = state.custom_fields.get(ref)
+            field_id = mapping.id if mapping is not None else ref
+            if field_id not in actual_fields:
+                missing.append(f"{ref!r} ({field_id!r})")
+    return missing
+
+
+def _field_configuration_item_drift(
+    want: Any,
+    actual: Any,
+    state: StateFile,
+) -> str | None:
+    """L21 helper for existing field configurations: describe declared-item
+    drift that reflection can see but the diff cannot act on (op-level item
+    updates for existing FCs need an alias→field_id round-trip)."""
+    problems: list[str] = []
+    for item in want.items:
+        mapping = state.custom_fields.get(item.field_alias)
+        field_id = mapping.id if mapping is not None else item.field_alias
+        existing = actual.items.get(field_id)
+        if existing is None:
+            problems.append(f"declared item {item.field_alias!r} ({field_id!r}) is not in the Jira configuration")
+        elif existing.required != item.required or existing.hidden != item.hidden:
+            problems.append(
+                f"item {item.field_alias!r} (required={existing.required}, hidden={existing.hidden}) "
+                f"drifts from the schema (required={item.required}, hidden={item.hidden})"
+            )
+    return "; ".join(problems) or None

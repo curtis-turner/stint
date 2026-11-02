@@ -24,10 +24,10 @@ from stint.state.snapshot import (
 @pytest.fixture(autouse=True)
 def _isolate_registry():
     registry.reset()
-    sys.modules.pop("examples.company_managed.platform", None)
+    sys.modules.pop("examples.company_managed.platform_schema", None)
     yield
     registry.reset()
-    sys.modules.pop("examples.company_managed.platform", None)
+    sys.modules.pop("examples.company_managed.platform_schema", None)
 
 
 def _empty_snapshot() -> Snapshot:
@@ -55,6 +55,34 @@ def test_stamp_matches_custom_field_by_name():
     report = stamp(state, snap)
     assert ("custom_field", "bug_severity", "customfield_10042") in report.matched
     assert state.custom_fields["bug_severity"].id == "customfield_10042"
+
+
+def test_stamp_ambiguous_display_name_is_skipped_with_both_ids():
+    """L20: Jira does not enforce global display-name uniqueness; the
+    name-keyed dict was last-wins, binding stamp to an arbitrary duplicate
+    with no skipped entry. Ambiguous names are now reported and not stamped."""
+    from stint.fields import CustomField
+
+    CustomField(alias="bug_severity", name="Severity", type=TextField)
+    state = StateFile(env="dev", jira_url="x")
+    snap = _empty_snapshot()
+    snap.custom_fields["customfield_10042"] = CustomFieldSnapshot(
+        id="customfield_10042",
+        name="Severity",
+        type_id=TextField.jira_type_id,
+    )
+    snap.custom_fields["customfield_10421"] = CustomFieldSnapshot(
+        id="customfield_10421",
+        name="Severity",  # second Jira object with the same display name
+        type_id=TextField.jira_type_id,
+    )
+    report = stamp(state, snap)
+    assert report.unmatched == []
+    assert state.custom_fields == {}  # nothing was stamped
+    conflict_entries = [s for s in report.skipped if s[1] == "bug_severity"]
+    assert len(conflict_entries) == 1
+    reason = conflict_entries[0][2]
+    assert "customfield_10042" in reason and "customfield_10421" in reason
 
 
 def test_stamp_matches_select_field_with_options():
@@ -98,7 +126,7 @@ def test_stamp_matches_screen_and_populates_tab_ids():
 
 
 def test_stamp_matches_project_by_key():
-    import examples.company_managed.platform  # noqa: F401
+    import examples.company_managed.platform_schema  # noqa: F401
 
     state = StateFile(env="dev", jira_url="x")
     snap = _empty_snapshot()
@@ -149,7 +177,7 @@ def test_stamp_skips_if_alias_already_mapped_to_different_id():
 
 # ── Derived schemes (ITSS/FCS by synthesized name) ──────────────────
 def test_stamp_matches_derived_itss_by_synthesized_name():
-    import examples.company_managed.platform  # noqa: F401
+    import examples.company_managed.platform_schema  # noqa: F401
 
     state = StateFile(env="dev", jira_url="x")
     snap = _empty_snapshot()
@@ -188,7 +216,7 @@ def test_stamp_issuetype_ignores_project_scoped_same_name():
 def test_stamp_matches_derived_issuetype_scheme_by_synthesized_name():
     """The derived IssueTypeScheme must be stamped too, else autogenerate keeps
     re-emitting create_issuetype_scheme after a clean stamp."""
-    import examples.company_managed.platform  # noqa: F401
+    import examples.company_managed.platform_schema  # noqa: F401
 
     state = StateFile(env="dev", jira_url="x")
     snap = _empty_snapshot()
@@ -326,6 +354,7 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
     respx.get(f"{CLOUD_ROOT}/issuesecurityschemes").mock(
         return_value=httpx.Response(200, json={"issueSecuritySchemes": []})
     )
+    respx.get(f"{CLOUD_ROOT}/issuesecurityschemes/project").mock(return_value=httpx.Response(200, json=_paginated([])))
 
     state_path = tmp_path / "state.yaml"
     monkeypatch.setenv("STINT_TOKEN", "tok")
@@ -333,7 +362,7 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
         [
             "stamp",
             "--schema",
-            "examples.company_managed.platform",
+            "examples.company_managed.platform_schema",
             "--state",
             str(state_path),
             "--env",
@@ -375,7 +404,7 @@ def test_cli_stamp_refuses_when_state_lock_held(tmp_path, monkeypatch, capsys):
         [
             "stamp",
             "--schema",
-            "examples.company_managed.platform",
+            "examples.company_managed.platform_schema",
             "--state",
             str(state_path),
             "--env",

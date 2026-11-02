@@ -39,6 +39,18 @@ RETRYABLE_STATUSES = (429, 503)
 IDEMPOTENT_METHODS = ("GET", "PUT", "DELETE", "HEAD")
 
 
+def _default_user_agent() -> str:
+    """``stint/<version>``, matching the installed release.
+
+    Imported lazily: ``stint/__init__`` (which defines ``__version__``)
+    imports the query layer, which imports this module — a top-level
+    ``from stint import __version__`` here would be a circular import.
+    """
+    from stint import __version__
+
+    return f"stint/{__version__}"
+
+
 class JiraHTTPClient:
     """Async HTTP client for a single Jira base URL."""
 
@@ -49,7 +61,7 @@ class JiraHTTPClient:
         *,
         verify_ssl: bool = True,
         timeout: float = 30.0,
-        user_agent: str = "stint/0.1",
+        user_agent: str | None = None,
         max_retries: int = 3,
         backoff_base: float = 0.5,
     ) -> None:
@@ -59,7 +71,10 @@ class JiraHTTPClient:
             auth=auth.to_httpx_auth(),
             verify=verify_ssl,
             timeout=timeout,
-            headers={"User-Agent": user_agent, "Accept": "application/json"},
+            headers={
+                "User-Agent": user_agent if user_agent is not None else _default_user_agent(),
+                "Accept": "application/json",
+            },
         )
         self._max_retries = max_retries
         self._backoff_base = backoff_base
@@ -143,31 +158,56 @@ class JiraHTTPClient:
     async def close(self) -> None:
         await self._client.aclose()
 
+    def close_sync(self) -> None:
+        """Synchronously close the underlying pool — for paths that cannot
+        ``await close()``, i.e. a constructor failure before any request ran.
+
+        No loop-scoped state exists at that point (no request has run, the
+        pool was never bound to a loop), so driving ``aclose()`` through a
+        dedicated event loop is safe. Inside an already-running loop there is
+        nothing to free synchronously: the pool has not opened any transport
+        yet, and is left for the running loop's owner (or GC) as before.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self._client.aclose())
+
     async def __aenter__(self) -> JiraHTTPClient:
         return self
 
     async def __aexit__(self, *_: object) -> None:
         await self.close()
 
+    def _display_url(self, url: httpx.URL) -> str:
+        """Endpoint identity for error messages, minus the query string.
+
+        The path names the failed call; echoing the full query string would
+        leak request parameters into logs/tracebacks — including PII such as
+        a user's email passed to account-search endpoints as ``?query=``.
+        """
+        return str(url).split("?", 1)[0]
+
     def _unwrap(self, response: httpx.Response, *, expect_json: bool = True) -> Any:
         status = response.status_code
+        url = self._display_url(response.request.url)
         if status == 401:
-            raise AuthenticationError(f"401 from {response.request.url}: {response.text[:200]}")
+            raise AuthenticationError(f"401 from {url}: {response.text[:200]}")
         if status == 403:
             raise PermissionError(
-                f"403 from {response.request.url}: likely insufficient permission. "
+                f"403 from {url}: likely insufficient permission. "
                 f"Admin endpoints typically require Jira Site Admin or Org Admin."
             )
         if status == 404:
-            raise NotFoundError(f"404 from {response.request.url}")
+            raise NotFoundError(f"404 from {url}")
         if 500 <= status < 600:
             raise TransportError(
-                f"{status} from {response.request.url}: {response.text[:200]}",
+                f"{status} from {url}: {response.text[:200]}",
                 status_code=status,
             )
         if status >= 400:
             raise TransportError(
-                f"{status} from {response.request.url}: {response.text[:200]}",
+                f"{status} from {url}: {response.text[:200]}",
                 status_code=status,
             )
         if not expect_json:
@@ -180,6 +220,6 @@ class JiraHTTPClient:
             # Captive portals, proxies, or a wrong base_url can answer 2xx
             # with HTML/text. Surface it as a StintError, not a raw traceback.
             raise TransportError(
-                f"non-JSON response from {response.request.url}: {response.text[:200]}",
+                f"non-JSON response from {url}: {response.text[:200]}",
                 status_code=status,
             ) from exc

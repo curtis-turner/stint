@@ -10,7 +10,7 @@ from cyclopts import Parameter
 from stint.cli.app import app
 from stint.cli.cmd_reflect import _build_auth
 from stint.cli.env_config import require_resolved_connection, resolve_connection
-from stint.engine import create_engine
+from stint.engine import base_url_of, create_engine
 from stint.migrations.loader import load_migrations
 from stint.migrations.runner import downgrade as run_downgrade
 from stint.migrations.runner import upgrade as run_upgrade
@@ -153,7 +153,10 @@ def history(*, migrations_dir: Annotated[str, Parameter(help="Path to the migrat
     """List all migrations in revision order."""
     graph = load_migrations(migrations_dir)
     for m in graph.all_ordered():
-        parent = m.down_revision[:8] if m.down_revision else "(base)"
+        # Merge migrations carry a tuple of parents; slicing a tuple prints
+        # full IDs in parenthesis — normalize through .parents() (L16).
+        parents = m.parents()
+        parent = ", ".join(p[:8] for p in parents) if parents else "(base)"
         print(f"{m.revision[:8]}  parent={parent}  {m.description}")
     return 0
 
@@ -161,5 +164,12 @@ def history(*, migrations_dir: Annotated[str, Parameter(help="Path to the migrat
 def _load_or_init_state(path: str, *, env: str, jira_url: str) -> StateFile:
     p = Path(path)
     if p.exists():
-        return StateFile.load(p)
-    return StateFile(env=env, jira_url=jira_url)
+        state_file = StateFile.load(p)
+        # Refuse a tenant/env mismatch (M7): this file's id mappings belong
+        # to the recorded tenant; running other tenants with them can create
+        # or clobber the wrong project objects.
+        state_file.validate_target(env=env, jira_url=jira_url, state_path=p)
+        return state_file
+    # Record the base URL without any dialect prefix (M9), matching what
+    # cmd_apply writes — prefixed urls make deep links and env checks wrong.
+    return StateFile(env=env, jira_url=base_url_of(jira_url))

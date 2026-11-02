@@ -12,9 +12,12 @@
 
 Session owns a private asyncio event loop and runs AsyncSession on it. The
 engine's httpx client binds to that loop on first I/O, so by default closing
-the Session also closes the engine — pass ``close_engine=False`` to keep the
-engine alive (rare: typically the next Session needs a fresh engine anyway,
-since the http client cannot outlive its loop).
+the Session also closes the engine. ``close_engine=False`` keeps the engine's
+client *open* — but its connection pool stays bound to the Session's now-closed
+loop, so the pool can never serve I/O again: a later ``Session(engine, ...)``
+raises a precise error, not a raw httpx ``RuntimeError``. The only thing
+``close_engine=False`` enables is closing the engine yourself afterwards via
+``asyncio.run(engine.close())``.
 
 Refuses to construct inside a running event loop. Inside async code, use
 AsyncSession directly.
@@ -53,6 +56,19 @@ class Session:
         else:
             raise RuntimeError(
                 "Session cannot be created inside a running event loop. Use AsyncSession directly in async code."
+            )
+        if getattr(engine, "_pool_loop_orphaned", False):
+            # L12: a previous Session with close_engine=False died with the
+            # engine's connection pool still bound to its (now closed) loop.
+            # Any further I/O on that pool raises a raw
+            # ``RuntimeError: Event loop is closed`` from inside httpx — say
+            # so here instead of letting that escape at first request time.
+            raise RuntimeError(
+                "this engine's connection pool was bound to a Session that "
+                "used close_engine=False, whose event loop is now closed. "
+                "The pool cannot serve I/O again on a new loop. Its client "
+                "can still be closed with asyncio.run(engine.close()); to "
+                "keep using synchronous sessions, create a fresh engine."
             )
         self._loop = asyncio.new_event_loop()
         self._async = AsyncSession(engine, state)
@@ -94,6 +110,12 @@ class Session:
         try:
             if self._close_engine:
                 self._loop.run_until_complete(self._engine.close())
+            else:
+                # L12: the engine survives, but its connection pool's loop
+                # does not — every pooled connection is now unusable. Record
+                # that so future Sessions raise a precise error instead of
+                # ``RuntimeError: Event loop is closed`` from inside httpx.
+                self._engine._pool_loop_orphaned = True  # ty: ignore[unresolved-attribute]
         finally:
             self._loop.close()
 

@@ -37,10 +37,10 @@ CLOUD_ROOT = f"{BASE}/rest/api/3"
 @pytest.fixture(autouse=True)
 def _isolate_registry():
     registry.reset()
-    sys.modules.pop("examples.company_managed.platform", None)
+    sys.modules.pop("examples.company_managed.platform_schema", None)
     yield
     registry.reset()
-    sys.modules.pop("examples.company_managed.platform", None)
+    sys.modules.pop("examples.company_managed.platform_schema", None)
 
 
 def _cloud_engine() -> Engine:
@@ -96,10 +96,22 @@ def test_session_close_engine_false_keeps_engine_open():
     asyncio.run(engine.close())
 
 
+def test_session_after_close_engine_false_gives_a_clear_error():
+    """L12: the pool is bound to the closed private loop; further sync
+    Sessions used to raise ``RuntimeError: Event loop is closed`` from
+    inside httpx — now they get a precise message instead."""
+    engine = _cloud_engine()
+    session = Session(engine, _platform_state(), close_engine=False)
+    session.close()
+    asyncio.run(engine.close())
+    with pytest.raises(RuntimeError, match="close_engine=False"):
+        Session(engine, _platform_state())
+
+
 # ── Reads ────────────────────────────────────────────────────────────
 @respx.mock
 def test_session_get_returns_hydrated_instance():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     respx.get(f"{CLOUD_ROOT}/issue/PLAT-7").mock(
         return_value=httpx.Response(
@@ -124,7 +136,7 @@ def test_session_get_returns_hydrated_instance():
 
 @respx.mock
 def test_session_get_returns_none_on_404():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     respx.get(f"{CLOUD_ROOT}/issue/MISSING-1").mock(return_value=httpx.Response(404))
     with Session(_cloud_engine(), _platform_state()) as session:
@@ -133,7 +145,7 @@ def test_session_get_returns_none_on_404():
 
 @respx.mock
 def test_session_scalars_round_trip():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     respx.post(f"{CLOUD_ROOT}/search/jql").mock(
         return_value=httpx.Response(
@@ -162,7 +174,7 @@ def test_session_scalars_round_trip():
 
 @respx.mock
 def test_session_identity_map_preserved():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
         return_value=httpx.Response(
@@ -188,7 +200,7 @@ def test_session_identity_map_preserved():
 # ── Writes ───────────────────────────────────────────────────────────
 @respx.mock
 def test_session_add_and_commit_inserts_issue():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     respx.post(f"{CLOUD_ROOT}/issue").mock(return_value=httpx.Response(201, json={"id": "10000", "key": "PLAT-100"}))
     bug = p.Bug(summary="boom", reporter="alice", severity="S2")
@@ -204,7 +216,7 @@ def test_session_add_and_commit_inserts_issue():
 
 @respx.mock
 def test_session_dirty_update_commits_only_changed_fields():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
         return_value=httpx.Response(
@@ -236,7 +248,7 @@ def test_session_dirty_update_commits_only_changed_fields():
 
 @respx.mock
 def test_session_partial_commit_raises():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     # First insert succeeds, second fails with 400.
     respx.post(f"{CLOUD_ROOT}/issue").mock(

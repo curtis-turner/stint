@@ -194,3 +194,32 @@ def test_history_lists_migrations_in_order(capsys):
     assert out.index("abc123de") < out.index("def789gh")
     assert "initial bug severity" in out
     assert "add root cause" in out
+
+
+def test_history_renders_merge_parents_without_slicing_tuples(capsys, tmp_path):
+    """L16: a merge migration's tuple down_revision used to be sliced like a
+    string, printing full IDs in parentheses."""
+
+    mig_dir = tmp_path / "migrations"
+    mig_dir.mkdir()
+    (mig_dir / "a.py").write_text(
+        "revision = 'a_rev_1111'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
+    )
+    (mig_dir / "b.py").write_text(
+        "revision = 'b_rev_2222'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
+    )
+    (mig_dir / "m.py").write_text(
+        "revision = 'm_rev_3333'\n"
+        "down_revision = ('a_rev_1111', 'b_rev_2222')\n"
+        "async def upgrade(): pass\n"
+        "async def downgrade(): pass\n",
+        encoding="utf-8",
+    )
+    rc = main(["history", "--migrations-dir", str(mig_dir)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Parents are truncated to 8 chars, never printed as full tuple IDs.
+    merge_line = next(line for line in out.splitlines() if line.startswith("m_rev"))
+    assert merge_line == "m_rev_33  parent=a_rev_11, b_rev_22  m"

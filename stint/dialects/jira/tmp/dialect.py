@@ -716,10 +716,20 @@ class TmpDialect:
                 f"project {project_key!r} is {style!r}, not TEAM_MANAGED_PROJECT; "
                 "the TMP dialect only supports team-managed projects"
             )
+        uuid = proj.get("uuid")
+        if not uuid:
+            # L28: accepting a missing uuid as "" pushed the failure all the
+            # way to create_worktype as an opaque 400 (projectUuid: "");
+            # projectStyle is already validated hard above, so validate this
+            # identifier with the same rigor.
+            raise TmpApiError(
+                f"project {project_key!r} did not report a uuid in the "
+                f"resolve response (got {proj!r}); work-type creation needs it"
+            )
         return TmpProjectContext(
             cloud_id=cloud_id,
             project_id=str(proj["projectId"]),
-            project_uuid=str(proj.get("uuid", "")),
+            project_uuid=str(uuid),
             key=str(proj.get("key", project_key)),
             name=str(proj.get("name", "")),
         )
