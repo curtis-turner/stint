@@ -155,6 +155,39 @@ async def test_cloud_select_options_fetched_via_default_context():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_cloud_field_search_expands_searcher_key():
+    """``searcherKey`` is an expandable attribute of ``GET /field/search``:
+    without ``expand=searcherKey`` the listing omits it, so every field
+    reflected with an empty searcher and the diff re-emitted each declared
+    searcher as a phantom update on every revision — even though the earlier
+    PUT had succeeded and Jira was in sync."""
+    _stub_empty(respx.mock)
+    route = respx.get(f"{CLOUD_ROOT}/field/search").mock(
+        return_value=httpx.Response(
+            200,
+            json=_paginated(
+                [
+                    {
+                        "id": "customfield_10503",
+                        "name": "Env",
+                        "schema": {"custom": "com.atlassian.jira.plugin.system.customfieldtypes:textfield"},
+                        "searcherKey": "com.atlassian.jira.plugin.system.customfieldtypes:textsearcher",
+                    },
+                ]
+            ),
+        )
+    )
+    async with _cloud_engine() as eng:
+        snap = await eng.reflect()
+    assert snap.custom_fields["customfield_10503"].searcher_key == (
+        "com.atlassian.jira.plugin.system.customfieldtypes:textsearcher"
+    )
+    for call in route.calls:
+        assert call.request.url.params.get("expand") == "searcherKey"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_cloud_select_field_without_context_yields_empty_options():
     """Defensive: a select field with no contexts at all (edge case) is allowed."""
     _stub_empty(respx.mock)

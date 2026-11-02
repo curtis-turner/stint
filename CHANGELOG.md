@@ -6,7 +6,21 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-01
+
 ### Fixed
+
+- `stint reflect` (and YAML/JSON printing of any snapshot) no longer crashes
+  with `TypeError: cannot pickle 'mappingproxy' object`: snapshots freeze
+  mapping fields as `MappingProxyType`, which `dataclasses.asdict` cannot
+  deepcopy; the serializer now decodes dataclasses field-by-field.
+- `stint revision --autogenerate` no longer re-emits
+  `update_custom_field(searcher_key=...)` on every run. `GET /field/search`
+  only returns `searcherKey` when the request lists it under `expand`, so
+  reflection saw every field with an empty searcher and diffed each declared
+  searcher as phantom drift — even though Jira was in sync. The reflect
+  request now sends `expand=searcherKey`, and my earlier PUTs had actually
+  applied correctly all along.
 
 - `stint revision --autogenerate` no longer re-emits
   `add_issue_security_level_member` for user members declared as emails on
