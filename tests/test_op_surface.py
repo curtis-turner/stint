@@ -47,11 +47,11 @@ async def _run_in_ctx(
     engine: Engine,
     state: StateFile,
     body: Callable[[], Awaitable[object]],
-) -> None:
+) -> object:
     ctx = MigrationContext(engine=engine, state=state, direction="upgrade")
     token = set_context(ctx)
     try:
-        await body()
+        return await body()
     finally:
         reset_context(token)
 
@@ -1255,6 +1255,49 @@ async def test_add_issue_security_level_member_group_and_user():
     members = state.security_schemes["bug_security"].member_values["level-internal"]
     # Declared member value resolution #  resolved accounts recorded, not emails.
     assert members == ["jira-admins", "5b10ac8b86e24b0016d46e0f"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_add_issue_security_level_member_email_rerun_is_idempotent():
+    """A re-run of a member declared as an email must stop before the wire:
+    state records the resolved accountId, so the declared email never
+    matches it directly — the op previously fell through, re-resolved, and
+    re-sent the add, which Jira rejected with "member already exists" once
+    the member was in place."""
+    user_search = respx.get(f"{CLOUD_ROOT}/user/search").mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"accountId": "5b10ac8b86e24b0016d46e0f", "emailAddress": "user@example.com"}],
+        )
+    )
+    put = respx.put(f"{CLOUD_ROOT}/issuesecurityschemes/sc-9/level/10022/member").mock(return_value=httpx.Response(204))
+    state = StateFile(env="dev", jira_url=BASE)
+    from stint.state.file import SecuritySchemeMapping
+
+    state.security_schemes["bug_security"] = SecuritySchemeMapping(
+        id="sc-9",
+        level_ids={"level-internal": "10022"},
+        # The very same member, recorded under its resolved accountId:
+        member_values={"level-internal": ["5b10ac8b86e24b0016d46e0f"]},
+    )
+    engine = _cloud_engine()
+    try:
+        returned = await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.add_issue_security_level_member(
+                scheme_alias="bug_security",
+                level_alias="level-internal",
+                member_type="user",
+                member_value="user@example.com",
+            ),
+        )
+    finally:
+        await engine.close()
+    assert returned == "5b10ac8b86e24b0016d46e0f"
+    assert len(user_search.calls) == 1  # resolved, then recognized in state
+    assert len(put.calls) == 0  # no duplicate add sent
 
 
 @pytest.mark.asyncio

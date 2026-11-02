@@ -37,9 +37,7 @@ severity_field = CustomField(
     description="Bug severity classification",
     options=["S1", "S2", "S3", "S4"],
 )
-root_cause_field = CustomField(
-    alias="bug_root_cause", name="Root Cause", type=TextField
-)
+root_cause_field = CustomField(alias="bug_root_cause", name="Root Cause", type=TextField)
 
 # Screens: strings are system field names, CustomField instances
 # are your declared fields.
@@ -140,12 +138,13 @@ The emitted file looks like:
 revision = "20241001_120000"
 down_revision = None
 
+
 async def upgrade():
     await op.create_custom_field(...)
     ...
 
-async def downgrade():
-    ...
+
+async def downgrade(): ...
 ```
 
 !!! note
@@ -174,6 +173,7 @@ import asyncio
 from stint import APITokenAuth, StateFile, create_engine
 from stint.query import AsyncSession, or_, select
 
+
 async def main():
     engine = create_engine(
         "jira_cloud+https://you.atlassian.net",
@@ -187,26 +187,21 @@ async def main():
     async with AsyncSession(engine, state) as session:
         # Insert
         bug = schema.Bug(summary="Crash on save", severity="S1")
-        session.add(bug)              # project inferred from the schema
+        session.add(bug)  # project inferred from the schema
         results = await session.commit()
-        print(bug.key)                # e.g. PLAT-123, populated on commit
+        print(bug.key)  # e.g. PLAT-123, populated on commit
 
         # Read one by key (hydrates custom fields via the state file)
         first = await session.get(schema.Bug, bug.key, fresh=True)
 
         # Filtered query — compiles to JQL under the hood
         s1 = await session.scalars(
-            select(schema.Bug)
-            .where(schema.Bug.c.severity == "S1")
-            .order_by(schema.Bug.c.created, "DESC")
-            .limit(10)
+            select(schema.Bug).where(schema.Bug.c.severity == "S1").order_by(schema.Bug.c.created, "DESC").limit(10)
         )
 
         # or-combined predicates
         urgent = await session.scalars(
-            select(schema.Bug).where(
-                or_(schema.Bug.c.severity == "S2", schema.Bug.c.severity == "S1")
-            )
+            select(schema.Bug).where(or_(schema.Bug.c.severity == "S2", schema.Bug.c.severity == "S1"))
         )
 
         # Update: PUT sends only changed fields
@@ -218,6 +213,7 @@ async def main():
         await session.commit()
 
     await engine.close()
+
 
 asyncio.run(main())
 ```

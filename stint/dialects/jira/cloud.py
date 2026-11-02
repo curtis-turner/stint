@@ -2025,7 +2025,13 @@ class JiraCloudDialect:
                 )
             level_id = str(level_entry.get("id", ""))
             raw_members = level_entry.get("members")
-            if raw_members is None:
+            # Fallback not only when the key is absent but also when it is an
+            # empty list: Jira strips inline ``members`` on GETs it computes
+            # elsewhere, and treating that as "the level has no members"
+            # hides them from the diff, which then re-emits member adds that
+            # Jira rejects as duplicates. A genuinely memberless level
+            # costs one extra GET that returns an empty page.
+            if not raw_members:
                 members_by_id = await self._reflect_issue_security_level_members(scheme_id, level_id)
                 members = list(members_by_id.values())
             else:
@@ -2059,26 +2065,32 @@ class JiraCloudDialect:
     ) -> dict[str, SecurityLevelMemberSnapshot]:
         """Reflect all members for a given security level.
 
-        Returns a dict mapping member ID -> SecurityLevelMemberSnapshot.
+        Returns a dict mapping member ID -> SecurityLevelMemberSnapshot, keyed
+        with a synthetic placeholder for entries that carry no ``id``.
+
+        The member endpoint is a paginated ``PageBeanSecurityLevelMember``, so
+        it must go through ``paginate`` — a single page silently truncates and
+        the diff invents phantom member adds for everything past the cut.
         """
         result: dict[str, SecurityLevelMemberSnapshot] = {}
-        payload = await self.client.get_json(
+        page = 0
+        async for member in common.paginate(
+            self.client,
             f"{self.api_root}/issuesecurityschemes/level/member",
-            params={"schemeId": scheme_id, "levelId": level_id},
-        )
-        if not isinstance(payload, dict):
-            raise ReflectionError(
-                f"GET {self.api_root}/issuesecurityschemes/level/member returned "
-                f"{type(payload).__name__} instead of an envelope"
-            )
-        for member in payload.get("values", []):
+            extra_params={"schemeId": scheme_id, "levelId": level_id},
+        ):
             if not isinstance(member, dict):
                 raise ReflectionError(
                     f"security level {level_id!r} of scheme {scheme_id!r} included "
                     f"a non-object member entry: {str(member)[:200]!r}"
                 )
             holder = member.get("holder", {})
-            result[str(member.get("id", ""))] = SecurityLevelMemberSnapshot(
+            # Members without an "id" (observed on some holder types, e.g.
+            # parameterless ones) must not collapse onto one " " key — last
+            # one wins would truncate the member list.
+            member_id = str(member.get("id", "")) or f"idx-{page}"
+            page += 1
+            result[member_id] = SecurityLevelMemberSnapshot(
                 id=str(member.get("id", "")),
                 type=str(holder.get("type", "unknown")),
                 name=str(holder.get("name", "")),
@@ -2202,10 +2214,21 @@ class JiraCloudDialect:
             body = {"members": [{"parameter": member_id_or_name, "type": "group"}]}
         else:
             raise ValueError(f"Invalid member_type: {member_type!r}. Expected 'user' or 'group'.")
-        await self.client.put_json(
-            f"{self.api_root}/issuesecurityschemes/{scheme_id}/level/{level_id}/member",
-            json=body,
-        )
+        try:
+            await self.client.put_json(
+                f"{self.api_root}/issuesecurityschemes/{scheme_id}/level/{level_id}/member",
+                json=body,
+            )
+        except TransportError as exc:
+            # A member already in the level (added out-of-band, or by a run
+            # that crashed between the PUT and the state persist) makes re-runs
+            # 400 with this exact body. That member is present, so swallowing
+            # the call turns a mixed-scheme upgrade into a no-op instead of an
+            # abort that would repeat forever — state can never record a call
+            # that raises, and the diff would re-emit the add each revision.
+            if _is_duplicate_member_400(exc):
+                return
+            raise
 
     async def remove_issue_security_level_member(
         self,
@@ -2329,6 +2352,37 @@ def _is_retired_field_configuration_error(exc: TransportError) -> bool:
         return False
     body = exc.args[0]
     return all(hint in body for hint in _RETIRED_FC_HINTS)
+
+
+def _is_duplicate_member_400(exc: TransportError) -> bool:
+    """True for the exact 400 Jira returns when re-adding a security-level
+    member that is already in the level: ``{"errorMessages": ["Issue
+    security scheme level member with the type user already exists."],
+    "errors": {}}``.
+
+    Conservative like ``_parameter_denials_are_tolerable``: only a JSON body
+    whose *every* error message says "already exists" (and no per-field
+    errors) counts. Anything else — permission, malformed id, unknown
+    payload — must propagate."""
+    if exc.status_code != 400 or not exc.args or not isinstance(exc.args[0], str):
+        return False
+    body = exc.args[0]
+    start = body.find("{")
+    if start < 0:
+        return False
+    try:
+        parsed = json.loads(body[start:])
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    messages = parsed.get("errorMessages")
+    if not isinstance(messages, list) or not messages:
+        return False
+    if any("already exists" not in str(message) for message in messages):
+        return False
+    errors = parsed.get("errors")
+    return not errors
 
 
 def _maybe_wrap_retired_field_configuration(exc: TransportError) -> BaseException:

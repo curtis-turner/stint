@@ -9,7 +9,7 @@ Sync and async flavours share the same surface; async adds `await`:
 ```python
 from stint.query import AsyncSession, Session
 
-async with AsyncSession(engine, state) as session:   # or Session(...)
+async with AsyncSession(engine, state) as session:  # or Session(...)
     ...
 ```
 
@@ -19,12 +19,12 @@ Both provide an **identity map** (one instance per row per session) and **dirty 
 
 ```python
 bug = Bug(summary="Crash on save", severity="S1")
-session.add(bug)                # project inferred if Bug belongs to exactly one
-session.add(bug, project="SEC") # or pass the key explicitly
+session.add(bug)  # project inferred if Bug belongs to exactly one
+session.add(bug, project="SEC")  # or pass the key explicitly
 
 results = await session.commit()
-print(bug.key)                  # populated after a successful insert,
-                                # e.g.  PLAT-1234
+print(bug.key)  # populated after a successful insert,
+# e.g.  PLAT-1234
 ```
 
 !!! note "reporter on create"
@@ -45,12 +45,7 @@ first = await session.get(Bug, "PLAT-1234", fresh=True)
 ```python
 from stint.query import or_, select
 
-s1_bugs = await session.scalars(
-    select(Bug)
-    .where(Bug.c.severity == "S1")
-    .order_by(Bug.c.created, "DESC")
-    .limit(10)
-)
+s1_bugs = await session.scalars(select(Bug).where(Bug.c.severity == "S1").order_by(Bug.c.created, "DESC").limit(10))
 ```
 
 `Model.c.<attr>` gives a [`Column`](../api/query.md) supporting the comparison operators plus `in_`, `not_in`, `contains`, `is_null`, `is_not_null`. Predicates combine with `and_` / `or_` / `not_` (or the operators `&`, `|`, `~`):
@@ -70,7 +65,7 @@ Use `stmt.compile(state)` to peek at the rendered JQL (`cf[10042] = "S1"`).
 
 ```python
 bug.severity = "S2"
-await session.commit()          # PUT carries only `severity`
+await session.commit()  # PUT carries only `severity`
 
 session.delete(bug)
 await session.commit()

@@ -7,14 +7,15 @@ stint's migration story mirrors Alembic: a chainable set of Python migration uni
 A migration file defines plain variables and functions:
 
 ```python
-revision = "20261001_120000"      # unique id
-down_revision = "20260915_090000" # parent in the DAG (None = base)
+revision = "20261001_120000"  # unique id
+down_revision = "20260915_090000"  # parent in the DAG (None = base)
+
 
 async def upgrade():
     await op.create_custom_field(...)
 
-async def downgrade():
-    ...
+
+async def downgrade(): ...
 ```
 
 `load_migrations(directory)` builds a `RevisionGraph` that
@@ -66,10 +67,11 @@ All ops are `async`. Inside a migration you can grab the live context:
 ```python
 from stint import get_context
 
+
 async def upgrade():
-    ctx = get_context()   # MigrationContext: engine + state
+    ctx = get_context()  # MigrationContext: engine + state
     ...
-    await ctx.persist()   # checkpoint the state file to disk mid-migration
+    await ctx.persist()  # checkpoint the state file to disk mid-migration
 ```
 
 ### Refusing to guess: `unsupported()`
