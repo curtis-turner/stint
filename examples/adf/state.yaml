@@ -1,0 +1,39 @@
+schema_version: 1
+env: devel
+jira_url: jira_cloud+https://cumulusec.atlassian.net
+jira_version: ''
+deployment_type: ''
+revision: null
+last_applied: null
+mappings:
+  custom_fields:
+    vuln_severity:
+      id: customfield_10108
+      options:
+        S1: '10056'
+        S2: '10057'
+        S3: '10058'
+        S4: '10059'
+    vuln_root_cause:
+      id: customfield_10107
+  issuetypes:
+    bug:
+      id: '10010'
+    Foo:
+      id: '10020'
+    bug2:
+      id: '10020'
+  projects:
+    TEST:
+      id: '10067'
+      style: team-managed
+      key: TEST
+  field_configurations:
+    bug_fields:
+      id: '10011'
+  tmp_projects:
+    TEST:
+      worktypes:
+        Foo: '10150'
+      layout_ids:
+        Foo: e6fc8229-8c63-4564-af05-940a3be0ba92
