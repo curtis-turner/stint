@@ -42,3 +42,6 @@ plans/
 
 # mkdocs build output
 site/
+
+state.yaml
+state.yml
