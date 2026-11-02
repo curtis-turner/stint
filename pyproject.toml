@@ -75,3 +75,8 @@ dev = [
   "types-PyYAML>=6.0",
   "ty>=0.0.55",
 ]
+docs = [
+  "mkdocs>=1.6",
+  "mkdocs-material>=9.5",
+  "mkdocstrings[python]>=0.26",
+]

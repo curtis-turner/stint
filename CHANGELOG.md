@@ -6,6 +6,26 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `stint revision --autogenerate` no longer re-emits
+  `add_issue_security_level_member` for user members declared as emails on
+  every run (and `stint upgrade` no longer then dies with Jira's
+  `"Issue security scheme level member with the type user already exists."`
+  400). The diff compared the declared email against recorded/reflect
+  *accountIds*, which never match. `revision` now resolves member emails
+  through the user-search API while the engine is open and passes the map to
+  `diff(member_params=...)`; the op resolves before its idempotency check so
+  an email-declared re-run stops before the wire; and the dialect treats
+  Jira's exact duplicate-member 400 as the member being present instead of
+  aborting upgrades that mixed fresh and existing members.
+- Reflection of security-level members now paginates the
+  `/issuesecurityschemes/level/member` endpoint (a single page silently
+  truncated and generated phantom member adds past the cut), falls back to
+  that endpoint when a scheme GET carries inline `"members": []`, and keys
+  member entries without an `id` synthetically instead of collapsing them
+  into one entry.
+
 ## [0.7.0] - 2026-11-01
 
 ### Added

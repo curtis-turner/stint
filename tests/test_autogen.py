@@ -1342,6 +1342,117 @@ def test_diff_security_scheme_adds_missing_level_and_member():
     assert new_levels == []  # both levels exist in Jira
 
 
+def test_diff_security_level_email_member_matched_via_resolved_accountid():
+    """A user member declared as an email never matches state or reflection:
+    both carry the resolved accountId, so the diff must compare resolved
+    forms. The raw comparison made every revision re-emit the member add,
+    and the upgrade then died on Jira's "member already exists" 400 once the
+    member was actually in place."""
+    from stint import SecurityLevelMember
+    from stint.state.file import ProjectMapping, SecuritySchemeMapping
+    from stint.state.snapshot import ProjectSnapshot
+
+    alias = _declare_security_schema()
+    registry.security_schemes[alias].levels[1].members.append(
+        SecurityLevelMember(type="user", name="grace@example.com")
+    )
+    desired = build_desired_snapshot()
+    state = StateFile(env="dev", jira_url="x")
+    state.projects["SEC"] = ProjectMapping(id="p-100", key="SEC")
+    state.security_schemes[alias] = SecuritySchemeMapping(
+        id="sc-1",
+        default_level_id="lv-1",
+        level_ids={"level-public": "lv-1", "level-internal": "lv-2"},
+        member_values={"level-internal": ["jira-admins", "5b10a2844c20165700ede21g"]},
+    )
+    snapshot = _empty_snapshot()
+    snapshot.projects["SEC"] = ProjectSnapshot(id="p-100", key="SEC", name="Sec", lead="", project_type_key="software")
+    snapshot.security_schemes["sc-1"] = SecuritySchemeSnapshot(
+        id="sc-1",
+        name="Bug Security Scheme",
+        alias=alias,
+        levels=[
+            SecurityLevelSnapshot(id="lv-1", name="Public", is_default=True),
+            SecurityLevelSnapshot(
+                id="lv-2",
+                name="Internal",
+                members=(
+                    SecurityLevelMemberSnapshot(id="m-1", type="group", name="jira-admins", parameter="jira-admins"),
+                    SecurityLevelMemberSnapshot(
+                        id="m-2", type="user", name="Grace", parameter="5b10a2844c20165700ede21g"
+                    ),
+                ),
+            ),
+        ],
+    )
+    # Without the resolution map the email-vs-accountId mismatch regenerates
+    # the add every run (the reported bug):
+    raw = diff(desired=desired, snapshot=snapshot, state=state, allow_delete=False)
+    assert [(c.member_type, c.member_value) for c in raw.changes if isinstance(c, AddSecurityLevelMember)] == [
+        ("user", "grace@example.com")
+    ]
+    # With the resolution map cmd_revision now builds before diffing, the
+    # declared email compares resolved-form against state and reflection —
+    # and the member is recognized as already present:
+    result = diff(
+        desired=desired,
+        snapshot=snapshot,
+        state=state,
+        allow_delete=False,
+        member_params={"grace@example.com": "5b10a2844c20165700ede21g"},
+    )
+    member_adds = [c for c in result.changes if isinstance(c, AddSecurityLevelMember)]
+    assert member_adds == []
+
+
+def test_diff_security_level_member_masking_is_type_aware():
+    """Jira's "member already exists" dedupe keys on (type, parameter): a
+    reflected member sharing the parameter with a declared member must mask
+    it only when the type agrees too, not blanketly across types."""
+    from stint import SecurityLevelMember
+    from stint.state.file import ProjectMapping, SecuritySchemeMapping
+    from stint.state.snapshot import ProjectSnapshot
+
+    alias = _declare_security_schema()
+    registry.security_schemes[alias].levels[1].members.append(
+        SecurityLevelMember(type="user", name="5b10differently-owned")
+    )
+    desired = build_desired_snapshot()
+    state = StateFile(env="dev", jira_url="x")
+    state.projects["SEC"] = ProjectMapping(id="p-100", key="SEC")
+    state.security_schemes[alias] = SecuritySchemeMapping(
+        id="sc-1",
+        default_level_id="lv-1",
+        level_ids={"level-public": "lv-1", "level-internal": "lv-2"},
+        member_values={"level-internal": ["jira-admins"]},  # base group already sent
+    )
+    snapshot = _empty_snapshot()
+    snapshot.projects["SEC"] = ProjectSnapshot(id="p-100", key="SEC", name="Sec", lead="", project_type_key="software")
+    snapshot.security_schemes["sc-1"] = SecuritySchemeSnapshot(
+        id="sc-1",
+        name="Bug Security Scheme",
+        alias=alias,
+        levels=[
+            SecurityLevelSnapshot(id="lv-1", name="Public", is_default=True),
+            SecurityLevelSnapshot(
+                id="lv-2",
+                name="Internal",
+                # Same parameter as the declared user, but a different type
+                # (projectRoles): does NOT make Jira consider that user a
+                # member.
+                members=(
+                    SecurityLevelMemberSnapshot(
+                        id="m-1", type="projectRoles", name="Role holder", parameter="5b10differently-owned"
+                    ),
+                ),
+            ),
+        ],
+    )
+    result = diff(desired=desired, snapshot=snapshot, state=state, allow_delete=False)
+    member_adds = [c for c in result.changes if isinstance(c, AddSecurityLevelMember)]
+    assert [(c.member_type, c.member_value) for c in member_adds] == [("user", "5b10differently-owned")]
+
+
 def test_diff_security_scheme_level_missing_from_jira():
     from stint import SecurityLevel
     from stint.state.file import ProjectMapping, SecuritySchemeMapping

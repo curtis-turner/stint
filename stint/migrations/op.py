@@ -1032,17 +1032,23 @@ async def add_issue_security_level_member(
     mapping = _require_existing("add_issue_security_level_member", scheme_alias, ctx.state.security_schemes)
     members = mapping.member_values.setdefault(level_alias, [])
     if member_value in members:
-        return member_value  # idempotent re-run
+        return member_value  # idempotent re-run with the resolved value
     level_id = mapping.level_ids.get(level_alias)
     if level_id is None:
         raise ConfigurationError(
             f"add_issue_security_level_member: scheme {scheme_alias!r} has no "
             f"tracked level {level_alias!r}. Known levels: {sorted(mapping.level_ids)}"
         )
+    # Resolve *before* the recorded check: state stores resolved parameters,
+    # so a re-run of a member declared as an email must compare its resolved
+    # form — a raw email versus recorded accountIds never matches and would
+    # re-send the add every upgrade.
     parameter = await ctx.engine.dialect.resolve_security_level_member(
         member_type=member_type,
         member_value=member_value,
     )
+    if parameter in members:
+        return parameter  # idempotent re-run with the declared value
     await ctx.engine.dialect.add_issue_security_level_member(
         scheme_id=mapping.id,
         level_id=level_id,
