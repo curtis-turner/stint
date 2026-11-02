@@ -1,16 +1,17 @@
 """Dialect protocols. Every backend must satisfy one of these contracts.
 
-``BaseDialect`` is the subset every backend style supports identically: detect/
-reflect, project CRUD, lead resolution, and the issue data plane. This is
-exactly the set of operations that work against a Jira team-managed project
-today (see ``tmp_capability_matrix.md``) as well as company-managed.
+``BaseDialect`` is the contract for *company-managed* projects' shared
+surface: detect/reflect, project CRUD, lead resolution, and the issue data
+plane. ``CmpDialect`` extends it with the company-managed scheme surface
+(custom fields, screens, screen schemes, issue-type screen schemes,
+issue-type schemes, field configurations, issue types).
 
-``CmpDialect`` extends it with the company-managed scheme surface (custom
-fields, screens, screen schemes, issue-type screen schemes, issue-type
-schemes, field configurations, issue types) -- concepts team-managed projects
-don't have, or that Jira exposes no public write API for on team-managed
-projects. A future ``TmpDialect`` would extend ``BaseDialect`` with its own,
-differently-shaped write surface instead of implementing this one.
+It does NOT apply to team-managed (TMP) projects: ``TmpDialect`` implements
+none of it — no ``detect``, no project CRUD, a differently-shaped ``reflect``
+(one project's ``snapshot` + its layouts), and its own internal-endpoint
+write surface. That deviation is deliberate and documented in
+``stint.dialects.jira.tmp`` — a team-managed backend satisfies nothing here,
+contrary to what an earlier version of this docstring claimed (L29).
 
 Concrete dialects (see ``stint.dialects.jira``) satisfy these structurally.
 """
@@ -155,6 +156,31 @@ class CmpDialect(BaseDialect, Protocol):
         self, scheme_id: str, *, mappings: list[dict[str, str]]
     ) -> None: ...
     async def set_project_field_configuration_scheme(self, *, project_id: str, scheme_id: str) -> None: ...
+
+    # ── Issue security schemes ───────────────────────────────────────
+    async def create_issue_security_scheme(
+        self, *, name: str, description: str = "", levels: list[dict[str, Any]] | None = None
+    ) -> str: ...
+    async def update_issue_security_scheme(
+        self, scheme_id: str, *, name: str | None = None, description: str | None = None
+    ) -> None: ...
+    async def delete_issue_security_scheme(self, scheme_id: str) -> None: ...
+    async def associate_security_scheme_to_project(
+        self,
+        *,
+        project_id: str,
+        scheme_id: str,
+        old_to_new_level_mappings: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]: ...
+    async def add_issue_security_levels(self, scheme_id: str, *, levels: list[dict[str, Any]]) -> None: ...
+    async def add_issue_security_level_member(
+        self, *, scheme_id: str, level_id: str, member_type: str, member_id_or_name: str
+    ) -> None: ...
+    async def remove_issue_security_level_member(
+        self, *, scheme_id: str, level_id: str, member_id_or_name: str
+    ) -> None: ...
+    async def set_default_issue_security_levels(self, defaults: dict[str, str | None]) -> None: ...
+    async def resolve_security_level_member(self, *, member_type: str, member_value: str) -> str: ...
 
     # ── Issue types ──────────────────────────────────────────────────
     async def find_issuetype_id_by_name(self, name: str) -> str | None: ...

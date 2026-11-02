@@ -16,7 +16,7 @@ from stint.autogen.stamp import stamp as run_stamp_alg
 from stint.cli.app import app
 from stint.cli.cmd_reflect import _build_auth
 from stint.cli.env_config import require_resolved_connection, resolve_connection
-from stint.engine import create_engine, create_tmp_engine
+from stint.engine import base_url_of, create_engine, create_tmp_engine
 from stint.state.file import StateFile
 from stint.state.lock import StateLock
 from stint.state.snapshot import Snapshot
@@ -76,7 +76,13 @@ async def stamp(
         # load-stamp-save, not the reflect alone. That includes the (slow)
         # reflect; a narrow window between reflect and save would still let
         # a concurrent writer's mappings be clobbered by this save.
-        state_file = StateFile.load(state_path) if state_path.exists() else StateFile(env=env, jira_url=url)
+        if state_path.exists():
+            state_file = StateFile.load(state_path)
+            # Refuse a tenant/env mismatch (M7): stamp binds aliases to ids by
+            # name-matching, so a wrong-tenant file would record foreign ids.
+            state_file.validate_target(env=env, jira_url=url, state_path=state_path)
+        else:
+            state_file = StateFile(env=env, jira_url=base_url_of(url))
         auth_obj = _build_auth(auth, token_env, user_env)
         if dialect == "jira_cloud_tmp":
             if not project_key:

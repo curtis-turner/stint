@@ -81,10 +81,15 @@ class AsyncSession:
         jql = stmt.compile(self.state)
         fields = field_keys_for_model(stmt.model, self.state)
         results: list[M] = []
+        if stmt.limit_n == 0:
+            return results
+        # Jira's documented maxResults cap for issue search is 100; a higher
+        # limit would rely on undocumented server clamping, so cap the page.
+        page_size = min(stmt.limit_n or 50, 100)
         async for issue in self.engine.dialect.search(
             jql=jql,
             fields=fields,
-            page_size=stmt.limit_n or 50,
+            page_size=page_size,
         ):
             results.append(self._hydrate_with_identity(stmt.model, issue))
             if stmt.limit_n is not None and len(results) >= stmt.limit_n:
@@ -95,9 +100,19 @@ class AsyncSession:
         self,
         model: type[M],
         key: str,
+        *,
+        fresh: bool = False,
     ) -> M | None:
+        """Read one issue by key.
+
+        By default the identity map serves an instance already known to this
+        session — including one just inserted, whose server-side state has
+        not been re-read. Pass ``fresh=True`` to bypass the cache and verify
+        against Jira (a create can 201 yet be immediately invisible to the
+        same token under issue-level security).
+        """
         cached = cast("M | None", self._identity.get((model, key)))
-        if cached is not None:
+        if cached is not None and not fresh:
             return cached
         from stint.exceptions import NotFoundError
 
@@ -106,6 +121,17 @@ class AsyncSession:
             issue = await self.engine.dialect.get_issue(key, fields=fields)
         except NotFoundError:
             return None
+        existing = self._identity.get((model, key))
+        if fresh and existing is not None:
+            # Refresh in place: callers hold a reference to the inserted
+            # instance (e.g. to mutate and commit), so don't swap it out.
+            # Hydrate a throwaway — _hydrate_with_identity would return the
+            # cached object itself, making the copy a no-op.
+            hydrated = hydrate(model, issue, self.state)
+            for name in model.model_fields:
+                setattr(existing, name, getattr(hydrated, name))
+            self._originals[(model, key)] = existing.model_dump()
+            return cast("M", existing)
         return self._hydrate_with_identity(model, issue)
 
     # ── Writes ───────────────────────────────────────────────────────

@@ -7,7 +7,19 @@ The state file persists the alias-to-Jira-ID mappings between runs.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
+
+
+def _frozen_mapping(value: Mapping | None) -> Mapping:
+    """A read-only view over a snapshot dict field.
+
+    L17: snapshots were ``frozen=True`` but carried plain dicts — shallow
+    immutability. In-place mutation would corrupt later comparisons within
+    the same run. Wrap a copy at construction; every consumer reads only.
+    """
+    return MappingProxyType(dict(value or {}))
 
 
 @dataclass(frozen=True)
@@ -26,8 +38,14 @@ class CustomFieldSnapshot:
     id: str  # e.g. "customfield_10042"
     name: str  # display name in Jira
     type_id: str  # e.g. "...customfieldtypes:select"
-    options: dict[str, str] = field(default_factory=dict)  # option name -> option id
+    options: Mapping[str, str] = field(default_factory=dict)  # option name -> option id
     description: str = ""  # TMP reflect fills this; CMP endpoints omit it
+    # None = reflection did not report it (dialect gap; skip comparison).
+    # ""   = reported as missing → field has search template None.
+    searcher_key: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "options", _frozen_mapping(self.options))
 
 
 @dataclass(frozen=True)
@@ -59,6 +77,10 @@ class ProjectSnapshot:
     lead: str | None = None
     project_type_key: str = ""  # e.g. "software", "business"
     style: str = "classic"  # "classic" or "next-gen"
+    # /project/search carries the description; populated by CMP reflect. TMP
+    # snapshots (built from the work-type context) leave it "" — description
+    # checks there are skipped (see diff's project section, L21).
+    description: str = ""
     # Resolved separately via /project/{key}/issuetypescreenscheme and
     # /project/{key}/fieldconfigurationscheme. Empty on TMP and on projects
     # using the global defaults.
@@ -93,7 +115,10 @@ class ScreenSchemeSnapshot:
     name: str
     description: str = ""
     # operation -> screen id; operations: "default", "create", "edit", "view"
-    mappings: dict[str, str] = field(default_factory=dict)
+    mappings: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "mappings", _frozen_mapping(self.mappings))
 
 
 @dataclass(frozen=True)
@@ -123,7 +148,10 @@ class FieldConfigurationSnapshot:
     id: str
     name: str
     description: str = ""
-    items: dict[str, FieldConfigurationItemSnapshot] = field(default_factory=dict)
+    items: Mapping[str, FieldConfigurationItemSnapshot] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "items", _frozen_mapping(self.items))
 
 
 @dataclass(frozen=True)
@@ -161,6 +189,7 @@ class SecurityLevelMemberSnapshot:
     type: str  # "user" or "group"
     id: str  # e.g. "5b10ac8b86e24b0016d46e0f" or "12345" for groups
     name: str  # display name
+    parameter: str = ""  # Jira's holder.parameter: group name or accountId
     # Jira internal holder format: {"type": "user", "parameter": "grace", "user": {...}}
     # or {"type": "group", "parameter": "administrators", "group": {...}}
 

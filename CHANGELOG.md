@@ -6,6 +6,194 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-01
+
+### Added
+
+- Issue security schemes are now schema-plane objects end to end:
+  `SecurityLevel` (with `members=[SecurityLevelMember(...)]`), `SecurityMember`,
+  and `SecurityScheme` declarations register with the schema, reflect with
+  levels *and* holder-parametrized members (the list endpoint omits levels,
+  so reflect follows up with the per-scheme GET and the level-member
+  endpoint), and diff into `CreateIssueSecurityScheme` / `AddSecurityLevel` /
+  `AddSecurityLevelMember` / `SetDefaultSecurityLevel` /
+  `ClearDefaultSecurityLevel` / `SetProjectIssueSecurityScheme` ops. The
+  state file tracks each scheme's `level_ids`, `default_level_id` and the
+  *resolved* `member_values` (accountIds, not emails) so applied members stay
+  idempotent across email→accountId resolution.
+- `default_level=None` clears a scheme's live default
+  (`op.clear_default_issue_security_level`, `PUT
+  /issuesecurityschemes/level/default` with `defaultLevelId: null`). Before
+  this the diff bailed out on a `None` desired default, so a default set
+  earlier could never be unset.
+- `AsyncSession.get(Model, key, fresh=True)` bypasses the identity map and
+  refreshes the cached instance in place. Default `get()` still serves the
+  cache, including instances just inserted.
+- Runnable end-to-end ORM example:
+  `examples/company_managed/create_and_query_issues.py` (insert → fresh
+  read-back → JQL query → dirty update → delete, with `--keep`). The old
+  `platform.py` example is renamed `platform_schema.py` so the module no
+  longer shadows the stdlib `platform` for CLI imports that `sys.path`-load
+  the file; `security_scheme.py` demonstrates the security-scheme feature
+  alongside the data plane.
+
+### Fixed
+
+- Custom fields created via `op.create_custom_field` now carry Jira's
+  `searcherKey`: every `_FieldType` declares the searcher its type needs
+  (select → multiselectsearcher, text → textsearcher, …). Omitting it
+  creates a field with search template None — writes and reads work, but
+  every JQL clause on the field fails with "Your query couldn't be
+  processed" (live tenant, 2026-11). Reflection carries `searcherKey` into
+  `CustomFieldSnapshot`, and autogenerate repairs existing fields missing
+  it with `op.update_custom_field(..., searcher_key=...)`.
+- `POST /field`'s response carries no description, so the create op applies
+  it with a follow-up `PUT` — previously the snapshot drifted from the
+  declaration on the first apply (and select-style reflects rebuilt the
+  snapshot without it).
+- `reporter` is stripped from insert payloads (Jira fills it from the
+  caller's identity and 400s on an explicit value) while staying
+  settable on updates (`PUT`) and hydrated (as an accountId) on reads.
+- Company-managed `create_project` now defaults Cloud CMP creates to the
+  `gh-kanban-template` (Jira silently fell back to a *team-managed*
+  template otherwise, and that project ignores its assigned schemes), and
+  rejects a template whose style contradicts the declared `style` before
+  the project is created in the wrong shape.
+- `PUT /field`'s `parameters` errors list per-item "Field 'summary'
+  cannot have required changed" as a tolerated no-op instead of failing
+  the whole field-scheme item set (live tenant, 2026-11).
+
+### Fixed
+
+- `paginate()` no longer spin-detects only `startAt`-based pagination (L1):
+  cursor-paginated responses carrying a `nextPage` URL are followed
+  verbatim (with a self-referential-cursor guard), and a server that clamps
+  an out-of-range `startAt` echo now terminates iteration instead of
+  raising mid-reflect (L4). The docstring matches the implementation.
+- `_default_context_id` prefers the context marked `isGlobalContext: true`
+  (L2) — the API does not order the default context first, so option
+  add/delete could target a scoped context.
+- `update_issue_security_scheme` with no changes no longer PUTs an empty
+  body (L3) — Jira rejects `{}` with a 400, turning a no-op apply into a
+  spurious failure.
+- `PartialCommitError` no longer masks its construction with an IndexError
+  when there are no failures (L5).
+- The default HTTP `User-Agent` tracks the installed version
+  (`stint/<__version__>`) instead of the hardcoded `stint/0.1` (L8),
+  overridable via the `user_agent` argument.
+- HTTP error messages name the endpoint but no longer echo the query
+  string (L7) — e.g. the user email passed to account search as `?query=`.
+- A dialect/engine construction failure now closes the freshly opened
+  httpx pool synchronously instead of leaking it until GC (L9).
+- `Session.limit(0)` makes no HTTP call and returns `[]`; `limit(n)` page
+  size is clamped to Jira's documented 100 (L10).
+- JQL string literals escape `\n`/`\r`/`\t` (L11): multi-line values no
+  longer produce an opaque 400.
+- Snapshot dict fields (`CustomFieldSnapshot.options`,
+  `ScreenSchemeSnapshot.mappings`, `FieldConfigurationSnapshot.items`) are
+  read-only views so the `frozen=True` promise is real (L17); dict-typed
+  state file data is untouched.
+- Schema module loading: same-stem files in different directories no
+  longer share one synthetic module slot (L18), and re-executing a schema
+  module replaces its own registrations instead of raising `Duplicate ...
+  alias` — same-alias declarations from distinct modules still raise.
+- `stint revision --autogenerate` re-checks the migration graph's head
+  after the (slow) network reflect (L19): two racing runs can no longer
+  both parent to the same head and leave a branched graph.
+- `stint stamp` now skips ambiguous display names with a `skipped`
+  report naming every candidate id (L20) instead of silently binding an
+  arbitrary Jira duplicate.
+- Missed-drift gaps now surface as warnings instead of "no changes
+  detected" (L21): declared screen fields absent from the reflected
+  screen, declared FC items (with required/hidden flags) drifting from the
+  reflected configuration; custom-field and project descriptions are now
+  reflected and diffed (existing project description changes emit
+  `op.update_project(description=...)`).
+- `stint history` renders merge migrations' tuple parents as truncated IDs
+  (L16) instead of printing a sliced tuple.
+- `upgrade --to <current revision>` is an alembic-style no-op and
+  `downgrade --to <current>` likewise; an unreachable `--to` target raises
+  `MigrationGraphError` instead of a bare `ValueError` (L15).
+- The env-config `verify_ssl` key must be a real YAML boolean; a quoted
+  `"no"`/`"false"` string used to silently disable nothing (L23). The
+  dead argparse-era `apply_env_defaults` helper is removed.
+- TMP: `_find_template_remote` re-raises unexpected errors (dead token,
+  5xx) instead of degrading the run to a synthesized template item (L25);
+  a rename earlier in the same apply run is patched into the subsequent
+  `SetLayout` write, so the server no longer echoes back the stale field
+  name (L26); `resolve_project` raises on a missing uuid instead of
+  failing later with an opaque 400 from `create_worktype` (L28); and
+  `stint/dialects/base.py` no longer claims `BaseDialect` covers
+  team-managed projects (L29).
+- The public `stint` surface exports the `SecurityLevel`,
+  `SecurityLevelMember`, `SecurityScheme` declaration aliases and their
+  snapshot types via `__all__` (L14).
+
+### Known behavior (documented, not a bug)
+
+- TMP `SetLayout` is a full-replacement PUT with no version/etag
+  precondition (L30): UI edits to a work type's layout between an apply's
+  reflect and its write (a window that includes the interactive
+  confirmation prompt) will be overwritten. This is inherent to the
+  declarative model.
+
+### Fixed
+
+- `StateLock` release is ownership-verified (H3 residue): `release()`
+  confirms the on-disk `<state>.lock` is still the file this process
+  created (device/inode match of the retained `O_EXCL` fd) before
+  unlinking. The stale-lock workflow — an operator deletes a stale lock
+  and a new holder acquires — can no longer be broken by the old holder's
+  late release deleting the new holder's lock. A failed write in
+  `acquire()` also removes the fresh empty lock file instead of stranding
+  a permanent lockout, and the lock body carries a `token=` ownership
+  line for diagnostics.
+
+- `DeleteProject` no longer shares an apply phase with
+  `DeleteIssueTypeScheme` (M4): the alphabetical tie-break could order a
+  generated migration to delete an issuetype scheme before the project
+  still bound to it, which Jira rejects. Projects now delete first
+  (phase 79, before all scheme deletes) in both hand-run and generated
+  migrations.
+- `-m` messages containing triple quotes or a trailing backslash no
+  longer produce unloadable migration files (M2): all three generated
+  renderers sanitize the message before embedding it in the file's
+  docstring (backslash then 3+-quote runs escaped, value round-trips).
+  One malformed docstring previously broke loader-side
+  upgrade/downgrade/history/revision for the whole migrations directory.
+- An unknown custom-field type no longer emits runtime-broken code (M3):
+  the generated migration keeps the `op.create_custom_field` as a comment
+  and raises a `StintError` naming alias and type id at apply, instead of
+  an opaque `AttributeError` on a string. The supported-type map is
+  discovered from `stint.fields`, so a newly added field type can no
+  longer silently drop out of it.
+- Scoped (`--schema`) autogenerate no longer drops declared-but-unreferenced
+  Screens and CustomFields (M5): a loose declaration registered by the
+  schema module stays in the desired snapshot instead of being scoped out
+  and reported as a permanent orphan (and deleted under `--allow-delete`).
+  Sibling-module declarations still cannot leak — the registry now records
+  each declaration's defining module and scoping matches it.
+- A cyclic revision graph now fails loudly instead of looking in-sync (M6):
+  `upgrade`/`history`/`current` raise `MigrationGraphError` when the graph
+  has no heads (only a revision cycle produces that), instead of silently
+  walking nothing. An empty migrations directory remains a no-op.
+- The state file's `jira_url` no longer records a dialect prefix (M9):
+  `upgrade`/`downgrade`/`stamp`/`revision` now record the base URL the way
+  `apply` always has, so state files agree across commands and deep links
+  built from `jira_url` stay valid.
+- State files are validated against the resolved connection (M7):
+  `upgrade`/`downgrade`/`apply`/`stamp`/`revision` refuse to run when the
+  loaded state file records a different `env` or `jira_url` than the
+  connection resolves to — previously a prod state file pointed at a dev
+  env (or a typo'd `--url`) migrated the wrong tenant using the other
+  tenant's id mappings. URL comparison tolerates dialect prefixes and
+  trailing slashes so pre-existing files keep working.
+- Corrupt or incomplete state files raise `StateFileCorruptError` (M8):
+  missing top-level `env`/`jira_url` keys or a mapping entry missing its
+  `id` names the exact path (e.g. `mappings.custom_fields['sev']`)
+  instead of escaping as a bare `KeyError` traceback; non-mapping values
+  are caught the same way.
+
 ## [0.6.1] - 2026-10-31
 
 ### Fixed
@@ -479,7 +667,8 @@ end-to-end against Jira Data Center and Jira Cloud.
 - TMP awareness: project style tracked in state, CMP-only ops raise
   `UnsupportedTMPOpError` with a deep link to the Jira UI.
 
-[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/curtis-turner/stint/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/curtis-turner/stint/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/curtis-turner/stint/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/curtis-turner/stint/compare/v0.4.0...v0.5.0

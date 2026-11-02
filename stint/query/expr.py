@@ -25,7 +25,12 @@ def _quote(value: Any) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     s = str(value)
-    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    s = s.replace("\\", "\\\\").replace('"', '\\"')
+    # JQL string literals want explicit escape sequences; raw control
+    # characters (multi-line values) make the server-side parse fail with
+    # an opaque 400.
+    s = s.replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")
+    return '"' + s + '"'
 
 
 def _quote_list(values: list[Any]) -> str:

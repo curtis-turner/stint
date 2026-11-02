@@ -6,6 +6,7 @@ Team-managed writes live in the separate ``stint.dialects.jira.tmp`` dialect.
 from __future__ import annotations
 
 import dataclasses
+import json
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, ClassVar
@@ -221,6 +222,12 @@ class JiraCloudDialect:
                     name=cf.name,
                     type_id=cf.type_id,
                     options=options,
+                    # The rebuilt snapshot must carry the parsed description:
+                    # dropping it made every select-style field report "" and
+                    # diff re-emit a description update forever (the
+                    # bug_severity phantom). Same for searcher_key.
+                    description=cf.description,
+                    searcher_key=cf.searcher_key,
                 )
             result[cf.id] = cf
         return result
@@ -275,12 +282,14 @@ class JiraCloudDialect:
             scheme_key="issueTypeScreenScheme",
         )
         fcs_map = await self._reflect_project_field_configuration_bindings(project_ids)
+        iss_map = await self._reflect_project_issue_security_bindings(project_ids)
         for key, proj in list(result.items()):
             result[key] = dataclasses.replace(
                 proj,
                 issuetype_scheme_id=its_map.get(proj.id),
                 issuetype_screen_scheme_id=itss_map.get(proj.id),
                 field_configuration_scheme_id=fcs_map.get(proj.id),
+                issue_security_scheme_id=iss_map.get(proj.id),
             )
         return result
 
@@ -353,6 +362,30 @@ class JiraCloudDialect:
         return out
 
     # ── Screens ──────────────────────────────────────────────────────
+    async def _reflect_project_issue_security_bindings(
+        self,
+        project_ids: list[str],
+    ) -> dict[str, str]:
+        """project_id → issue-security-scheme id map.
+
+        Entries without ``issueSecuritySchemeId`` are projects on the default
+        (no explicit binding) and are skipped. The repeated ``projectId``
+        filter is chunked (M10), same as the sibling bindings. IDs come back
+        as ints; stringify for snapshot parity.
+        """
+        out: dict[str, str] = {}
+        for chunk in self._chunked_ids(project_ids, self.PROJECT_FILTER_BATCH_SIZE):
+            async for entry in common.paginate(
+                self.client,
+                f"{self.api_root}/issuesecurityschemes/project",
+                extra_params={"projectId": chunk},
+            ):
+                scheme_id = entry.get("issueSecuritySchemeId")
+                project_id = entry.get("projectId")
+                if scheme_id is not None and project_id is not None:
+                    out[str(project_id)] = str(scheme_id)
+        return out
+
     async def _reflect_screens(self) -> dict[str, ScreenSnapshot]:
         screens: dict[str, ScreenSnapshot] = {}
         skipped: list[str] = []
@@ -654,6 +687,13 @@ class JiraCloudDialect:
             contexts.append(ctx)
         if not contexts:
             return None
+        # The API does not guarantee context ordering and the default
+        # context is not necessarily first; the global context is the one
+        # that applies to every issue, so prefer it explicitly and fall
+        # back to the first entry otherwise.
+        for ctx in contexts:
+            if ctx.get("isGlobalContext") is True:
+                return str(ctx.get("id", "")) or None
         return str(contexts[0].get("id", "")) or None
 
     # ── Screens ──────────────────────────────────────────────────────
@@ -1471,10 +1511,22 @@ class JiraCloudDialect:
         }
         if work_type_parameters:
             entry["workTypeParameters"] = work_type_parameters
-        await self.client.put_json(
-            self._field_schemes_path("fields", "parameters"),
-            json={field_id: [entry]},
-        )
+        try:
+            await self.client.put_json(
+                self._field_schemes_path("fields", "parameters"),
+                json={field_id: [entry]},
+            )
+        except TransportError as exc:
+            # The endpoint fails whole-request even when a single field
+            # legitimately cannot take the parameter — e.g. Jira refuses to
+            # change required-ness for `summary` ("Field summary cannot have
+            # required changed" / 400 with per-item results). Such a field is
+            # already effectively as-required as declared: treat that exact
+            # per-item denial as success; re-raise anything else so real
+            # failures still fail the migration.
+            if exc.status_code == 400 and _parameter_denials_are_tolerable(str(exc.args[0]) if exc.args else ""):
+                return
+            raise
 
     async def associate_projects_with_field_scheme(
         self,
@@ -1893,15 +1945,30 @@ class JiraCloudDialect:
 
         Returns a dict mapping scheme ID -> SecuritySchemeSnapshot.
 
-        The list endpoint never includes ``levels`` (H8), so each scheme is
+        ``GET /issuesecurityschemes`` takes no query parameters and answers a
+        bare ``{"issueSecuritySchemes": [...]}`` envelope — no ``startAt``,
+        no ``isLast`` — so it must NOT go through ``common.paginate``: the
+        page-2 request is silently ignored and returns the same list, a
+        non-empty page with no ``isLast``, and reflect hangs forever re-
+        reading page 1 (the reported ``revision --autogenerate`` hang, whose
+        only output was the synthetic-screens warning one step earlier).
+        The endpoint never includes ``levels`` (H8), so each scheme is still
         fetched individually with the single-scheme GET which embeds them;
         without this every reflect produced ``levels=[]`` and any declared
         levels diffed as phantom drift forever.
         """
+        payload = await self.client.get_json(f"{self.api_root}/issuesecurityschemes")
+        if not isinstance(payload, dict):
+            raise ReflectionError(
+                f"GET {self.api_root}/issuesecurityschemes returned "
+                f"{type(payload).__name__} instead of an issueSecuritySchemes envelope"
+            )
         result: dict[str, SecuritySchemeSnapshot] = {}
-        async for entry in common.paginate(
-            self.client, f"{self.api_root}/issuesecurityschemes", envelope_key="issueSecuritySchemes"
-        ):
+        for entry in payload.get("issueSecuritySchemes") or []:
+            if not isinstance(entry, dict):
+                raise ReflectionError(
+                    f"GET {self.api_root}/issuesecurityschemes included a non-object scheme entry: {str(entry)[:200]!r}"
+                )
             scheme = common.parse_issue_security_scheme(entry)
             scheme = dataclasses.replace(
                 scheme,
@@ -1909,6 +1976,28 @@ class JiraCloudDialect:
             )
             result[scheme.id] = scheme
         return result
+
+    async def get_issue_security_levels(self, scheme_id: str) -> list[SecurityLevelSnapshot]:
+        """Public read for op bookkeeping: one GET of the scheme, returning
+        levels with their Jira ids and default flags (no member fetch — the
+        security-scheme write endpoints return no level ids, so ops capture
+        them here right after create/add; members are tracked in state)."""
+        payload = await self.client.get_json(f"{self.api_root}/issuesecurityschemes/{scheme_id}")
+        if not isinstance(payload, dict):
+            raise ReflectionError(
+                f"GET {self.api_root}/issuesecurityschemes/{scheme_id} returned "
+                f"{type(payload).__name__} instead of a scheme payload"
+            )
+        return [
+            SecurityLevelSnapshot(
+                id=str(level.get("id", "")),
+                name=str(level.get("name", "")),
+                description=str(level.get("description", "")),
+                is_default=bool(level.get("isDefault", False)),
+            )
+            for level in payload.get("levels") or []
+            if isinstance(level, dict)
+        ]
 
     async def _reflect_issue_security_levels(self, scheme_id: str) -> dict[str, SecurityLevelSnapshot]:
         """Reflect all security levels for a given issue security scheme.
@@ -1948,6 +2037,10 @@ class JiraCloudDialect:
                             id=str(m.get("id", "")),
                             type=str(holder.get("type", "unknown")),
                             name=str(holder.get("name", "")),
+                            # holder.parameter is the group name / accountId that
+                            # member-add and member-diff compare against; fall
+                            # back to name for payloads that only carry it.
+                            parameter=str(holder.get("parameter", "") or holder.get("name", "")),
                         )
                     )
             result[level_id] = SecurityLevelSnapshot(
@@ -1989,6 +2082,9 @@ class JiraCloudDialect:
                 id=str(member.get("id", "")),
                 type=str(holder.get("type", "unknown")),
                 name=str(holder.get("name", "")),
+                # holder.parameter is the group name / accountId that member
+                # add/remove and diff compare against (H8 follow-up).
+                parameter=str(holder.get("parameter", "") or holder.get("name", "")),
             )
         return result
 
@@ -2028,6 +2124,11 @@ class JiraCloudDialect:
             body["name"] = name
         if description is not None:
             body["description"] = description
+        if not body:
+            # An empty PUT body is rejected by Jira with a 400; a no-op
+            # apply must not put a request on the wire at all (like every
+            # sibling updater).
+            return
         await self.client.put_json(f"{self.api_root}/issuesecurityschemes/{scheme_id}", json=body)
 
     async def delete_issue_security_scheme(self, scheme_id: str) -> None:
@@ -2121,6 +2222,63 @@ class JiraCloudDialect:
             f"{self.api_root}/issuesecurityschemes/{scheme_id}/level/{level_id}/member/{member_id}"
         )
 
+    async def add_issue_security_levels(
+        self,
+        scheme_id: str,
+        *,
+        levels: list[dict[str, Any]],
+    ) -> None:
+        """Add levels to an existing scheme.
+
+        ``levels`` entries: ``{"name": ..., "description": ..., "isDefault": bool}``.
+        The response is 204 with no body — no level ids; capture them via
+        ``get_issue_security_levels`` right after (same call as after create).
+
+        **Permissions required:** Administer Jira global permission.
+
+        **OAuth scopes:** `manage:jira-configuration`
+        """
+        await self.client.put_json(
+            f"{self.api_root}/issuesecurityschemes/{scheme_id}/level",
+            json={"levels": levels},
+        )
+
+    async def set_default_issue_security_levels(self, defaults: dict[str, str | None]) -> None:
+        """Set (or clear) each scheme's default level: ``{scheme_id: level_id}``.
+
+        A ``None`` value sends ``"defaultLevelId": null``, which the API
+        documents as "reset the default level": issues then get no security
+        level and stay visible to anyone who can browse the project. An empty
+        mapping puts no request on the wire (an empty body 400s, like every
+        sibling updater).
+
+        **Permissions required:** Administer Jira global permission.
+
+        **OAuth scopes:** `manage:jira-configuration`
+        """
+        if not defaults:
+            return
+        await self.client.put_json(
+            f"{self.api_root}/issuesecurityschemes/level/default",
+            json={
+                "defaultValues": [
+                    {"issueSecuritySchemeId": sid, "defaultLevelId": lid} for sid, lid in defaults.items()
+                ]
+            },
+        )
+
+    async def resolve_security_level_member(self, *, member_type: str, member_value: str) -> str:
+        """Normalize a declared member to Jira's ``holder.parameter`` form.
+
+        Groups pass through as group names. Users pass through unless the
+        declared value carries ``@`` (an email), which resolves through the
+        user-search API to an accountId — reusing ``resolve_lead``'s
+        search + disambiguation, which needs "Browse users and groups".
+        """
+        if member_type == "user":
+            return await self.resolve_lead(member_value)
+        return member_value
+
 
 def _expect_id(result: Any, where: str) -> str:
     if not isinstance(result, dict) or "id" not in result:
@@ -2129,6 +2287,40 @@ def _expect_id(result: Any, where: str) -> str:
 
 
 _RETIRED_FC_HINTS = ("Cannot create a new field configuration", "use Field Scheme instead")
+
+
+# Per-item parameter errors the field-schemes API reports for system fields
+# whose parameters Jira won't let a caller change. "Cannot have required
+# changed" for `summary` means the field already behaves as required — a
+# no-op, not a failure (live-tenant observed, 2026-11).
+_TOLERABLE_PARAMETER_ERROR_FRAGMENTS = (
+    "cannot have required changed",
+    "cannot have description changed",
+)
+
+
+def _parameter_denials_are_tolerable(error_body: str) -> bool:
+    """True when every per-item failure in a /fields/parameters 400 body is
+    a known-immutable system-field parameter change (see the tuples above).
+    Non-JSON bodies or any unrecognized error must NOT be swallowed."""
+    body = error_body.strip()
+    start = body.find("{")
+    if start < 0:
+        return False
+    try:
+        parsed = json.loads(body[start:])
+    except (json.JSONDecodeError, TypeError):
+        return False
+    results = parsed.get("results") if isinstance(parsed, dict) else None
+    if not isinstance(results, list) or not results:
+        return False
+    for row in results:
+        if not isinstance(row, dict) or row.get("success", True):
+            continue
+        error = str(row.get("error", "")).lower()
+        if not any(fragment in error for fragment in _TOLERABLE_PARAMETER_ERROR_FRAGMENTS):
+            return False
+    return True
 
 
 def _is_retired_field_configuration_error(exc: TransportError) -> bool:

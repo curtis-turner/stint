@@ -76,11 +76,24 @@ class RevisionGraph:
         return [m for m in self.by_revision.values() if not m.parents()]
 
     def heads(self) -> list[Migration]:
-        """Migrations with no children. Usually exactly one. >1 means parallel branches."""
+        """Migrations with no children. Usually exactly one. >1 means parallel branches.
+
+        Raises MigrationGraphError when the graph is non-empty but every
+        migration has children — only a revision cycle (a → b → a) produces
+        that, and silently walking nothing ("already at revision") would hide
+        an unloadable directory (M6)."""
         all_parents: set[str] = set()
         for m in self.by_revision.values():
             all_parents.update(m.parents())
-        return [m for r, m in self.by_revision.items() if r not in all_parents]
+        out = [m for r, m in self.by_revision.items() if r not in all_parents]
+        if self.by_revision and not out:
+            revisions = ", ".join(sorted(self.by_revision))
+            raise MigrationGraphError(
+                f"migration graph has no heads — every migration has children "
+                f"({revisions}), which only a revision cycle (e.g. a → b → a) "
+                f"can produce. Fix the down_revision in one of the files."
+            )
+        return out
 
     def chain_from(self, current: str | None) -> list[Migration]:
         """Return migrations to apply, in order, to go from current → single head.

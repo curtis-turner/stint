@@ -48,6 +48,8 @@ def test_import_stint_does_not_load_tmp_package():
 
 
 # ── create_engine / create_tmp_engine selection ───────────────────────────
+
+
 def test_create_engine_rejects_jira_cloud_tmp():
     from stint.engine import create_engine
 
@@ -227,3 +229,65 @@ def test_tmp_state_round_trips_through_tmp_project_state():
     assert isinstance(mapping, TmpProjectState)
     restored = from_project_state(mapping)
     assert restored == original
+
+
+# ── L25: template hunt must not swallow transport/auth errors ───────────
+def _make_ctx(ops_module, dialect_stub, worktypes):
+    from stint.dialects.jira.tmp.models import TmpProjectContext
+    from stint.dialects.jira.tmp.state import TmpState
+
+    return ops_module.TmpApplyContext(
+        dialect=dialect_stub,
+        project=TmpProjectContext(cloud_id="x", project_id="1", project_uuid="u", key="TMP", name="Tmp"),
+        state=TmpState(worktypes=worktypes),
+    )
+
+
+@pytest.mark.asyncio
+async def test_template_hunt_reraises_unexpected_errors():
+    """L25: `_find_template_remote` used `except Exception: continue`, so a
+    dead token / 5xx / rate limit degraded the run to a synthesized template
+    item instead of surfacing the real error."""
+    from stint.dialects.jira.tmp import ops
+    from stint.exceptions import NotFoundError, TmpApiError
+
+    class _Layout:
+        def __init__(self, items):
+            self.items = items
+
+    class _Dialect:
+        def __init__(self):
+            self.tries = []
+
+        async def read_layout(self, *, project_id, issuetype_id):
+            self.tries.append(issuetype_id)
+            if issuetype_id == 10001:
+                raise TmpApiError("layout shape moved")
+            return _Layout([])
+
+    # A NotFound sibling is skipped; a StintError sibling (shape drift)
+    # is skipped only if it's TmpApiError/NotFound... shape drift raises
+    # TmpApiError, which IS in the skip list. Use a plain StintError
+    # subclass that is neither, to prove the distinction.
+    class _DeadTokenError(StintError):
+        pass
+
+    class _FlakyDialect(_Dialect):
+        async def read_layout(self, *, project_id, issuetype_id):
+            self.tries.append(issuetype_id)
+            if issuetype_id == 10001:
+                raise NotFoundError("404")  # unreadable sibling → skip
+            raise _DeadTokenError("dead token")  # unexpected → propagate
+
+    flaky = _FlakyDialect()
+    ctx = _make_ctx(ops, flaky, {"task": "10001", "bug": "10002"})
+    with pytest.raises(TmpApiError, match="dead token"):
+        await ops._find_template_remote(ctx, "customfield_9", skip_worktype_alias="target")
+    assert flaky.tries == [10001, 10002]
+    # NotFound sibling did NOT abort the hunt.
+    ctx2 = _make_ctx(ops, _Dialect(), {"first": "10001"})
+    result = await ops._find_template_remote(ctx2, "never-there", skip_worktype_alias="target")
+    assert result is None
+
+
+from stint.exceptions import StintError  # noqa: E402  -- used above the class defs

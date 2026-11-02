@@ -42,10 +42,10 @@ CLOUD_ROOT = f"{BASE}/rest/api/3"
 @pytest.fixture(autouse=True)
 def _isolate_registry():
     registry.reset()
-    sys.modules.pop("examples.company_managed.platform", None)
+    sys.modules.pop("examples.company_managed.platform_schema", None)
     yield
     registry.reset()
-    sys.modules.pop("examples.company_managed.platform", None)
+    sys.modules.pop("examples.company_managed.platform_schema", None)
 
 
 def _cloud_engine() -> Engine:

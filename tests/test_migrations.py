@@ -56,6 +56,40 @@ def test_loader_unknown_current_raises(tmp_path):
     assert "not in the migration graph" in str(e.value)
 
 
+def test_loader_cycle_raises(tmp_path):
+    """A fully cyclic graph has no heads. Previously `chain_from` silently
+    returned [] for it and `upgrade` printed "already at revision" instead
+    of failing — a broken migrations directory was invisible (M6)."""
+    (tmp_path / "a.py").write_text(
+        "revision = 'aaa111222333'\ndown_revision = 'ccc111222333'\n"
+        "async def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "b.py").write_text(
+        "revision = 'bbb111222333'\ndown_revision = 'aaa111222333'\n"
+        "async def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "c.py").write_text(
+        "revision = 'ccc111222333'\ndown_revision = 'bbb111222333'\n"
+        "async def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
+    )
+    graph = load_migrations(tmp_path)
+    with pytest.raises(MigrationGraphError) as e:
+        graph.chain_from(None)
+    assert "no heads" in str(e.value)
+    assert "cycle" in str(e.value)
+
+
+def test_loader_empty_directory_is_a_no_op(tmp_path):
+    """An empty migrations directory is legitimately a fully-empty graph:
+    no heads *because there are no migrations*, which is not the cycle case."""
+    graph = load_migrations(tmp_path)
+    assert graph.heads() == []
+    assert graph.chain_from(None) == []
+
+
 def test_loader_duplicate_revision_raises(tmp_path):
     """Two files with the same `revision` global cannot coexist."""
     (tmp_path / "a.py").write_text(
@@ -118,6 +152,8 @@ async def test_upgrade_runs_initial_migration_and_records_revision(tmp_path):
     respx.post(f"{CLOUD_ROOT}/field").mock(
         return_value=httpx.Response(201, json={"id": "customfield_10042", "name": "Severity"})
     )
+    # POST /field ignores `description`; the op applies it via the update PUT.
+    respx.put(f"{CLOUD_ROOT}/field/customfield_10042").mock(return_value=httpx.Response(204))
     respx.get(f"{CLOUD_ROOT}/field/customfield_10042/context").mock(
         return_value=httpx.Response(
             200,
@@ -158,6 +194,8 @@ async def test_second_migration_only_runs_from_intermediate(tmp_path):
     respx.post(f"{CLOUD_ROOT}/field").mock(
         return_value=httpx.Response(201, json={"id": "customfield_10043", "name": "Root Cause"})
     )
+    # POST /field ignores `description`; the op applies it via the update PUT.
+    respx.put(f"{CLOUD_ROOT}/field/customfield_10043").mock(return_value=httpx.Response(204))
 
     state = StateFile(env="dev", jira_url=BASE, revision="abc123def456")
     state_path = tmp_path / "state.yaml"
@@ -186,6 +224,38 @@ async def test_upgrade_at_head_is_noop(tmp_path):
         await engine.close()
     assert applied == []
     assert state.revision == "def789ghi012"
+
+
+@pytest.mark.asyncio
+async def test_upgrade_to_current_revision_is_noop(tmp_path):
+    """L15: ``upgrade --to <current revision>`` is alembic-style done, not
+    an error from an unreachable target."""
+    state = StateFile(env="dev", jira_url=BASE, revision="abc123def456")
+    state_path = tmp_path / "state.yaml"
+    graph = load_migrations(FIXTURES_DIR)
+    engine = _engine()
+    try:
+        applied = await run_upgrade(engine, state, graph, state_path, target="abc123def456")
+    finally:
+        await engine.close()
+    assert applied == []
+    assert state.revision == "abc123def456"
+
+
+@pytest.mark.asyncio
+async def test_upgrade_unreachable_target_raises_migration_graph_error(tmp_path):
+    """L15: a bogus --to target previously escaped as a bare ValueError
+    (outside the StintError hierarchy → raw traceback); it must be a
+    MigrationGraphError the CLI can render."""
+    state = StateFile(env="dev", jira_url=BASE, revision="abc123def456")
+    state_path = tmp_path / "state.yaml"
+    graph = load_migrations(FIXTURES_DIR)
+    engine = _engine()
+    try:
+        with pytest.raises(MigrationGraphError):
+            await run_upgrade(engine, state, graph, state_path, target="no_such_rev")
+    finally:
+        await engine.close()
 
 
 @pytest.mark.asyncio
@@ -224,6 +294,8 @@ async def test_state_file_persisted_after_each_migration(tmp_path):
             httpx.Response(500, json={"errorMessages": ["server boom"]}),
         ]
     )
+    # POST /field ignores `description`; the op applies it via the update PUT.
+    respx.put(f"{CLOUD_ROOT}/field/customfield_10042").mock(return_value=httpx.Response(204))
     respx.get(f"{CLOUD_ROOT}/field/customfield_10042/context").mock(
         return_value=httpx.Response(
             200,
@@ -292,6 +364,8 @@ async def test_create_custom_field_is_idempotent_when_alias_in_state(tmp_path):
     )
     # The second migration creates bug_root_cause, which we DO need to allow.
     respx.post(f"{CLOUD_ROOT}/field").mock(return_value=httpx.Response(201, json={"id": "customfield_10043"}))
+    # POST /field ignores `description`; the op applies it via the update PUT.
+    respx.put(f"{CLOUD_ROOT}/field/customfield_10043").mock(return_value=httpx.Response(204))
 
     state_path = tmp_path / "state.yaml"
     graph = load_migrations(FIXTURES_DIR)

@@ -62,6 +62,18 @@ class ProjectMeta(StintMeta):
                         f"Team-managed projects do not support reusable field "
                         f"configurations."
                     )
+            if getattr(cls, "__security_scheme__", None) is not None:
+                raise ConfigurationError(
+                    f"Project {name!r} is team-managed but references a SecurityScheme. "
+                    f"Team-managed projects have no project-level issue security "
+                    f"scheme association."
+                )
+
+        security_scheme = getattr(cls, "__security_scheme__", None)
+        if security_scheme is not None and getattr(security_scheme, "alias", "") == "":
+            raise ConfigurationError(
+                f"Project {name!r} references a SecurityScheme with no alias; give the declaration an explicit alias."
+            )
 
         # Track inverse linkage: each issuetype learns which project(s) include
         # it. Used by AsyncSession.add() to infer project when unambiguous.
@@ -85,9 +97,12 @@ class Project(BaseModel, metaclass=ProjectMeta):
       "Browse users and groups" permission.
     - ``__style__``: ``"company-managed"`` (default) or ``"team-managed"`` (Cloud only).
     - ``__issuetypes__``: list of IssueType subclasses included in this project.
+    - ``__security_scheme__``: optional SecurityScheme declaration to
+      associate with this project at apply time. CMP only.
 
     TMP projects cannot reference reusable schemes (ScreenScheme,
-    FieldConfiguration); stint rejects this combination at class-definition time.
+    FieldConfiguration, SecurityScheme); stint rejects this combination at
+    class-definition time.
     """
 
     # Set by ProjectMeta after class creation; declared for the type checker.

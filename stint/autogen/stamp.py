@@ -20,8 +20,9 @@ Matching strategy:
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from stint.autogen.desired import build_desired_snapshot
 from stint.state.file import (
@@ -72,13 +73,42 @@ def stamp(
     return report
 
 
+def _index_by_name(entries: Iterable[Any]) -> dict[str, list[Any]]:
+    """Group Jira objects by display name (L20).
+
+    Jira does not enforce global display-name uniqueness, so a plain
+    ``{name: obj}`` was last-wins: stamp bound an arbitrary duplicate with
+    no ``skipped`` entry. Returning the list per name lets each matcher
+    treat an ambiguous name as "not stampable" and report all candidates.
+    """
+    by_name: dict[str, list[Any]] = {}
+    for entry in entries:
+        by_name.setdefault(entry.name, []).append(entry)
+    return by_name
+
+
+def _resolve_name(by_name: dict[str, list[Any]], name: str) -> tuple[Any, str | None]:
+    """(match, conflict_reason). Match is None for "absent" and when the
+    name is ambiguous (multiple candidates)."""
+    candidates = by_name.get(name) or []
+    if not candidates:
+        return None, None
+    if len(candidates) > 1:
+        ids = ", ".join(str(candidate.id) for candidate in candidates)
+        return None, f"display name {name!r} matches multiple Jira objects ({ids}); refusing to guess"
+    return candidates[0], None
+
+
 # ── Custom fields ────────────────────────────────────────────────────
 def _stamp_custom_fields(state, snapshot, desired, report) -> None:
-    by_name = {cf.name: cf for cf in snapshot.custom_fields.values()}
+    by_name = _index_by_name(snapshot.custom_fields.values())
     for alias, want in desired.custom_fields.items():
-        match = by_name.get(want.name)
+        match, conflict = _resolve_name(by_name, want.name)
         if match is None:
-            report.unmatched.append(("custom_field", alias))
+            if conflict:
+                report.skipped.append(("custom_field", alias, conflict))
+            else:
+                report.unmatched.append(("custom_field", alias))
             continue
         if alias in state.custom_fields:
             existing = state.custom_fields[alias]
@@ -101,11 +131,14 @@ def _stamp_issuetypes(state, snapshot, desired, report) -> None:
     # Only global issue types are adoptable. A tenant with team-managed projects
     # also lists same-named project-scoped types in the snapshot; matching one
     # would record an id that 400s on any global update. (#8)
-    by_name = {it.name: it for it in snapshot.issuetypes.values() if not it.project_scoped}
+    by_name = _index_by_name(it for it in snapshot.issuetypes.values() if not it.project_scoped)
     for alias, want in desired.issuetypes.items():
-        match = by_name.get(want.name)
+        match, conflict = _resolve_name(by_name, want.name)
         if match is None:
-            report.unmatched.append(("issuetype", alias))
+            if conflict:
+                report.skipped.append(("issuetype", alias, conflict))
+            else:
+                report.unmatched.append(("issuetype", alias))
             continue
         if alias in state.issuetypes:
             existing = state.issuetypes[alias]
@@ -124,11 +157,14 @@ def _stamp_issuetypes(state, snapshot, desired, report) -> None:
 
 # ── Screens ──────────────────────────────────────────────────────────
 def _stamp_screens(state, snapshot, desired, report) -> None:
-    by_name = {s.name: s for s in snapshot.screens.values()}
+    by_name = _index_by_name(snapshot.screens.values())
     for alias, want in desired.screens.items():
-        match = by_name.get(want.name)
+        match, conflict = _resolve_name(by_name, want.name)
         if match is None:
-            report.unmatched.append(("screen", alias))
+            if conflict:
+                report.skipped.append(("screen", alias, conflict))
+            else:
+                report.unmatched.append(("screen", alias))
             continue
         if alias in state.screens:
             existing = state.screens[alias]
@@ -148,11 +184,14 @@ def _stamp_screens(state, snapshot, desired, report) -> None:
 
 # ── Screen schemes ───────────────────────────────────────────────────
 def _stamp_screen_schemes(state, snapshot, desired, report) -> None:
-    by_name = {s.name: s for s in snapshot.screen_schemes.values()}
+    by_name = _index_by_name(snapshot.screen_schemes.values())
     for alias, want in desired.screen_schemes.items():
-        match = by_name.get(want.name)
+        match, conflict = _resolve_name(by_name, want.name)
         if match is None:
-            report.unmatched.append(("screen_scheme", alias))
+            if conflict:
+                report.skipped.append(("screen_scheme", alias, conflict))
+            else:
+                report.unmatched.append(("screen_scheme", alias))
             continue
         if alias in state.screen_schemes:
             existing = state.screen_schemes[alias]
@@ -171,11 +210,14 @@ def _stamp_screen_schemes(state, snapshot, desired, report) -> None:
 
 # ── Field configurations ─────────────────────────────────────────────
 def _stamp_field_configurations(state, snapshot, desired, report) -> None:
-    by_name = {fc.name: fc for fc in snapshot.field_configurations.values()}
+    by_name = _index_by_name(snapshot.field_configurations.values())
     for alias, want in desired.field_configurations.items():
-        match = by_name.get(want.name)
+        match, conflict = _resolve_name(by_name, want.name)
         if match is None:
-            report.unmatched.append(("field_configuration", alias))
+            if conflict:
+                report.skipped.append(("field_configuration", alias, conflict))
+            else:
+                report.unmatched.append(("field_configuration", alias))
             continue
         if alias in state.field_configurations:
             existing = state.field_configurations[alias]
@@ -194,11 +236,14 @@ def _stamp_field_configurations(state, snapshot, desired, report) -> None:
 
 # ── Issue type schemes ───────────────────────────────────────────────
 def _stamp_issuetype_schemes(state, snapshot, desired, report) -> None:
-    by_name = {s.name: s for s in snapshot.issuetype_schemes.values()}
+    by_name = _index_by_name(snapshot.issuetype_schemes.values())
     for alias, want in desired.issuetype_schemes.items():
-        match = by_name.get(want.name)
+        match, conflict = _resolve_name(by_name, want.name)
         if match is None:
-            report.unmatched.append(("issuetype_scheme", alias))
+            if conflict:
+                report.skipped.append(("issuetype_scheme", alias, conflict))
+            else:
+                report.unmatched.append(("issuetype_scheme", alias))
             continue
         if alias in state.issuetype_schemes:
             existing = state.issuetype_schemes[alias]
@@ -217,11 +262,14 @@ def _stamp_issuetype_schemes(state, snapshot, desired, report) -> None:
 
 # ── ITSS ─────────────────────────────────────────────────────────────
 def _stamp_itss(state, snapshot, desired, report) -> None:
-    by_name = {s.name: s for s in snapshot.issuetype_screen_schemes.values()}
+    by_name = _index_by_name(snapshot.issuetype_screen_schemes.values())
     for alias, want in desired.issuetype_screen_schemes.items():
-        match = by_name.get(want.name)
+        match, conflict = _resolve_name(by_name, want.name)
         if match is None:
-            report.unmatched.append(("issuetype_screen_scheme", alias))
+            if conflict:
+                report.skipped.append(("issuetype_screen_scheme", alias, conflict))
+            else:
+                report.unmatched.append(("issuetype_screen_scheme", alias))
             continue
         if alias in state.issuetype_screen_schemes:
             existing = state.issuetype_screen_schemes[alias]
@@ -240,11 +288,14 @@ def _stamp_itss(state, snapshot, desired, report) -> None:
 
 # ── FCS ──────────────────────────────────────────────────────────────
 def _stamp_fcs(state, snapshot, desired, report) -> None:
-    by_name = {s.name: s for s in snapshot.field_configuration_schemes.values()}
+    by_name = _index_by_name(snapshot.field_configuration_schemes.values())
     for alias, want in desired.field_configuration_schemes.items():
-        match = by_name.get(want.name)
+        match, conflict = _resolve_name(by_name, want.name)
         if match is None:
-            report.unmatched.append(("field_configuration_scheme", alias))
+            if conflict:
+                report.skipped.append(("field_configuration_scheme", alias, conflict))
+            else:
+                report.unmatched.append(("field_configuration_scheme", alias))
             continue
         if alias in state.field_configuration_schemes:
             existing = state.field_configuration_schemes[alias]

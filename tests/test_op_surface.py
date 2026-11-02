@@ -666,6 +666,11 @@ async def test_create_project_cloud_uses_leadAccountId():  # noqa: N802 (mirrors
             "projectTypeKey": "software",
             "leadAccountId": "acc-123",
             "description": "",
+            # CMP create now defaults gh-kanban-template: POST /project
+            # silently defaults to the team-managed template without this,
+            # and a TMP project ignores the whole scheme family (validated
+            # on a live tenant).
+            "projectTemplateKey": "com.pyxis.greenhopper.jira:gh-kanban-template",
         },
     ).mock(return_value=httpx.Response(201, json={"id": "p-1"}))
     state = StateFile(env="dev", jira_url=BASE)
@@ -725,6 +730,7 @@ async def test_create_project_resolves_email_lead_to_account_id():
             "projectTypeKey": "software",
             "leadAccountId": "acc-999",
             "description": "",
+            "projectTemplateKey": "com.pyxis.greenhopper.jira:gh-kanban-template",
         },
     ).mock(return_value=httpx.Response(201, json={"id": "p-1"}))
     state = StateFile(env="dev", jira_url=BASE)
@@ -1085,3 +1091,244 @@ async def test_delete_missing_alias_is_noop():
     finally:
         await engine.close()
     assert "ghost" not in state.screens
+
+
+# ── Security scheme ops ──────────────────────────────────────────────
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_issue_security_scheme_records_levels_and_default():
+    """The create POST carries the declared levels inline (isDefault flag ok);
+    since neither create nor add-level returns level ids, a follow-up scheme
+    GET fills level_ids/default_level_id into state."""
+    create_route = respx.post(f"{CLOUD_ROOT}/issuesecurityschemes").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "9001",
+                "levels": [
+                    {"name": "Public", "description": "", "isDefault": True, "id": "lv-1"},
+                ],
+            },
+        )
+    )
+    respx.get(f"{CLOUD_ROOT}/issuesecurityschemes/9001").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": 9001,
+                "name": "Bug Security Scheme",
+                "defaultSecurityLevelId": 10021,
+                "levels": [
+                    {"id": "10021", "name": "Public", "isDefault": True},
+                    {"id": "10022", "name": "Internal"},
+                ],
+            },
+        )
+    )
+    state = StateFile(env="dev", jira_url=BASE)
+    engine = _cloud_engine()
+    try:
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.create_issue_security_scheme(
+                alias="bug_security",
+                name="Bug Security Scheme",
+                description="who sees",
+                levels=[
+                    dict(alias="level-public", name="Public", description="", is_default=True),
+                    dict(alias="level-internal", name="Internal", description="", is_default=False),
+                ],
+            ),
+        )
+    finally:
+        await engine.close()
+    mapping = state.security_schemes["bug_security"]
+    assert mapping.id == "9001"
+    assert mapping.level_ids == {"level-public": "10021", "level-internal": "10022"}
+    assert mapping.default_level_id == "10021"  # captured from the scheme GET's isDefault
+    body_sent = create_route.calls[0].request.read()
+    assert b'"isDefault":true' in body_sent
+    assert b"alias" not in body_sent  # op-only key never reaches the wire
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_issue_security_scheme_idempotent_rerun_fills_missing_levels():
+    """Re-run: no POST; a level declared but missing from Jira's reflected
+    state gets PUT (mirroring create_custom_field's option-fill)."""
+    respx.put(f"{CLOUD_ROOT}/issuesecurityschemes/sc-9/level").mock(return_value=httpx.Response(204))
+    respx.get(f"{CLOUD_ROOT}/issuesecurityschemes/sc-9").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": 9002,
+                "levels": [
+                    {"id": "20001", "name": "Public"},
+                    {"id": "20002", "name": "New"},
+                ],
+            },
+        )
+    )
+    state = StateFile(env="dev", jira_url=BASE)
+    from stint.state.file import SecuritySchemeMapping
+
+    state.security_schemes["bug_security"] = SecuritySchemeMapping(id="sc-9", level_ids={"level-public": "10021"})
+    engine = _cloud_engine()
+    try:
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.create_issue_security_scheme(
+                alias="bug_security",
+                name="Bug Security Scheme",
+                levels=[
+                    dict(alias="level-public", name="Public", description="", is_default=False),
+                    dict(alias="level-new", name="New", description="", is_default=False),
+                ],
+            ),
+        )
+    finally:
+        await engine.close()
+    assert len(respx.post(f"{CLOUD_ROOT}/issuesecurityschemes").calls) == 0
+    mapping = state.security_schemes["bug_security"]
+    assert mapping.level_ids["level-new"] == "20002"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_add_issue_security_level_member_group_and_user():
+    """Groups pass the group name to the wire; user emails resolve via the
+    user-search API and state records the *resolved* parameter so re-runs
+    (and later diffs against reflected accountId parameters) stay idempotent."""
+    put = respx.put(f"{CLOUD_ROOT}/issuesecurityschemes/sc-9/level/10022/member").mock(return_value=httpx.Response(204))
+    respx.get(f"{CLOUD_ROOT}/user/search").mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"accountId": "5b10ac8b86e24b0016d46e0f", "emailAddress": "user@example.com"}],
+        )
+    )
+    state = StateFile(env="dev", jira_url=BASE)
+    from stint.state.file import SecuritySchemeMapping
+
+    state.security_schemes["bug_security"] = SecuritySchemeMapping(id="sc-9", level_ids={"level-internal": "10022"})
+    engine = _cloud_engine()
+    try:
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.add_issue_security_level_member(
+                scheme_alias="bug_security",
+                level_alias="level-internal",
+                member_type="group",
+                member_value="jira-admins",
+            ),
+        )
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.add_issue_security_level_member(
+                scheme_alias="bug_security",
+                level_alias="level-internal",
+                member_type="user",
+                member_value="user@example.com",
+            ),
+        )
+    finally:
+        await engine.close()
+    assert len(respx.get(f"{CLOUD_ROOT}/user/search").calls) == 1
+    bodies = [c.request.read() for c in put.calls]
+    assert b'"parameter":"jira-admins"' in bodies[0]
+    assert b'"parameter":"5b10ac8b86e24b0016d46e0f"' in bodies[1]
+    assert b'"type":"group"' in bodies[0] and b'"type":"user"' in bodies[1]
+    members = state.security_schemes["bug_security"].member_values["level-internal"]
+    # Declared member value resolution #  resolved accounts recorded, not emails.
+    assert members == ["jira-admins", "5b10ac8b86e24b0016d46e0f"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_set_default_issue_security_level_and_associate():
+    default_put = respx.put(f"{CLOUD_ROOT}/issuesecurityschemes/level/default").mock(return_value=httpx.Response(204))
+    associate_put = respx.put(f"{CLOUD_ROOT}/issuesecurityschemes/project").mock(
+        return_value=httpx.Response(
+            303,
+            json={"id": "12010", "status": "COMPLETE", "self": f"{CLOUD_ROOT}/task/12010"},
+        )
+    )
+    state = StateFile(env="dev", jira_url=BASE)
+    from stint.state.file import ProjectMapping, SecuritySchemeMapping
+
+    state.projects["SEC"] = ProjectMapping(id="p-99", key="SEC")
+    state.security_schemes["bug_security"] = SecuritySchemeMapping(
+        id="sc-9",
+        level_ids={"level-public": "10021"},
+        default_level_id="10021",
+    )
+    engine = _cloud_engine()
+    try:
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.set_default_issue_security_level(scheme_alias="bug_security", level_alias="level-public"),
+        )
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.set_project_issue_security_scheme(project_alias="SEC", scheme_alias="bug_security"),
+        )
+    finally:
+        await engine.close()
+    assert b'"defaultValues":[{"issueSecuritySchemeId":"sc-9","defaultLevelId":"10021"}]' in (
+        default_put.calls[0].request.read()
+    )
+    assoc_body = associate_put.calls[0].request.read()
+    assert b'"projectId":"p-99"' in assoc_body
+    assert b'"schemeId":"sc-9"' in assoc_body
+    assert state.security_schemes["bug_security"].default_level_id == "10021"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_clear_default_issue_security_level_sends_null_and_forgets_state():
+    default_put = respx.put(f"{CLOUD_ROOT}/issuesecurityschemes/level/default").mock(return_value=httpx.Response(204))
+    state = StateFile(env="dev", jira_url=BASE)
+    from stint.state.file import SecuritySchemeMapping
+
+    state.security_schemes["bug_security"] = SecuritySchemeMapping(
+        id="sc-9",
+        level_ids={"level-public": "10021"},
+        default_level_id="10021",
+    )
+    engine = _cloud_engine()
+    try:
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.clear_default_issue_security_level(scheme_alias="bug_security"),
+        )
+    finally:
+        await engine.close()
+    assert b'"defaultValues":[{"issueSecuritySchemeId":"sc-9","defaultLevelId":null}]' in (
+        default_put.calls[0].request.read()
+    )
+    assert state.security_schemes["bug_security"].default_level_id is None
+
+
+@pytest.mark.asyncio
+async def test_associate_task_polls_to_failure():
+    """An associate task answered ENQUEUED → poll → FAILED must raise, not
+    finish green with the project left unbound."""
+    from stint.exceptions import StintError
+
+    engine = _cloud_engine()
+    from stint.migrations.op import _await_security_task
+
+    try:
+        with pytest.raises(StintError):
+            await _await_security_task(
+                engine.dialect,
+                {"status": "ENQUEUED", "self": f"{CLOUD_ROOT}/task/12010"},
+            )
+    finally:
+        await engine.close()

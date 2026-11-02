@@ -37,10 +37,10 @@ CLOUD_ROOT = f"{BASE}/rest/api/3"
 @pytest.fixture(autouse=True)
 def _isolate_registry():
     registry.reset()
-    sys.modules.pop("examples.company_managed.platform", None)
+    sys.modules.pop("examples.company_managed.platform_schema", None)
     yield
     registry.reset()
-    sys.modules.pop("examples.company_managed.platform", None)
+    sys.modules.pop("examples.company_managed.platform_schema", None)
 
 
 def _cloud_engine() -> Engine:
@@ -89,7 +89,7 @@ def test_wrap_plain_text_empty():
 
 # ── Payload construction ─────────────────────────────────────────────
 def test_payload_select_field_emitted_as_value_object():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     state = _platform_state()
     bug = p.Bug(
@@ -104,7 +104,7 @@ def test_payload_select_field_emitted_as_value_object():
 
 
 def test_payload_reporter_dc_vs_cloud():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="acc-123", severity="S1")
@@ -115,7 +115,7 @@ def test_payload_reporter_dc_vs_cloud():
 
 
 def test_payload_description_wrapped_in_adf_on_cloud():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     state = _platform_state()
     bug = p.Bug(
@@ -134,7 +134,7 @@ def test_payload_description_wrapped_in_adf_on_cloud():
 def test_payload_omits_unset_optionals():
     """assignee is Optional[str] = None; description default None. Skipped
     so a PUT doesn't accidentally clear existing Jira data."""
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="alice", severity="S1")
@@ -144,7 +144,7 @@ def test_payload_omits_unset_optionals():
 
 
 def test_payload_only_filter_for_update():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="alice", severity="S1")
@@ -158,7 +158,7 @@ def test_payload_only_filter_for_update():
 
 
 def test_payload_unmapped_custom_field_raises():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     state = StateFile(env="dev", jira_url=BASE)  # empty state
     state.issuetypes["bug"] = SimpleMapping(id="10010")
@@ -168,8 +168,59 @@ def test_payload_unmapped_custom_field_raises():
     assert "bug_severity" in str(e.value)
 
 
+def test_payload_attr_shadowing_declared_custom_field_raises():
+    """A model attribute named like a declared CustomField but NOT Annotated
+    with it would be sent as a literal key (``test_text_field``) instead of
+    resolving to ``customfield_10321`` — live-tenant bug (2026-11), found via
+    Jira's reply "Field 'test_text_field' cannot be set ... or unknown".
+    The builder must refuse with guidance naming the actual fix."""
+    import examples.company_managed.platform_schema as p
+    from stint import TextField
+    from stint.fields import CustomField
+
+    _ = CustomField(alias="shadow_test", name="TestTextField", type=TextField)
+
+    class ShadowBug(p.IssueType):
+        __alias__ = "shadow_bug"
+        # Deliberate mistake: attribute named like the declaration, no marker.
+        test_text_field: str | None = None
+
+    state = _platform_state()
+    bug = ShadowBug(test_text_field="boom")
+    with pytest.raises(ConfigurationError) as e:
+        build_fields_payload(bug, state, is_cloud=False)
+    assert "test_text_field" in str(e.value)
+    assert "Annotated" in str(e.value)
+    assert "TestTextField" in str(e.value)  # the declaration it shadows
+
+
+def test_payload_attr_self_shadowing_declaration_raises_with_rename_hint():
+    """The attribute *is* Annotated, but its annotation name matches the
+    attribute itself. Under ``from __future__ import annotations`` the name
+    resolves to the attribute's default (None), so metadata is ``[None]`` and
+    the declaration is lost (live tenant, 2026-11). The error must point at
+    renaming the variable, not claim the annotation is missing."""
+    from typing import Annotated
+
+    import examples.company_managed.platform_schema as p
+
+    class SelfShadowBug(p.IssueType):
+        __alias__ = "self_shadow_bug"
+        # Deliberate mistake: metadata resolves to None, not the CustomField.
+        test_text_field: Annotated[str | None, None] = None
+
+    state = _platform_state()
+    bug = SelfShadowBug(test_text_field="boom")
+    with pytest.raises(ConfigurationError) as e:
+        build_fields_payload(bug, state, is_cloud=False)
+    message = str(e.value)
+    assert "resolves to None" in message
+    assert "Rename the" in message
+    assert "TestTextField" in message
+
+
 def test_insert_payload_includes_project_and_issuetype():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="alice", severity="S1")
@@ -178,8 +229,27 @@ def test_insert_payload_includes_project_and_issuetype():
     assert body["fields"]["issuetype"] == {"id": "10010"}
 
 
+def test_insert_payload_strips_reporter():
+    """Jira Cloud sets the reporter from the caller's identity at create and
+    rejects an explicit one ("Field 'reporter' cannot be set...", live-tenant
+    verified) even when the field is on the create screen. Inserts therefore
+    strip it — but hydration fills reporter on read, and UPDATE payloads
+    still accept reporter reassignment."""
+    import examples.company_managed.platform_schema as p
+
+    state = _platform_state()
+    bug = p.Bug(summary="x", reporter="5b10ac8b86e24b0016d46e0f", severity="S1")
+    body = build_insert_payload(bug, state, is_cloud=True, project_key="PLAT")
+    assert "reporter" not in body["fields"]
+    # The attribute survives on the instance (hydration path fills it on read):
+    assert bug.reporter == "5b10ac8b86e24b0016d46e0f"
+    # Update payloads keep it: PUT /issue accepts reporter reassignment.
+    body = build_update_payload(bug, state, is_cloud=True, dirty={"reporter"})
+    assert body["fields"]["reporter"] == {"accountId": "5b10ac8b86e24b0016d46e0f"}
+
+
 def test_update_payload_only_dirty_fields():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="alice", severity="S2")
@@ -191,7 +261,7 @@ def test_update_payload_only_dirty_fields():
 def test_update_payload_emits_null_for_deliberate_clear():
     """Dirty-tracked None is a deliberate clear: the update path emits null
     for optional fields rather than silently dropping them (B4)."""
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="alice", severity="S1", assignee="acc-1")
@@ -201,7 +271,7 @@ def test_update_payload_emits_null_for_deliberate_clear():
 
 
 def test_update_payload_null_for_optional_custom_field_clear():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     state = _platform_state()
     state.custom_fields["bug_root_cause"] = CustomFieldMapping(
@@ -215,14 +285,14 @@ def test_update_payload_null_for_optional_custom_field_clear():
 
 # ── Project inference / __projects__ linkage ─────────────────────────
 def test_project_meta_sets_projects_on_issuetype():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     assert "PLAT" in p.Bug.__projects__
 
 
 # ── add / delete plumbing (no commit) ────────────────────────────────
 def test_add_rejects_instance_with_existing_key():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     engine = _cloud_engine()
     session = AsyncSession(engine, _platform_state())
@@ -233,7 +303,7 @@ def test_add_rejects_instance_with_existing_key():
 
 
 def test_add_with_explicit_project_overrides_inferred():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     engine = _cloud_engine()
     session = AsyncSession(engine, _platform_state())
@@ -244,7 +314,7 @@ def test_add_with_explicit_project_overrides_inferred():
 
 
 def test_delete_requires_key():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     engine = _cloud_engine()
     session = AsyncSession(engine, _platform_state())
@@ -257,7 +327,7 @@ def test_delete_requires_key():
 @pytest.mark.asyncio
 @respx.mock
 async def test_commit_insert_posts_issue_and_sets_key():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     respx.post(f"{CLOUD_ROOT}/issue").mock(
         return_value=httpx.Response(
@@ -286,7 +356,7 @@ async def test_commit_insert_posts_issue_and_sets_key():
 @pytest.mark.asyncio
 @respx.mock
 async def test_commit_insert_cloud_uses_adf_description():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     captured: list[dict] = []
 
@@ -314,7 +384,8 @@ async def test_commit_insert_cloud_uses_adf_description():
             await engine.close()
 
     assert captured[0]["fields"]["description"]["type"] == "doc"
-    assert captured[0]["fields"]["reporter"] == {"accountId": "acc-1"}
+    # reporter is stripped from inserts (Jira sets it from the caller identity):
+    assert "reporter" not in captured[0]["fields"]
 
 
 # ── End-to-end: update via dirty tracking ────────────────────────────
@@ -324,7 +395,7 @@ async def test_dirty_tracking_emits_minimal_put():
     """Hydrate via get(), mutate one field, commit → PUT with only that field."""
     import json
 
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
         return_value=httpx.Response(
@@ -371,7 +442,7 @@ async def test_dirty_none_assignment_puts_null_to_clear():
     silently report success while losing the change (B4)."""
     import json
 
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
         return_value=httpx.Response(
@@ -412,7 +483,7 @@ async def test_dirty_none_assignment_puts_null_to_clear():
 @pytest.mark.asyncio
 @respx.mock
 async def test_no_dirty_changes_means_no_put():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
         return_value=httpx.Response(
@@ -445,7 +516,7 @@ async def test_no_dirty_changes_means_no_put():
 @pytest.mark.asyncio
 @respx.mock
 async def test_commit_delete_calls_dialect():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
         return_value=httpx.Response(
@@ -507,7 +578,7 @@ def test_hydrate_description_from_adf():
 @respx.mock
 async def test_partial_commit_error_on_mixed_results():
     """First insert succeeds, second fails 400. Exception carries both results."""
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     respx.post(f"{CLOUD_ROOT}/issue").mock(
         side_effect=[
@@ -536,11 +607,23 @@ async def test_partial_commit_error_on_mixed_results():
     assert "bad input" in str(e.value.failures[0].error) or "400" in str(e.value.failures[0].error)
 
 
+def test_partial_commit_error_with_no_failures_does_not_crash():
+    """Constructing the exception with an all-success (or empty) result list
+    must not raise IndexError from the message formatting — the IndexError
+    would mask the caller's actual error (L5)."""
+    from stint.exceptions import PartialCommitError
+
+    err = PartialCommitError(results=[])
+    assert not err.failures
+    assert not err.successes
+    assert "0 failed" in str(err)
+
+
 # ── Commit clears pending queues ─────────────────────────────────────
 @pytest.mark.asyncio
 @respx.mock
 async def test_commit_clears_pending_inserts_and_deletes():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     respx.post(f"{CLOUD_ROOT}/issue").mock(
         return_value=httpx.Response(
