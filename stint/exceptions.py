@@ -87,12 +87,10 @@ class PartialCommitError(StintError):
         self.results = results
         successes = [r for r in results if r.success]
         failures = [r for r in results if not r.success]
-        msg = (
-            f"commit partially failed: {len(successes)} succeeded, "
-            f"{len(failures)} failed. First failure: "
-            f"{failures[0].operation} on {failures[0].instance!r}: "
-            f"{failures[0].error!r}"
-        )
+        msg = f"commit partially failed: {len(successes)} succeeded, {len(failures)} failed."
+        if failures:
+            first = failures[0]
+            msg += f" First failure: {first.operation} on {first.instance!r}: {first.error!r}"
         super().__init__(msg)
 
     @property

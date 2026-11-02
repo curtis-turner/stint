@@ -17,10 +17,10 @@ CLOUD_ROOT = f"{BASE}/rest/api/3"
 @pytest.fixture(autouse=True)
 def _isolate_registry():
     registry.reset()
-    sys.modules.pop("examples.company_managed.platform", None)
+    sys.modules.pop("examples.company_managed.platform_schema", None)
     yield
     registry.reset()
-    sys.modules.pop("examples.company_managed.platform", None)
+    sys.modules.pop("examples.company_managed.platform_schema", None)
 
 
 def _paginated(values):
@@ -79,7 +79,7 @@ def test_autogenerate_greenfield_writes_full_migration(tmp_path, monkeypatch, ca
             "initial platform schema",
             "--autogenerate",
             "--schema",
-            "examples.company_managed.platform",
+            "examples.company_managed.platform_schema",
             "--state",
             str(state_path),
             "--env",
@@ -123,6 +123,64 @@ def test_autogenerate_greenfield_writes_full_migration(tmp_path, monkeypatch, ca
 
 
 @respx.mock
+def test_autogenerate_rechecks_head_after_reflect(tmp_path, monkeypatch, capsys):
+    """L19: autogenerate captured head parents before the slow reflect; two
+    concurrent runs could both parent to the same head and leave a branched
+    graph that chain_from refuses to walk. Parents are now re-read from the
+    graph immediately before writing."""
+    import stint.cli.cmd_revision
+
+    _stub_empty_jira(respx.mock)
+    mig_dir = tmp_path / "migrations"
+    state_path = tmp_path / "state.yaml"
+    mig_dir.mkdir()
+    (mig_dir / "seed.py").write_text(
+        "revision = 'head_seeded'\ndown_revision = None\nasync def upgrade(): pass\nasync def downgrade(): pass\n",
+        encoding="utf-8",
+    )
+
+    real = stint.cli.cmd_revision._current_head_parents
+    calls = {"n": 0}
+
+    def flaky_parents(dir_arg):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return ("stale_head",)  # lie: head captured before the reflect
+        return real(dir_arg)
+
+    monkeypatch.setattr("stint.cli.cmd_revision._current_head_parents", flaky_parents)
+    monkeypatch.setenv("STINT_TOKEN", "tok")
+    rc = main(
+        [
+            "revision",
+            "--migrations-dir",
+            str(mig_dir),
+            "-m",
+            "initial platform schema",
+            "--autogenerate",
+            "--force",
+            "--schema",
+            "examples.company_managed.platform_schema",
+            "--state",
+            str(state_path),
+            "--env",
+            "dev",
+            "--url",
+            f"jira_cloud+{BASE}",
+            "--auth",
+            "pat",
+        ]
+    )
+    assert rc == 0
+    postgres = None
+    graph = load_migrations(mig_dir)
+    postgres = next(m for m in graph.by_revision.values() if m.revision != "head_seeded")
+    # The stale head was not persisted; the real head was re-checked.
+    assert calls["n"] >= 2
+    assert postgres.down_revision == "head_seeded"
+
+
+@respx.mock
 def test_autogenerate_refuses_to_stack_pending_migrations(tmp_path, monkeypatch, capsys):
     """Running autogenerate twice without applying must not stack a duplicate
     migration. The second run refuses (#6); --force overrides."""
@@ -141,7 +199,7 @@ def test_autogenerate_refuses_to_stack_pending_migrations(tmp_path, monkeypatch,
                 message,
                 "--autogenerate",
                 "--schema",
-                "examples.company_managed.platform",
+                "examples.company_managed.platform_schema",
                 "--state",
                 str(state_path),
                 "--env",

@@ -63,6 +63,22 @@ def validate() -> list[str]:
                 f"IssueType {it_cls.__name__!r} references FieldConfiguration {fc.alias!r} which is not registered."
             )
 
+    # 6. Every Project's __security_scheme__ is a registered declaration.
+    for key, project_cls in registry.projects.items():
+        ss = getattr(project_cls, "__security_scheme__", None)
+        if ss is not None and getattr(ss, "alias", "") not in registry.security_schemes:
+            problems.append(
+                f"Project {key!r} references SecurityScheme {getattr(ss, 'alias', None)!r} which is not registered."
+            )
+        # 7. A scheme-side ``project=`` hint must name this project (or be
+        # unset). A stale hint fails only the diff warning path — surface it
+        # here too, where it's cheaper to fix.
+        if ss is not None and getattr(ss, "project", None) not in (None, key):
+            problems.append(
+                f"Project {key!r} references SecurityScheme {ss.alias!r} whose "
+                f"project hint is {ss.project!r}; expected None or {key!r}."
+            )
+
     return problems
 
 

@@ -22,6 +22,7 @@ from typing import Literal
 from stint.engine import Engine
 from stint.migrations.base import Migration, RevisionGraph
 from stint.migrations.context import MigrationContext, reset_context, set_context
+from stint.migrations.exceptions import MigrationGraphError
 from stint.state.file import StateFile
 
 Direction = Literal["upgrade", "downgrade"]
@@ -42,6 +43,10 @@ async def upgrade(
     """
     pending = graph.chain_from(state.revision)
     if target is not None:
+        if target == state.revision:
+            # Alembic-style no-op: upgrade --to <current revision> has
+            # nothing to do instead of erroring (L15).
+            return []
         pending = _truncate_to_target(pending, target)
     if not pending:
         return []
@@ -69,7 +74,7 @@ def _truncate_to_target(chain: list[Migration], target: str) -> list[Migration]:
         out.append(m)
         if m.revision == target:
             return out
-    raise ValueError(f"target revision {target!r} is not in the pending chain ({[m.revision for m in chain]})")
+    raise MigrationGraphError(f"target revision {target!r} is not in the pending chain ({[m.revision for m in chain]})")
 
 
 async def downgrade(

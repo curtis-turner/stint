@@ -241,6 +241,22 @@ def _base_args(schema: str, state_path: Path, *, extra: list[str] | None = None)
     return args + (extra or [])
 
 
+def test_cli_apply_refuses_state_env_mismatch(tmp_path, monkeypatch, capsys):
+    """M7: `stint apply` against a state file recorded for another env must
+    refuse — TMP ops adopt/rename by id against the recorded tenant, so
+    wrong-tenant ids corrupt the target project's configuration."""
+    monkeypatch.setenv("STINT_TOKEN", "test-token")
+    monkeypatch.setenv("STINT_USER", "you@example.com")
+    schema = _write_schema(tmp_path)
+    state_path = tmp_path / "state.yaml"
+    StateFile(env="dev", jira_url=BASE).save(state_path)
+
+    rc = main(_base_args(schema, state_path, extra=["--dry-run"]))
+    assert rc == 1
+    assert "records env 'dev'" in capsys.readouterr().err
+    assert not state_path.with_suffix(".yaml.lock").exists()
+
+
 @respx.mock
 def test_cli_apply_dry_run_shows_plan_and_writes_nothing(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("STINT_TOKEN", "test-token")

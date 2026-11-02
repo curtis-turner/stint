@@ -22,6 +22,7 @@ class TmpState:
 
     fields: dict[str, str] = field(default_factory=dict)  # field alias -> fieldId
     worktypes: dict[str, str] = field(default_factory=dict)  # worktype alias -> issuetype id
+    # Diagnostics only (L27): never consulted before a layout write.
     layout_ids: dict[str, str] = field(default_factory=dict)  # worktype alias -> layoutId
 
 

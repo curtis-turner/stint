@@ -18,6 +18,8 @@ class FieldConfiguration:
     required: list[FieldRef] = field(default_factory=list)
     hidden: list[FieldRef] = field(default_factory=list)
     description: str = ""
+    # Declaring module for scoped autogenerate (see Screen._declared_module).
+    _declared_module: str = field(default="", repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.alias:

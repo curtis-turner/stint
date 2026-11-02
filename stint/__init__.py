@@ -56,6 +56,7 @@ from stint.migrations import Migration, MigrationContext, get_context, load_migr
 from stint.query import AsyncSession, CommitResult, Session, and_, not_, or_, select
 from stint.registry import registry
 from stint.schema import FieldConfiguration, IssueType, Project, Screen, ScreenScheme
+from stint.schema.security import SecurityLevel, SecurityLevelMember, SecurityScheme
 from stint.state import (
     CustomFieldSnapshot,
     SecurityLevelMemberSnapshot,
@@ -67,7 +68,7 @@ from stint.state import (
 )
 from stint.validate import validate, validate_or_raise
 
-__version__ = "0.6.1"
+__version__ = "0.7.0"
 
 __all__ = [
     "APITokenAuth",
@@ -105,6 +106,12 @@ __all__ = [
     "RegistryError",
     "Screen",
     "ScreenScheme",
+    "SecurityLevel",
+    "SecurityLevelMember",
+    "SecurityLevelMemberSnapshot",
+    "SecurityLevelSnapshot",
+    "SecurityScheme",
+    "SecuritySchemeSnapshot",
     "SelectField",
     "Session",
     "ServerInfoSnapshot",
@@ -136,10 +143,7 @@ __all__ = [
 
 
 # Issue Security Scheme Declarations
-# These types are used in schema definitions to declare desired security schemes.
-# They are distinct from the snapshot types (which end in "Snapshot") that represent
+# ``SecurityLevel``/``SecurityLevelMember``/``SecurityScheme`` now come from
+# the schema plane (``stint.schema.security``); read your declaration data there.
+# The snapshot types (suffixed "Snapshot") stay in ``stint.state`` and represent
 # reflected state from Jira.
-
-SecurityLevel = SecurityLevelSnapshot
-SecurityLevelMember = SecurityLevelMemberSnapshot
-SecurityScheme = SecuritySchemeSnapshot

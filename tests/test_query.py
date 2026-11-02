@@ -26,10 +26,10 @@ CLOUD_ROOT = f"{BASE}/rest/api/3"
 @pytest.fixture(autouse=True)
 def _isolate_registry():
     registry.reset()
-    sys.modules.pop("examples.company_managed.platform", None)
+    sys.modules.pop("examples.company_managed.platform_schema", None)
     yield
     registry.reset()
-    sys.modules.pop("examples.company_managed.platform", None)
+    sys.modules.pop("examples.company_managed.platform_schema", None)
 
 
 def _cloud_engine() -> Engine:
@@ -51,7 +51,7 @@ def _platform_state() -> StateFile:
 
 # ── Column access ────────────────────────────────────────────────────
 def test_bug_c_severity_returns_column():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     col = p.Bug.c.severity
     assert col.attr_name == "severity"
@@ -59,7 +59,7 @@ def test_bug_c_severity_returns_column():
 
 
 def test_bug_c_summary_is_system_field():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     col = p.Bug.c.summary
     assert col.attr_name == "summary"
@@ -67,7 +67,7 @@ def test_bug_c_summary_is_system_field():
 
 
 def test_bug_c_unknown_attr_raises():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     with pytest.raises(AttributeError) as e:
         _ = p.Bug.c.does_not_exist
@@ -76,7 +76,7 @@ def test_bug_c_unknown_attr_raises():
 
 # ── JQL compile ──────────────────────────────────────────────────────
 def test_compile_eq_on_custom_field_resolves_to_cf_notation():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     stmt = select(p.Bug).where(p.Bug.c.severity == "S1")
     jql = stmt.compile(_platform_state())
@@ -84,14 +84,14 @@ def test_compile_eq_on_custom_field_resolves_to_cf_notation():
 
 
 def test_compile_eq_on_system_field_uses_attr_name():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     stmt = select(p.Bug).where(p.Bug.c.summary == "boom")
     assert stmt.compile(_platform_state()) == 'summary = "boom"'
 
 
 def test_compile_multiple_filters_and_joined():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     stmt = select(p.Bug).where(
         p.Bug.c.severity == "S1",
@@ -102,7 +102,7 @@ def test_compile_multiple_filters_and_joined():
 
 
 def test_compile_or_and_not():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     expr = or_(
         p.Bug.c.severity == "S1",
@@ -114,7 +114,7 @@ def test_compile_or_and_not():
 
 
 def test_compile_in_operator():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     stmt = select(p.Bug).where(p.Bug.c.severity.in_(["S1", "S2"]))
     jql = stmt.compile(_platform_state())
@@ -122,21 +122,21 @@ def test_compile_in_operator():
 
 
 def test_compile_contains_substring():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     stmt = select(p.Bug).where(p.Bug.c.summary.contains("login"))
     assert stmt.compile(_platform_state()) == 'summary ~ "login"'
 
 
 def test_compile_is_null():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     stmt = select(p.Bug).where(p.Bug.c.assignee.is_null())
     assert stmt.compile(_platform_state()) == "assignee is EMPTY"
 
 
 def test_compile_order_by():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     stmt = (
         select(p.Bug)
@@ -152,7 +152,7 @@ def test_compile_order_by():
 
 def test_compile_unmapped_custom_field_raises():
     """If state lacks the alias, compile errors with an actionable message."""
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     state = StateFile(env="dev", jira_url=BASE)  # empty state
     stmt = select(p.Bug).where(p.Bug.c.severity == "S1")
@@ -166,7 +166,7 @@ def test_compile_unmapped_custom_field_raises():
 @pytest.mark.asyncio
 @respx.mock
 async def test_session_get_by_key_hits_issue_endpoint():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     respx.get(f"{CLOUD_ROOT}/issue/PLAT-7").mock(
         return_value=httpx.Response(
@@ -198,7 +198,7 @@ async def test_session_get_by_key_hits_issue_endpoint():
 @pytest.mark.asyncio
 @respx.mock
 async def test_session_get_returns_none_on_404():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     respx.get(f"{CLOUD_ROOT}/issue/MISSING-1").mock(return_value=httpx.Response(404))
     engine = _cloud_engine()
@@ -213,7 +213,7 @@ async def test_session_get_returns_none_on_404():
 @pytest.mark.asyncio
 @respx.mock
 async def test_identity_map_returns_same_instance():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
         return_value=httpx.Response(
@@ -243,9 +243,85 @@ async def test_identity_map_returns_same_instance():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_get_fresh_bypasses_identity_and_refreshes_in_place():
+    """``fresh=True`` must hit the server and update the cached instance.
+
+    The demo's insert() read-back used the identity map, so it reported the
+    just-created object even when Jira hid the issue (issue-level security:
+    JQL empty, GET/PUT 404). A fresh read is the only proof of server state,
+    and it must refresh in place so callers still holding the inserted
+    instance can mutate and commit it.
+    """
+    import examples.company_managed.platform_schema as p
+
+    respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "key": "PLAT-1",
+                    "fields": {
+                        "summary": "first",
+                        "reporter": {"accountId": "acc-1"},
+                        "customfield_10042": {"value": "S1"},
+                    },
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "key": "PLAT-1",
+                    "fields": {
+                        "summary": "changed elsewhere",
+                        "reporter": {"accountId": "acc-1"},
+                        "customfield_10042": {"value": "S1"},
+                    },
+                },
+            ),
+        ]
+    )
+
+    engine = _cloud_engine()
+    async with AsyncSession(engine, _platform_state()) as session:
+        try:
+            cached = await session.get(p.Bug, "PLAT-1")
+            fresh = await session.get(p.Bug, "PLAT-1", fresh=True)
+        finally:
+            await engine.close()
+    assert fresh is cached
+    assert fresh is not None
+    assert fresh.summary == "changed elsewhere"
+    assert respx.calls.call_count == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_fresh_returns_none_when_server_hides_issue():
+    """A create can succeed while the issue is unreadable to the same token;
+    a fresh read must surface that as None instead of the identity cache."""
+    import examples.company_managed.platform_schema as p
+
+    respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(return_value=httpx.Response(404))
+    engine = _cloud_engine()
+    async with AsyncSession(engine, _platform_state()) as session:
+        try:
+            cached = p.Bug(
+                key="PLAT-1",
+                summary="hidden",
+                severity="S1",
+                reporter="acc-1",
+            )
+            session._identity[(p.Bug, "PLAT-1")] = cached
+            assert await session.get(p.Bug, "PLAT-1", fresh=True) is None
+        finally:
+            await engine.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_scalars_then_get_reuses_identity():
     """Issue returned by scalars() is reused by subsequent .get()."""
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     respx.post(f"{CLOUD_ROOT}/search/jql").mock(
         return_value=httpx.Response(
@@ -282,7 +358,7 @@ async def test_scalars_then_get_reuses_identity():
 @pytest.mark.asyncio
 @respx.mock
 async def test_session_scalars_cloud_uses_search_jql():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     respx.post(f"{CLOUD_ROOT}/search/jql").mock(
         return_value=httpx.Response(
@@ -317,7 +393,7 @@ async def test_session_scalars_cloud_uses_search_jql():
 @pytest.mark.asyncio
 @respx.mock
 async def test_cloud_pagination_via_next_page_token():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     # First page returns nextPageToken, second page returns none.
     respx.post(f"{CLOUD_ROOT}/search/jql").mock(
@@ -369,7 +445,7 @@ async def test_cloud_pagination_via_next_page_token():
 @pytest.mark.asyncio
 @respx.mock
 async def test_limit_truncates_results():
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     # Page one advertises a nextPageToken, but limit(1) stops the generator
     # before the second page is ever requested.
@@ -401,13 +477,87 @@ async def test_limit_truncates_results():
     assert [r.key for r in results] == ["PLAT-1"]
 
 
+# ── limit edge cases: zero is local, oversized is clamped (L10) ───────
+@pytest.mark.asyncio
+@respx.mock
+async def test_limit_zero_returns_empty_without_http():
+    import examples.company_managed.platform_schema as p
+
+    search_route = respx.post(f"{CLOUD_ROOT}/search/jql").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "issues": [
+                    {
+                        "key": "PLAT-1",
+                        "fields": {
+                            "summary": "p1",
+                            "reporter": {"accountId": "a"},
+                            "customfield_10042": {"value": "S1"},
+                        },
+                    }
+                ],
+            },
+        )
+    )
+    engine = _cloud_engine()
+    async with AsyncSession(engine, _platform_state()) as session:
+        try:
+            results = await session.scalars(select(p.Bug).limit(0))
+        finally:
+            await engine.close()
+    assert results == []
+    # The break previously ran after the first append, so one HTTP call and
+    # one row slipped through.
+    assert search_route.call_count == 0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_limit_page_size_clamped_to_jira_cap():
+    """limit(500) used to forward maxResults=500 and lean on Jira's
+    undocumented server-side clamping; the documented cap is 100."""
+    import json
+
+    import examples.company_managed.platform_schema as p
+
+    captured: list[dict] = []
+
+    def _capture(request):
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json={"issues": []})
+
+    respx.post(f"{CLOUD_ROOT}/search/jql").mock(side_effect=_capture)
+    engine = _cloud_engine()
+    async with AsyncSession(engine, _platform_state()) as session:
+        try:
+            await session.scalars(select(p.Bug).limit(500))
+        finally:
+            await engine.close()
+    assert captured[0]["maxResults"] == 100
+
+
+# ── JQL literal quoting (L11) ─────────────────────────────────────────
+def test_quote_escapes_jql_control_characters():
+    """JQL string literals expect \\n/\\r/\\t escape sequences; embedding the
+    raw characters makes multi-line values fail with an opaque 400."""
+    from stint.query.expr import _quote
+
+    assert _quote("line one\nline two") == '"line one\\nline two"'
+    assert _quote("col\ttab") == '"col\\ttab"'
+    assert _quote("cr\rreturn") == '"cr\\rreturn"'
+    # Injection protection intact:
+    assert _quote('has "quote" and backslash \\') == '"has \\"quote\\" and backslash \\\\"'
+    assert _quote(None) == "EMPTY"
+
+
 # ── No filters → empty JQL → all issues ──────────────────────────────
 @pytest.mark.asyncio
 @respx.mock
 async def test_select_no_filters_emits_empty_jql():
     import json
 
-    import examples.company_managed.platform as p
+    import examples.company_managed.platform_schema as p
 
     captured: list[str] = []
 

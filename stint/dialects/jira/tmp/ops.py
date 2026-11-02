@@ -16,7 +16,7 @@ is deferred to a later phase.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from stint.dialects.jira.tmp.desired import TmpDesired, TmpDesiredField, TmpDesiredWorkType
@@ -30,6 +30,7 @@ from stint.dialects.jira.tmp.models import (
     TmpSnapshot,
 )
 from stint.dialects.jira.tmp.state import TmpState
+from stint.exceptions import NotFoundError, StintError, TmpApiError
 
 
 @dataclass
@@ -71,7 +72,7 @@ async def tmp_upsert_field(
     desired: TmpDesiredField,
     *,
     current_field_id: str | None,
-    current_options: dict[str, str] | None = None,
+    current_options: Mapping[str, str] | None = None,
 ) -> None:
     """Create the field if unseen; otherwise send the full-replacement edit.
 
@@ -293,8 +294,18 @@ async def _find_template_remote(
             continue
         try:
             layout = await ctx.dialect.read_layout(project_id=ctx.project.project_id, issuetype_id=int(other_id))
-        except Exception:
+        except (TmpApiError, NotFoundError):
+            # This sibling simply has no readable layout (e.g. the work type
+            # cannot host the field) — move on to the next candidate.
             continue
+        except StintError as exc:
+            # L25: re-raise anything we didn't specifically decide to skip —
+            # a dead token, 5xx, or rate limit previously degraded the whole
+            # run to a synthesized template item (empty operations/provider,
+            # made-up externalUuid) while error after error accumulated.
+            raise TmpApiError(
+                f"reading layout of sibling work type {other_alias!r} while hunting for a template item failed: {exc}"
+            ) from exc
         for item in layout.items:
             if item.field_id == field_id:
                 return item

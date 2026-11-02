@@ -790,6 +790,22 @@ async def test_resolve_project_rejects_non_team_managed():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_resolve_project_rejects_missing_uuid():
+    """L28: a missing uuid used to become project_uuid="" downstream; the
+    failure only surfaced as an opaque 400 from create_worktype."""
+    respx.get(TENANT_INFO_URL).mock(return_value=httpx.Response(200, json={"cloudId": "cloud-1"}))
+    respx.post(GATEWAY_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_project_by_key_response(10001, "", "VM", "Vulnerability Management", "TEAM_MANAGED_PROJECT"),
+        )
+    )
+    with pytest.raises(TmpApiError, match="did not report a uuid"):
+        await _dialect().resolve_project(project_key="VM")
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_resolve_project_caches_cloud_id_across_calls():
     tenant_route = respx.get(TENANT_INFO_URL).mock(return_value=httpx.Response(200, json={"cloudId": "cloud-1"}))
     respx.post(GATEWAY_URL).mock(

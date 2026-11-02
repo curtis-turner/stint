@@ -14,83 +14,112 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import ClassVar
 
+_CFT = "com.atlassian.jira.plugin.system.customfieldtypes:"
+
 
 class _FieldType:
-    """Marker base for the Jira custom field type."""
+    """Marker base for the Jira custom field type.
+
+    ``jira_type_id`` is the field type; ``searcher_key`` is the JQL searcher
+    Jira must attach to make the field searchable. Omitting ``searcherKey``
+    on ``POST /field`` creates a field whose search template is None: writes
+    and reads work, but any JQL clause on it fails with "Your query couldn't
+    be processed" / "field is not searchable". Keys per Atlassian's
+    "Essential parameters for custom field creation" table.
+    """
 
     jira_type_id: ClassVar[str] = ""
+    searcher_key: ClassVar[str] = ""
 
 
 class TextField(_FieldType):
-    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:textfield"
+    jira_type_id = _CFT + "textfield"
+    searcher_key = _CFT + "textsearcher"
 
 
 class TextAreaField(_FieldType):
-    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:textarea"
+    jira_type_id = _CFT + "textarea"
+    searcher_key = _CFT + "textsearcher"
 
 
 class SelectField(_FieldType):
-    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:select"
+    jira_type_id = _CFT + "select"
+    searcher_key = _CFT + "multiselectsearcher"
 
 
 class MultiSelectField(_FieldType):
-    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:multiselect"
+    jira_type_id = _CFT + "multiselect"
+    searcher_key = _CFT + "multiselectsearcher"
 
 
 class UserField(_FieldType):
-    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:userpicker"
+    jira_type_id = _CFT + "userpicker"
+    searcher_key = _CFT + "userpickergroupsearcher"
 
 
 class NumberField(_FieldType):
-    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:float"
+    jira_type_id = _CFT + "float"
+    searcher_key = _CFT + "numberrange"
 
 
 class DateField(_FieldType):
-    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:datepicker"
+    jira_type_id = _CFT + "datepicker"
+    searcher_key = _CFT + "daterange"
 
 
 class DateTimeField(_FieldType):
-    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:datetime"
+    jira_type_id = _CFT + "datetime"
+    searcher_key = _CFT + "datetimerange"
 
 
 class RadioButtonsField(_FieldType):
-    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:radiobuttons"
+    jira_type_id = _CFT + "radiobuttons"
+    searcher_key = _CFT + "multiselectsearcher"
 
 
 class CheckboxesField(_FieldType):
-    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:multicheckboxes"
+    jira_type_id = _CFT + "multicheckboxes"
+    searcher_key = _CFT + "multiselectsearcher"
 
 
 class LabelsField(_FieldType):
-    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:labels"
+    jira_type_id = _CFT + "labels"
+    searcher_key = _CFT + "labelsearcher"
 
 
 class URLField(_FieldType):
-    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:url"
+    jira_type_id = _CFT + "url"
+    searcher_key = _CFT + "exacttextsearcher"
 
 
 class VersionField(_FieldType):
-    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:version"
+    jira_type_id = _CFT + "version"
+    searcher_key = _CFT + "versionsearcher"
 
 
 class MultiVersionField(_FieldType):
-    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:multiversion"
+    jira_type_id = _CFT + "multiversion"
+    searcher_key = _CFT + "versionsearcher"
 
 
 class GroupField(_FieldType):
-    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:grouppicker"
+    jira_type_id = _CFT + "grouppicker"
+    searcher_key = _CFT + "grouppickersearcher"
 
 
 class MultiGroupField(_FieldType):
-    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:multigrouppicker"
+    jira_type_id = _CFT + "multigrouppicker"
+    searcher_key = _CFT + "multiselectsearcher"
 
 
 class MultiUserField(_FieldType):
-    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:multiuserpicker"
+    jira_type_id = _CFT + "multiuserpicker"
+    searcher_key = _CFT + "userpickergroupsearcher"
 
 
 class ReadOnlyField(_FieldType):
-    jira_type_id = "com.atlassian.jira.plugin.system.customfieldtypes:readonlyfield"
+    jira_type_id = _CFT + "readonlyfield"
+    searcher_key = _CFT + "textsearcher"
 
 
 # Option-style types: values must come from a fixed, field-owned option list
@@ -109,6 +138,10 @@ class CustomField:
     type: type[_FieldType]
     description: str = ""
     options: list[str] = field(default_factory=list)
+    # Declaring module for scoped autogenerate; recorded by the registry at
+    # registration time (frame inspection), used to keep a field declared by
+    # the --schema module in scope even when no scheme references it yet (M5).
+    _declared_module: str = field(default="", repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.alias:
