@@ -373,6 +373,121 @@ async def test_reflect_issue_security_schemes_embeds_levels_and_members():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_add_issue_security_level_member_tolerates_duplicate_400():
+    """Jira 400s with this exact body when the member is already in the
+    level (added out-of-band, or by a run that crashed before its state
+    persist). That member is present, so the add must act as a no-op —
+    aborting made every mixed-scheme upgrade repeat forever."""
+    from stint.exceptions import TransportError
+
+    duplicate_body = {
+        "errorMessages": ["Issue security scheme level member with the type user already exists."],
+        "errors": {},
+    }
+    put = respx.put(f"{CLOUD_ROOT}/issuesecurityschemes/sc-9/level/10022/member").mock(
+        side_effect=[
+            httpx.Response(400, json=duplicate_body),  # tolerated: the member is present
+            httpx.Response(400, json={"errorMessages": ["Unknown member"], "errors": {}}),
+        ]
+    )
+    async with _cloud_engine() as eng:
+        await eng.dialect.add_issue_security_level_member(
+            scheme_id="sc-9", level_id="10022", member_type="user", member_id_or_name="acct-1"
+        )
+        # Any unrecognized 400 must still propagate:
+        with pytest.raises(TransportError):
+            await eng.dialect.add_issue_security_level_member(
+                scheme_id="sc-9", level_id="10022", member_type="user", member_id_or_name="acct-1"
+            )
+    assert len(put.calls) == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_reflect_security_level_members_paginated():
+    """The level-member endpoint is a PageBean: a single page silently
+    truncates and the diff invents phantom member adds for everything past
+    the cut. Members spread over two pages must all be reflected."""
+    _stub_empty(respx.mock)
+    respx.get(f"{CLOUD_ROOT}/issuesecurityschemes").mock(
+        return_value=httpx.Response(
+            200,
+            json=_paginated_security_schemes([{"id": 10000, "name": "Sec", "description": ""}]),
+        )
+    )
+    respx.get(f"{CLOUD_ROOT}/issuesecurityschemes/10000").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": 10000,
+                "levels": [{"id": 10021, "name": "Admins", "description": "", "isDefault": False}],
+            },
+        )
+    )
+    page_one = httpx.Response(
+        200,
+        json={
+            "values": [{"id": 1, "holder": {"type": "group", "parameter": "admins"}}],
+            "startAt": 0,
+            "maxResults": 1,
+            "isLast": False,
+        },
+    )
+    page_two = httpx.Response(
+        200,
+        json={
+            "values": [{"id": 2, "holder": {"type": "user", "parameter": "acct-2"}}],
+            "startAt": 1,
+            "maxResults": 1,
+            "isLast": True,
+        },
+    )
+    respx.get(f"{CLOUD_ROOT}/issuesecurityschemes/level/member", params={"startAt": 0}).mock(return_value=page_one)
+    respx.get(f"{CLOUD_ROOT}/issuesecurityschemes/level/member", params={"startAt": 1}).mock(return_value=page_two)
+    async with _cloud_engine() as eng:
+        snap = await eng.reflect()
+    members = snap.security_schemes["10000"].levels[0].members
+    assert [m.parameter for m in members] == ["admins", "acct-2"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_reflect_security_level_empty_inline_members_still_fetch():
+    """Jira can strip inline ``members`` to an empty list on a level that
+    does have members; treating that as "no members" hid them from the diff,
+    which then re-emitted member adds Jira rejected as duplicates."""
+    _stub_empty(respx.mock)
+    respx.get(f"{CLOUD_ROOT}/issuesecurityschemes").mock(
+        return_value=httpx.Response(
+            200,
+            json=_paginated_security_schemes([{"id": 10000, "name": "Sec", "description": ""}]),
+        )
+    )
+    respx.get(f"{CLOUD_ROOT}/issuesecurityschemes/10000").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": 10000,
+                "levels": [
+                    {"id": 10021, "name": "Admins", "description": "", "isDefault": False, "members": []},
+                ],
+            },
+        )
+    )
+    respx.get(f"{CLOUD_ROOT}/issuesecurityschemes/level/member").mock(
+        return_value=httpx.Response(
+            200,
+            json={"values": [{"id": 2, "holder": {"type": "user", "parameter": "acct-2"}}]},
+        )
+    )
+    async with _cloud_engine() as eng:
+        snap = await eng.reflect()
+    members = snap.security_schemes["10000"].levels[0].members
+    assert [m.parameter for m in members] == ["acct-2"]
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_set_default_issue_security_levels_accepts_null_to_reset():
     """The API documents ``defaultLevelId: null`` as "reset the default
     level". Sending the key with a null value is the only way to unset it,

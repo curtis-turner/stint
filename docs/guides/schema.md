@@ -12,7 +12,7 @@ from stint import CustomField, MultiSelectField, SelectField, TextField, UserFie
 severity_field = CustomField(
     alias="bug_severity",
     name="Severity",
-    type=SelectField,          # a field-type class, not an instance
+    type=SelectField,  # a field-type class, not an instance
     description="Bug severity classification",
     options=["S1", "S2", "S3", "S4"],
 )
@@ -53,7 +53,7 @@ bug_create_screen = Screen(
 bug_screen_scheme = ScreenScheme(
     alias="bug_screens",
     name="Bug Screen Scheme",
-    create=bug_create_screen,   # CMP: separate screens per operation
+    create=bug_create_screen,  # CMP: separate screens per operation
     edit=bug_edit_screen,
     view=bug_view_screen,
 )
@@ -62,7 +62,7 @@ bug_field_config = FieldConfiguration(
     alias="bug_fields",
     name="Bug Field Configuration",
     required=["Summary", "Reporter", severity_field],
-    hidden=[],                  # optional
+    hidden=[],  # optional
 )
 ```
 
@@ -74,16 +74,17 @@ bug_field_config = FieldConfiguration(
 from typing import Annotated, Literal
 from stint import IssueType
 
+
 class Bug(IssueType):
-    __alias__ = "bug"                       # required, stable identity
-    __title__ = "Bug"                       # defaults to the class name
+    __alias__ = "bug"  # required, stable identity
+    __title__ = "Bug"  # defaults to the class name
     __description__ = "Defects in production"
     __screen_scheme__ = bug_screen_scheme
     __field_configuration__ = bug_field_config
 
-    summary: str                                            # system field
+    summary: str  # system field
     severity: Annotated[Literal["S1", "S2", "S3", "S4"], severity_field]  # custom field
-    root_cause: Annotated[str | None, root_cause_field] = None            # optional custom field
+    root_cause: Annotated[str | None, root_cause_field] = None  # optional custom field
 ```
 
 Rules the metaclass enforces at definition time:
@@ -97,11 +98,12 @@ Rules the metaclass enforces at definition time:
 ```python
 from stint import Project
 
+
 class Platform(Project):
-    __key__ = "PLAT"                # required
+    __key__ = "PLAT"  # required
     __title__ = "Platform"
     __lead__ = "cturner@example.com"
-    __style__ = "company-managed"   # or the experimental "team-managed"
+    __style__ = "company-managed"  # or the experimental "team-managed"
     __issuetypes__ = [Bug]
 ```
 

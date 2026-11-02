@@ -31,8 +31,7 @@ Requires Python 3.10–3.14.
     ```python
     from typing import Annotated, Literal
 
-    from stint import CustomField, SelectField, Screen, \
-        ScreenScheme, IssueType, Project
+    from stint import CustomField, SelectField, Screen, ScreenScheme, IssueType, Project
 
     severity_field = CustomField(
         alias="bug_severity",
@@ -53,10 +52,12 @@ Requires Python 3.10–3.14.
         view=bug_create_screen,
     )
 
+
     class Bug(IssueType):
         __alias__ = "bug"
         __screen_scheme__ = bug_scheme
         severity: Annotated[Literal["S1", "S2", "S3", "S4"], severity_field]
+
 
     class Platform(Project):
         __key__ = "PLAT"
@@ -85,12 +86,10 @@ Requires Python 3.10–3.14.
     state = StateFile.load("state/dev.yaml")
 
     with Session(engine, state) as session:
-        s1_bugs = session.scalars(
-            select(Bug).where(Bug.c.severity == "S1").limit(10)
-        )
+        s1_bugs = session.scalars(select(Bug).where(Bug.c.severity == "S1").limit(10))
         bug = Bug(summary="Crash on save", severity="S1")
         session.add(bug)
-        session.commit()   # bug.key is populated
+        session.commit()  # bug.key is populated
     ```
 
     Queries compile to JQL (`cf[10042] = "S1"`), resolved through the state
