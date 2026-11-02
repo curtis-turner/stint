@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, is_dataclass
+from collections.abc import Mapping
+from dataclasses import fields, is_dataclass
 from typing import Annotated, Any, Literal
 
 import yaml
@@ -133,10 +134,15 @@ def _build_auth(auth: str, token_env: str, user_env: str) -> Any:
 
 
 def _to_serializable(obj: Any) -> Any:
-    """Recursively convert dataclasses and tuples to dicts/lists for YAML/JSON."""
+    """Recursively convert dataclasses and tuples to dicts/lists for YAML/JSON.
+
+    Dataclasses are decoded field-by-field rather than through ``asdict``:
+    snapshots freeze mapping fields as ``MappingProxyType``, and ``asdict``'s
+    internal deepcopy cannot pickle those (TypeError on 3.14t).
+    """
     if is_dataclass(obj) and not isinstance(obj, type):
-        return _to_serializable(asdict(obj))
-    if isinstance(obj, dict):
+        return _to_serializable({f.name: getattr(obj, f.name) for f in fields(obj)})
+    if isinstance(obj, Mapping):
         return {k: _to_serializable(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [_to_serializable(v) for v in obj]

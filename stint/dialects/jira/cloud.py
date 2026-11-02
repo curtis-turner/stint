@@ -201,11 +201,18 @@ class JiraCloudDialect:
         just created. The paginated field-search endpoint returns the full
         custom-field set and includes the ``schema`` needed for type
         detection. (#9)
+
+        ``searcherKey`` is an *expandable* attribute (the OpenAPI lists it
+        among ``expand`` options, next to ``key``/``lastUsed``/``screensCount``).
+        Without listing it the listing never carries it, so every field
+        reflected with an empty searcher and the diff re-emitted each declared
+        searcher as a phantom update on every revision — even though Jira was
+        in sync. The reflect request therefore expands ``searcherKey``.
         """
         async for entry in common.paginate(
             self.client,
             f"{self.api_root}/field/search",
-            extra_params={"type": "custom"},
+            extra_params={"type": "custom", "expand": "searcherKey"},
         ):
             yield entry
 
