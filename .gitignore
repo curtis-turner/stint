@@ -39,3 +39,6 @@ htmlcov/
 plan_*.md
 
 plans/
+
+# mkdocs build output
+site/

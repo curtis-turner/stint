@@ -376,11 +376,17 @@ def diff(
     snapshot: Snapshot,
     state: StateFile,
     allow_delete: bool = False,
+    member_params: dict[str, str] | None = None,
 ) -> DiffResult:
     """Return ordered Change list + warnings. Phase order applied by emit.
 
     `allow_delete` is required for any destructive op (delete_*, remove_option).
     Destructive ops are silently dropped (with a warning) when False.
+
+    `member_params` (optional) maps declared security level member values to
+    their resolved ``holder.parameter`` form (declared user email →
+    accountId). The caller resolves them where the dialect is reachable;
+    the diff itself stays sync so it can be exercised without HTTP.
     """
     r = DiffResult()
 
@@ -393,7 +399,7 @@ def diff(
     _diff_itss(r, desired, snapshot, state, allow_delete)
     _diff_fcs(r, desired, snapshot, state, allow_delete)
     _diff_projects(r, desired, snapshot, state, allow_delete)
-    _diff_security_schemes(r, desired, snapshot, state, allow_delete)
+    _diff_security_schemes(r, desired, snapshot, state, allow_delete, member_params=member_params)
     return r
 
 
@@ -1030,6 +1036,7 @@ def _diff_security_schemes(
     snapshot: Snapshot,
     state: StateFile,
     allow_delete: bool,
+    member_params: dict[str, str] | None = None,
 ) -> None:
     for alias, want in desired.security_schemes.items():
         if want.project is not None and want.project not in desired.projects:
@@ -1092,11 +1099,21 @@ def _diff_security_schemes(
             # anchor for email→accountId resolution); reflection supplies
             # holder.parameter for everything else.
             recorded = set(mapping.member_values.get(level.alias, []))
-            actual_params = {m.parameter: m.type for m in found.members if m.parameter}
+            # Compare on the (parameter, type) pair Jira's "already exists"
+            # dedupe actually keys on — a parameter-only match lets a
+            # projectRoles member mask a declared user/group member.
+            actual_members = {(m.parameter, m.type) for m in found.members if m.parameter}
             for member in level.members:
-                if member.value in recorded:
+                # The canonical form is what both state and reflection carry:
+                # a user declared as an email (the schema convention) arrives
+                # here as an accountId everywhere else. Comparing the raw
+                # declared value against it never matches, so the diff used
+                # to re-emit the member add on every revision and the upgrade
+                # then failed with Jira's "already exists" 400.
+                canonical = (member_params or {}).get(member.value, member.value)
+                if member.value in recorded or canonical in recorded:
                     continue
-                if actual_params.get(member.value) is not None:
+                if (canonical, member.type) in actual_members or (member.value, member.type) in actual_members:
                     continue
                 r.changes.append(
                     AddSecurityLevelMember(

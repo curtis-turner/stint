@@ -217,16 +217,40 @@ def _run_autogenerate(
     parents = _current_head_parents(mig_dir)
     revision_id = new_revision_id()
 
-    async def reflect() -> Any:
+    async def reflect_and_resolve() -> tuple[Any, dict[str, str]]:
         auth_obj = _build_auth(auth, token_env, user_env)
         engine = create_engine(url, auth=auth_obj, dialect=dialect, verify_ssl=not no_verify_ssl)
         try:
-            return await engine.reflect()
+            snapshot = await engine.reflect()
+            # User members are declared as emails (schema convention), but
+            # both the state file and reflection carry the resolved
+            # accountId. Resolving here — while the engine is open and the
+            # cache is warm — lets the diff compare like with like instead
+            # of re-emitting every email member as a phantom add each
+            # revision (which Jira then rejects as "already exists").
+            resolved: dict[str, str] = {}
+            for scheme in desired.security_schemes.values():
+                for level in scheme.levels:
+                    for member in level.members:
+                        if member.type != "user" or "@" not in member.value:
+                            continue
+                        if member.value not in resolved:
+                            resolved[member.value] = await engine.dialect.resolve_security_level_member(
+                                member_type="user",
+                                member_value=member.value,
+                            )
+            return snapshot, resolved
         finally:
             await engine.close()
 
-    snapshot = asyncio.run(reflect())
-    result = diff(desired=desired, snapshot=snapshot, state=state_file, allow_delete=allow_delete)
+    snapshot, member_params = asyncio.run(reflect_and_resolve())
+    result = diff(
+        desired=desired,
+        snapshot=snapshot,
+        state=state_file,
+        allow_delete=allow_delete,
+        member_params=member_params,
+    )
     for w in result.warnings:
         print(f"warning: {w}")
     if not result.changes:

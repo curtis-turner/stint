@@ -1,0 +1,106 @@
+site_name: stint
+site_description: >-
+  Declarative schema-as-code and ORM for work-management systems.
+  Jira first, dialect protocol for the rest.
+site_url: https://curtis-turner.github.io/stint/
+repo_url: https://github.com/curtis-turner/stint
+repo_name: curtis-turner/stint
+
+# Marketing/positioning notes in docs/ are not site pages.
+exclude_docs: |
+  blog_why_stint.devto.md
+  competitive-landscape.md
+  show-hn.md
+
+validation:
+  anchors: warn
+  links:
+    absolute_links: relative_to_docs
+    unrecognized_links: warn
+
+theme:
+  name: material
+  font: false
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - content.code.annotate
+    - content.code.copy
+    - navigation.expand
+    - navigation.footer
+    - navigation.indexes
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.suggest
+    - toc.follow
+  palette:
+    # Auto (light) / toggle to dark
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [.]
+          options:
+            show_root_heading: true
+            show_source: true
+            show_bases: true
+            show_submodules: true
+            heading_anchors: 3
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Guides:
+      - guides/index.md
+      - Quick start: guides/quick-start.md
+      - Schema as code: guides/schema.md
+      - Migrations: guides/migrations.md
+      - Querying and writing (ORM): guides/querying.md
+      - CLI reference: guides/cli.md
+  - API reference:
+      - api/index.md
+      - Engine: api/engine.md
+      - Schema plane: api/schema.md
+      - Fields: api/fields.md
+      - Query plane (ORM): api/query.md
+      - Migrations: api/migrations.md
+      - Autogeneration: api/autogen.md
+      - State: api/state.md
+      - Registry: api/registry.md
+      - Validation: api/validate.md
+      - Client: api/client.md
+      - Dialects: api/dialects.md
+      - Exceptions: api/exceptions.md
