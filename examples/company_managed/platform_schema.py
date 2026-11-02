@@ -30,10 +30,10 @@ from stint import (
 )
 
 # ── Custom fields ─────────────────────────────────────────────────────
-# Convention: name the module-level CustomField with a `_field` suffix so it
-# does not collide with the class attribute name used in Annotated[]. Without
-# the suffix, a class attribute with a default value would shadow the
-# module-level binding during type-hint resolution.
+# Convention: give the module-level CustomField a distinguishing suffix
+# (`_field`, `_cf`) so it does not collide with the class attribute name used
+# in Annotated[]. Without a suffix, a class attribute with a default value
+# would shadow the module-level binding during type-hint resolution.
 severity_field = CustomField(
     alias="bug_severity",
     name="Severity",
@@ -48,7 +48,11 @@ root_cause_field = CustomField(
     type=TextField,
 )
 
-test_text_field = CustomField(
+# NOTE: the variable must NOT be named `test_text_field` — that is also the
+# model attribute name, and under `from __future__ import annotations` the
+# attribute's default (`None`) shadows this declaration when the annotation
+# is resolved. Hence the `_cf` suffix.
+test_text_field_cf = CustomField(
     alias="test_test_field", name="TestTextField", type=TextField, description="Test adding a new text field to schema"
 )
 
@@ -56,13 +60,13 @@ test_text_field = CustomField(
 bug_create_screen = Screen(
     alias="bug_create",
     name="Bug Create Screen",
-    fields=["Summary", "Description", "Reporter", "Assignee", severity_field, test_text_field],
+    fields=["Summary", "Description", "Reporter", "Assignee", severity_field, test_text_field_cf],
 )
 
 bug_edit_screen = Screen(
     alias="bug_edit",
     name="Bug Edit Screen",
-    fields=["Summary", "Description", "Reporter", "Assignee", severity_field, root_cause_field, test_text_field],
+    fields=["Summary", "Description", "Reporter", "Assignee", severity_field, root_cause_field, test_text_field_cf],
 )
 
 bug_view_screen = Screen(
@@ -75,7 +79,7 @@ bug_view_screen = Screen(
         "Assignee",
         severity_field,
         root_cause_field,
-        test_text_field,
+        test_text_field_cf,
         "Created",
         "Updated",
     ],
@@ -94,7 +98,7 @@ bug_screen_scheme = ScreenScheme(
 bug_field_config = FieldConfiguration(
     alias="bug_fields",
     name="Bug Field Configuration",
-    required=["Summary", "Reporter", severity_field, test_text_field],
+    required=["Summary", "Reporter", severity_field, test_text_field_cf],
 )
 
 
@@ -115,7 +119,7 @@ class Bug(IssueType):
     root_cause: Annotated[str | None, root_cause_field] = None
     created: datetime | None = None
     updated: datetime | None = None
-    test_text_field: str | None = None
+    test_text_field: Annotated[str | None, test_text_field_cf] = None
 
 
 # ── Project ───────────────────────────────────────────────────────────

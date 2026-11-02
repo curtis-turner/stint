@@ -1,7 +1,7 @@
 # Company-managed (CMP) walkthrough
 
 A runnable walkthrough against a real Jira Cloud tenant, using the
-migration-based path. It uses the schema in [`platform.py`](platform.py):
+migration-based path. It uses the schema in [`platform_schema.py`](platform_schema.py):
 one project (`PLAT`), a `Bug` issue type, a `Severity` select field, screens,
 and the schemes that bind them.
 
@@ -21,15 +21,15 @@ uv sync
 ## 2. Validate the schema (no network)
 
 ```bash
-uv run stint validate --schema examples/company_managed/platform.py
+uv run stint validate --schema examples/company_managed/platform_schema.py
 ```
 
-Expect `OK: examples/company_managed/platform.py is valid.` This runs every
+Expect `OK: examples/company_managed/platform_schema.py is valid.` This runs every
 schema-level check without touching Jira.
 
 ## 3. Point the example lead at a real user
 
-`platform.py` sets `__lead__ = "cturner@example.com"`. stint resolves that email
+`platform_schema.py` sets `__lead__ = "cturner@example.com"`. stint resolves that email
 to a Jira account id at apply time, so it must be a real user on your tenant.
 Edit the line to your own account email.
 
@@ -58,7 +58,7 @@ not try to recreate them:
 
 ```bash
 uv run stint stamp \
-    --schema examples/company_managed/platform.py \
+    --schema examples/company_managed/platform_schema.py \
     --state examples/company_managed/devel.state \
     --env devel
 ```
@@ -73,7 +73,7 @@ type is adopted automatically on apply, so a greenfield run still works.
 
 ```bash
 uv run stint revision --autogenerate \
-    --schema examples/company_managed/platform.py \
+    --schema examples/company_managed/platform_schema.py \
     --state examples/company_managed/devel.state \
     --migrations-dir examples/company_managed/migrations \
     --env devel \
@@ -113,6 +113,33 @@ uv run stint history --migrations-dir examples/company_managed/migrations
 ```
 
 `current` prints the applied revision; `history` lists the chain.
+
+## 10. Create issues and query them (data plane)
+
+The migration path manages the *structure*; the data plane (ORM) manages the
+*content*. [`create_and_query_issues.py`](create_and_query_issues.py) proves
+the full end-to-end flow against the `SEC` schema in
+[`security_scheme.py`](security_scheme.py):
+
+- construct `Bug(...)` instances as plain Pydantic objects and insert with
+  `session.add()` + `await session.commit()`
+- read one back with `session.get(Bug, "SEC-1")`, filtered reads with
+  `select(Bug).where(Bug.c.severity == "S1")` (stint translates that to JQL
+  `cf[...] = "S1"` using the state file's alias maps)
+- change a field and commit — only the dirty field goes into the `PUT`
+- delete the demo issues again at the end (pass `--keep` to leave them)
+
+```bash
+STINT_USER='...' STINT_TOKEN='...' \
+uv run python examples/company_managed/create_and_query_issues.py
+```
+
+The script locates its own sibling schema (`security_scheme.py`) through stint's
+schema loader, so it works from any directory — the state file default is
+relative to the repo root, though; pass `--state` if you keep state elsewhere.
+Prerequisite: the migration for `security_scheme.py`
+(`SEC` project) is applied — the state file supplies the custom-field maps the
+ORM reads and writes through.
 
 ## Reset the playground
 

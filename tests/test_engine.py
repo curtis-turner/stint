@@ -9,7 +9,7 @@ from stint import (
     create_engine,
 )
 from stint.dialects.jira.cloud import JiraCloudDialect
-from stint.engine import _split_dialect_prefix
+from stint.engine import _split_dialect_prefix, create_tmp_engine
 
 
 # ── URL parsing ───────────────────────────────────────────────────────
@@ -37,6 +37,55 @@ def test_create_engine_with_url_prefix():
     assert isinstance(eng, Engine)
     assert isinstance(eng.dialect, JiraCloudDialect)
     assert eng.base_url == "https://jira.example.com"
+
+
+def test_dialect_construction_failure_closes_the_client(monkeypatch):
+    """L9: when the dialect (or Engine) constructor raises, the freshly
+    built httpx pool must be closed synchronously instead of leaking until
+    the ResourceWarning at GC time."""
+    from stint.client.http import JiraHTTPClient
+
+    closed = []
+    real_close_sync = JiraHTTPClient.close_sync
+
+    def _recording_close_sync(self):
+        real_close_sync(self)
+        closed.append(True)
+
+    class _Boom:
+        def __init__(self, client):
+            raise RuntimeError("dialect boom")
+
+    monkeypatch.setattr(JiraHTTPClient, "close_sync", _recording_close_sync)
+    monkeypatch.setattr("stint.engine._CMP_DIALECT_REGISTRY", {"jira_cloud": _Boom})
+
+    with pytest.raises(RuntimeError, match="dialect boom"):
+        create_engine("https://jira.example.com", auth=PATAuth("tok"), dialect="jira_cloud")
+    assert closed == [True]
+
+
+def test_tmp_dialect_construction_failure_closes_the_client(monkeypatch):
+    from stint.client.http import JiraHTTPClient
+
+    closed = []
+    real_close_sync = JiraHTTPClient.close_sync
+
+    def _recording_close_sync(self):
+        real_close_sync(self)
+        closed.append(True)
+
+    class _Boom:
+        def __init__(self, client):
+            raise RuntimeError("tmp boom")
+
+    monkeypatch.setattr(JiraHTTPClient, "close_sync", _recording_close_sync)
+    # create_tmp_engine re-imports TmpDialect from its defining module on
+    # every call, so the origin module is the thing to patch.
+    monkeypatch.setattr("stint.dialects.jira.tmp.dialect.TmpDialect", _Boom)
+
+    with pytest.raises(RuntimeError, match="tmp boom"):
+        create_tmp_engine("jira_cloud_tmp+https://jira.example.com", auth=PATAuth("tok"))
+    assert closed == [True]
 
 
 def test_create_engine_with_kwarg_dialect():

@@ -39,19 +39,19 @@ from stint import (
 
 
 def _load_example():
-    """Re-import examples.company_managed.platform from scratch against the current registry."""
-    sys.modules.pop("examples.company_managed.platform", None)
-    return importlib.import_module("examples.company_managed.platform")
+    """Re-import examples.company_managed.platform_schema from scratch against the current registry."""
+    sys.modules.pop("examples.company_managed.platform_schema", None)
+    return importlib.import_module("examples.company_managed.platform_schema")
 
 
 @pytest.fixture(autouse=True)
 def fresh_registry():
     """Each test starts with an empty registry."""
     registry.reset()
-    sys.modules.pop("examples.company_managed.platform", None)
+    sys.modules.pop("examples.company_managed.platform_schema", None)
     yield
     registry.reset()
-    sys.modules.pop("examples.company_managed.platform", None)
+    sys.modules.pop("examples.company_managed.platform_schema", None)
 
 
 # ── Gate 1: the example parses ────────────────────────────────────────
@@ -224,9 +224,24 @@ def test_custom_field_map_populated_from_annotated_metadata():
     """Bug.__custom_field_map__ contains the CustomField objects linked via Annotated."""
     mod = _load_example()
     cf_map = mod.Bug.__custom_field_map__
-    assert set(cf_map) == {"severity", "root_cause"}
+    assert set(cf_map) == {"severity", "root_cause", "test_text_field"}
     assert cf_map["severity"].alias == "bug_severity"
     assert cf_map["root_cause"].alias == "bug_root_cause"
+    assert cf_map["test_text_field"].alias == "test_test_field"
+
+
+def test_security_example_bug_exposes_orderable_created():
+    """The security_scheme example must keep the audit columns the demo orders
+    by. Dropping them made ``Bug.c.created`` raise AttributeError after the
+    inserts had already succeeded (live-tenant run, 2026-11)."""
+    sys.modules.pop("examples.company_managed.security_scheme", None)
+    try:
+        mod = importlib.import_module("examples.company_managed.security_scheme")
+        assert {"created", "updated"} <= set(mod.Bug.model_fields)
+        assert mod.Bug.c.created.attr_name == "created"
+        assert mod.Bug.__custom_field_map__["test_text_field"].alias == "test_test_field"
+    finally:
+        sys.modules.pop("examples.company_managed.security_scheme", None)
 
 
 def test_system_fields_not_in_custom_field_map():

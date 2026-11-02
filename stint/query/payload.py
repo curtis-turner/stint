@@ -24,7 +24,8 @@ fields are skipped only on INSERT; on UPDATE (``only=`` given) an explicit
 None is emitted so Jira clears the field.
 
 Insert-specific system fields (project, issuetype) are added by
-``build_insert_payload`` based on the model class.
+``build_insert_payload`` based on the model class. ``reporter`` is stripped
+from inserts (Jira sets it from the caller identity; see the insert builder).
 """
 
 from __future__ import annotations
@@ -55,6 +56,7 @@ from stint.fields import (
     _FieldType,
 )
 from stint.query.adf import wrap_plain_text
+from stint.registry import registry
 from stint.state.file import SimpleMapping
 
 if TYPE_CHECKING:
@@ -99,6 +101,7 @@ def build_fields_payload(
             continue
         cf = _custom_field_meta(field_info)
         if cf is None:
+            _raise_on_shadows_declared_custom_field(model, attr_name, field_info)
             key, val = _emit_system_field(attr_name, value, is_cloud=is_cloud)
             payload[key] = val
             continue
@@ -112,6 +115,56 @@ def build_fields_payload(
     return payload
 
 
+def _raise_on_shadows_declared_custom_field(model: type[BaseModel], attr_name: str, field_info: Any) -> None:
+    """Refuse a payload key that silently shadows a declared CustomField.
+
+    The failure mode (live tenant, 2026-11): a model attribute named like an
+    existing CustomField's declaration but WITHOUT ``Annotated[T, cf]`` is
+    emitted as a literal system-field key (``test_text_field``) instead of
+    resolving to ``customfield_10321`` — Jira answers "Field 'test_text_field'
+    cannot be set ... or unknown" and the real bug stays invisible.
+
+    The collision matches on the declaration's *name* and *alias*, compared
+    after stripping separators (``TestTextField`` ↔ ``test_text_field``).
+    Real system fields are unaffected: they carry no matching declaration.
+
+    There is a second, subtler form of the same failure: the attribute *is*
+    Annotated, but with a name that is also the module-level CustomField
+    variable's name. Under ``from __future__ import annotations`` the
+    annotation string is resolved against the class namespace, where that name
+    now holds the attribute's default (``None``), so the metadata is ``[None]``
+    and the declaration is lost. Renaming the *variable* (not the attribute)
+    fixes it; say so explicitly rather than blaming a missing annotation.
+    """
+
+    def _norm(value: str) -> str:
+        return value.replace("_", "").replace("-", "").lower()
+
+    shadowed_by_default = any(item is None for item in field_info.metadata)
+    target = _norm(attr_name)
+    for alias, declared in registry.custom_fields.items():
+        if target in (_norm(declared.name), _norm(alias), _norm(alias + "_field")):
+            if shadowed_by_default:
+                raise ConfigurationError(
+                    f"payload builder: attribute {attr_name!r} on {model.__name__!r} "
+                    f"is annotated with a name that resolves to None instead of the "
+                    f"CustomField {alias!r} ({declared.name!r}): the annotation's "
+                    f"second argument has the same name as the attribute itself, so "
+                    f"Python finds the attribute's default (None) first. Rename the "
+                    f"CustomField *variable* (e.g. {attr_name}_cf or a _field suffix) "
+                    f"and annotate with that, leaving the attribute name unchanged."
+                )
+            raise ConfigurationError(
+                f"payload builder: attribute {attr_name!r} on {model.__name__!r} "
+                f"matches declared CustomField {alias!r} ({declared.name!r}) but is "
+                f"not Annotated with it, so it would be sent to Jira as a literal "
+                f"{attr_name!r} field key (Jira rejects it as unknown) instead of "
+                f"resolving through the state file. Annotate the attribute: "
+                f"{attr_name}: Annotated[<type>, <the CustomField declared as "
+                f"{declared.name!r}>] = None"
+            )
+
+
 def build_insert_payload(
     instance: BaseModel,
     state: StateFile,
@@ -119,9 +172,18 @@ def build_insert_payload(
     is_cloud: bool,
     project_key: str,
 ) -> dict[str, Any]:
-    """Build the full POST /issue body. Pulls project + issuetype ids from state."""
+    """Build the full POST /issue body. Pulls project + issuetype ids from state.
+
+    ``reporter`` is never sent on inserts: Jira Cloud takes the reporter from
+    the caller's identity at creation and rejects an explicit one ("Field
+    'reporter' cannot be set. It is not on the appropriate screen, or
+    unknown") even when the field is on the create screen. The model keeps
+    the attribute — hydration fills it (as an accountId) when issues are
+    read back, and UPDATE payloads (PUT) accept real reporter changes.
+    """
     model = type(instance)
     fields = build_fields_payload(instance, state, is_cloud=is_cloud)
+    fields.pop("reporter", None)
 
     project_mapping = state.projects.get(project_key)
     if project_mapping is None:

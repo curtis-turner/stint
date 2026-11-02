@@ -3,9 +3,12 @@
 Two runnable walkthroughs against a real Jira Cloud tenant, one per dialect:
 
 - **[`company_managed/`](company_managed/)** — the fully-supported,
-  migration-based path (`stint revision`/`stint upgrade`). One project
-  (`PLAT`), a `Bug` issue type, a `Severity` select field, screens, and the
-  schemes that bind them.
+  migration-based path (`stint revision`/`stint upgrade`). Two projects
+  with example schemas: `platform_schema.py` (`PLAT`, a `Bug` issue type, a
+  `Severity` select field, screens, and the schemes that bind them) and
+  `security_scheme.py` (`SEC`, an issue security scheme with levels, plus
+  the same data-plane walkthrough: `create_and_query_issues.py` creates
+  issues in `SEC` and reads them back through the ORM).
 - **[`team_managed/`](team_managed/)** — the experimental, opt-in path for
   team-managed ("next-gen") projects, which use a different write model and
   a different CLI command (`stint apply`). One project (`VM`), a

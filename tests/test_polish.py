@@ -16,8 +16,8 @@ from stint import (
 )
 from stint.cli.main import main
 from stint.client.http import JiraHTTPClient
-from stint.engine import Engine
-from stint.exceptions import TransportError
+from stint.engine import Engine, base_url_of
+from stint.exceptions import NotFoundError, TransportError
 from stint.migrations.context import MigrationContext, reset_context, set_context
 from stint.registry import registry
 from stint.state.file import (
@@ -35,10 +35,10 @@ CLOUD_ROOT = f"{BASE}/rest/api/3"
 @pytest.fixture(autouse=True)
 def _isolate_registry():
     registry.reset()
-    sys.modules.pop("examples.company_managed.platform", None)
+    sys.modules.pop("examples.company_managed.platform_schema", None)
     yield
     registry.reset()
-    sys.modules.pop("examples.company_managed.platform", None)
+    sys.modules.pop("examples.company_managed.platform_schema", None)
 
 
 def _engine() -> Engine:
@@ -212,6 +212,65 @@ def test_state_lock_context_manager_releases_on_exception(tmp_path):
     assert not lock_file.exists()
 
 
+def test_state_lock_write_failure_removes_the_empty_lock_file(tmp_path, monkeypatch):
+    """A failed write in acquire() must not strand an empty <state>.lock:
+    an empty lock file is a permanent lockout that only manual deletion
+    clears, exactly like a leaked lock (H3)."""
+    state_path = tmp_path / "state.yaml"
+    lock_file = tmp_path / "state.yaml.lock"
+
+    def broken_write(fd, body):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("stint.state.lock.os.write", broken_write)
+    lock = StateLock(state_path)
+    with pytest.raises(OSError):
+        lock.acquire()
+    assert not lock_file.exists()
+
+
+def test_state_lock_release_does_not_unlink_a_newer_holders_lock(tmp_path):
+    """The documented stale-lock workflow ships this race: the operator
+    deletes a lock they believe is stale, a new holder acquires, then the
+    old holder finally runs its release(). Unlinking unconditionally would
+    destroy the new holder's lock and let a third process acquire while
+    the new holder is still writing (H3)."""
+    state_path = tmp_path / "state.yaml"
+    lock_file = tmp_path / "state.yaml.lock"
+    old = StateLock(state_path)
+    old.acquire()
+    try:
+        # Operator deletes the "stale" lock; a new holder re-creates it.
+        lock_file.unlink()
+        new_holder_body = "pid=99999999\ntoken=not-the-old-holder\n"
+        lock_file.write_text(new_holder_body, encoding="utf-8")
+        old.release()
+        assert lock_file.read_text(encoding="utf-8") == new_holder_body
+    finally:
+        # The new-holder lock file is fake (nobody holds it): clean it up.
+        if lock_file.exists():
+            lock_file.unlink()
+
+
+def test_state_lock_release_without_acquire_leaves_a_foreign_lock_alone(tmp_path):
+    """release() on a lock this object never acquired must not remove the
+    on-disk lock: ownership cannot be proven (H3)."""
+    state_path = tmp_path / "state.yaml"
+    lock_file = tmp_path / "state.yaml.lock"
+    lock_file.write_text("pid=99999999\ntoken=other-holder\n", encoding="utf-8")
+    StateLock(state_path).release()
+    assert lock_file.exists()
+
+
+def test_state_lock_records_the_ownership_token(tmp_path):
+    state_path = tmp_path / "state.yaml"
+    lock_file = tmp_path / "state.yaml.lock"
+    with StateLock(state_path):
+        body = lock_file.read_text(encoding="utf-8")
+        assert "token=" in body
+        assert f"pid={os.getpid()}" in body
+
+
 # ──────────────────────────────────────────────────────────────────────
 # H3: lock ordering — the state lock is acquired before the state file
 # is read, and a mid-flight failure cannot leak the lock file.
@@ -298,6 +357,124 @@ def test_cli_upgrade_loads_state_only_after_lock_acquired(tmp_path, monkeypatch)
     )
     assert rc == 0
     assert not lock_path.exists()  # released on exit
+
+
+def test_cli_upgrade_records_base_url_without_dialect_prefix(tmp_path, monkeypatch):
+    """M9: `--url jira_cloud+https://...` used to be persisted verbatim as
+    the state file's jira_url, so state files disagreed with each other
+    (cmd_apply recorded the bare URL) and deep links built from jira_url
+    were invalid. All writers now record the base URL."""
+    monkeypatch.setenv("STINT_TOKEN", "tok")
+    mig_dir = _migration_dir(tmp_path)
+    state_path = tmp_path / "state.yaml"
+    assert not state_path.exists()
+    rc = main(
+        [
+            "upgrade",
+            "--migrations-dir",
+            str(mig_dir),
+            "--state",
+            str(state_path),
+            "--env",
+            "dev",
+            "--url",
+            f"jira_cloud+{BASE}",
+            "--auth",
+            "pat",
+        ]
+    )
+    assert rc == 0
+    assert StateFile.load(state_path).jira_url == BASE
+
+
+def test_base_url_of_strips_prefix():
+    assert base_url_of(f"jira_cloud+{BASE}") == BASE
+    assert base_url_of(f"jira_cloud_tmp+{BASE}") == BASE
+    assert base_url_of(BASE) == BASE
+
+
+def test_cli_upgrade_refuses_state_env_mismatch(tmp_path, monkeypatch, capsys):
+    """M7: pointing a state file at a different env used to run migrations
+    with that file's id mappings against whatever tenant the env resolved
+    to. Refuse with an actionable message instead."""
+    monkeypatch.setenv("STINT_TOKEN", "tok")
+    mig_dir = _migration_dir(tmp_path)
+    state_path = tmp_path / "state.yaml"
+    StateFile(env="prod", jira_url=BASE, revision="r1").save(state_path)
+    rc = main(
+        [
+            "upgrade",
+            "--migrations-dir",
+            str(mig_dir),
+            "--state",
+            str(state_path),
+            "--env",
+            "dev",
+            "--url",
+            f"jira_cloud+{BASE}",
+            "--auth",
+            "pat",
+        ]
+    )
+    assert rc == 1
+    assert "records env 'prod'" in capsys.readouterr().err
+    assert not state_path.with_suffix(".yaml.lock").exists()
+
+
+def test_cli_upgrade_refuses_state_url_mismatch(tmp_path, monkeypatch, capsys):
+    """M7 (URL half): a state file written against one tenant, pointed at
+    another tenant's URL, must refuse — running one tenant's id mappings on
+    another can create or clobber wrong project objects."""
+    monkeypatch.setenv("STINT_TOKEN", "tok")
+    mig_dir = _migration_dir(tmp_path)
+    state_path = tmp_path / "state.yaml"
+    StateFile(env="dev", jira_url=BASE, revision="r1").save(state_path)
+    rc = main(
+        [
+            "upgrade",
+            "--migrations-dir",
+            str(mig_dir),
+            "--state",
+            str(state_path),
+            "--env",
+            "dev",
+            "--url",
+            "https://other.example.com",
+            "--dialect",
+            "jira_cloud",
+            "--auth",
+            "pat",
+        ]
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "was written against" in err
+    assert "https://other.example.com" in err
+
+
+def test_cli_upgrade_accepts_prefix_normalized_state_url(tmp_path, monkeypatch):
+    """Pre-M9 state files may record a dialect-prefixed jira_url; upgrading
+    against the resolved connection of the same tenant must still pass."""
+    monkeypatch.setenv("STINT_TOKEN", "tok")
+    mig_dir = _migration_dir(tmp_path)
+    state_path = tmp_path / "state.yaml"
+    StateFile(env="dev", jira_url=f"jira_cloud+{BASE}", revision="r1").save(state_path)
+    rc = main(
+        [
+            "upgrade",
+            "--migrations-dir",
+            str(mig_dir),
+            "--state",
+            str(state_path),
+            "--env",
+            "dev",
+            "--url",
+            f"jira_cloud+{BASE}",
+            "--auth",
+            "pat",
+        ]
+    )
+    assert rc == 0
 
 
 def test_cli_downgrade_loads_state_only_after_lock_acquired(tmp_path, monkeypatch):
@@ -607,10 +784,77 @@ async def test_delete_json_returns_body():
 
 
 # ──────────────────────────────────────────────────────────────────────
+# User-Agent (L8)
+# ──────────────────────────────────────────────────────────────────────
+def test_default_user_agent_carries_package_version():
+    """The hardwired ``stint/0.1`` default lied about the release; the
+    default must track ``stint.__version__`` (lazy import, so this runs
+    after package init)."""
+    import stint
+
+    client = _raw_client()
+    assert client._client.headers["User-Agent"] == f"stint/{stint.__version__}"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_default_user_agent_sent_on_the_wire():
+    import stint
+
+    respx.get(f"{CLOUD_ROOT}/serverInfo").mock(return_value=httpx.Response(200, json={}))
+    client = _raw_client()
+    try:
+        await client.get_json(f"{CLOUD_ROOT}/serverInfo")
+    finally:
+        await client.close()
+    req = respx.calls[0].request
+    assert req.headers["User-Agent"] == f"stint/{stint.__version__}"
+
+
+def test_explicit_user_agent_is_kept():
+    client = JiraHTTPClient(BASE, auth=PATAuth("tok"), user_agent="myapp/7")
+    assert client._client.headers["User-Agent"] == "myapp/7"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_error_messages_redact_query_string():
+    """L7: error messages name the endpoint but must not echo the query
+    string — account-search endpoints carry the queried user's email as
+    ``?query=``."""
+    respx.get(f"{CLOUD_ROOT}/users/search").mock(return_value=httpx.Response(404, text="nope"))
+    client = _raw_client()
+    try:
+        with pytest.raises(NotFoundError) as e:
+            await client.get_json(f"{CLOUD_ROOT}/users/search", params={"query": "you@example.com"})
+    finally:
+        await client.close()
+    assert "you@example.com" not in str(e.value)
+    assert "/users/search" in str(e.value)
+
+
+def test_public_surface_exports_security_names():
+    """L14: the Security* declaration aliases and their snapshot types were
+    reachable by dotted import but excluded from ``import *`` and docs."""
+    import stint
+
+    for name in (
+        "SecurityLevel",
+        "SecurityLevelMember",
+        "SecurityLevelMemberSnapshot",
+        "SecurityLevelSnapshot",
+        "SecurityScheme",
+        "SecuritySchemeSnapshot",
+    ):
+        assert name in stint.__all__, name
+        assert hasattr(stint, name), name
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Diff: project rename
 # ──────────────────────────────────────────────────────────────────────
 def test_diff_emits_update_project_on_rename():
-    import examples.company_managed.platform  # noqa: F401  -- imports trigger registration
+    import examples.company_managed.platform_schema  # noqa: F401  -- imports trigger registration
     from stint.autogen.desired import build_desired_snapshot
     from stint.autogen.diff import UpdateProject, diff
     from stint.state.snapshot import (
@@ -721,23 +965,20 @@ def test_env_config_fills_in_missing_flags(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
 
-    import argparse
+    from stint.cli.env_config import resolve_connection
 
-    from stint.cli.env_config import apply_env_defaults
-
-    args = argparse.Namespace(
+    url, auth, dialect, token_env, user_env, no_verify_ssl = resolve_connection(
         env="prod",
         url=None,
         auth=None,
         dialect=None,
-        token_env="STINT_TOKEN",
-        user_env="STINT_USER",
+        token_env=None,
+        user_env=None,
         no_verify_ssl=False,
     )
-    apply_env_defaults(args, args.env)
-    assert args.url == "https://jira.example.com"
-    assert args.auth == "pat"
-    assert args.dialect == "jira_cloud"
+    assert url == "https://jira.example.com"
+    assert auth == "pat"
+    assert dialect == "jira_cloud"
 
 
 def test_env_config_explicit_flags_override(tmp_path, monkeypatch):
@@ -746,40 +987,36 @@ def test_env_config_explicit_flags_override(tmp_path, monkeypatch):
     (cfg_dir / "prod.yaml").write_text("url: https://from-config\n", encoding="utf-8")
     monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
 
-    import argparse
+    from stint.cli.env_config import resolve_connection
 
-    from stint.cli.env_config import apply_env_defaults
-
-    args = argparse.Namespace(
+    url, _auth, _dialect, _token_env, _user_env, _no_ssl = resolve_connection(
         env="prod",
         url="https://from-cli",
         auth="pat",
         dialect=None,
-        token_env="STINT_TOKEN",
-        user_env="STINT_USER",
+        token_env=None,
+        user_env=None,
         no_verify_ssl=False,
     )
-    apply_env_defaults(args, args.env)
-    assert args.url == "https://from-cli"  # CLI wins
+    assert url == "https://from-cli"  # CLI wins
 
 
 def test_env_config_missing_file_is_silent(tmp_path, monkeypatch):
     monkeypatch.setenv("STINT_CONFIG_DIR", str(tmp_path))
-    import argparse
 
-    from stint.cli.env_config import apply_env_defaults
+    from stint.cli.env_config import resolve_connection
 
-    args = argparse.Namespace(
+    result = resolve_connection(
         env="prod",
         url="x",
         auth="pat",
         dialect=None,
-        token_env="STINT_TOKEN",
-        user_env="STINT_USER",
+        token_env=None,
+        user_env=None,
         no_verify_ssl=False,
     )
-    apply_env_defaults(args, "prod")  # config does not exist → no-op
-    assert args.url == "x"
+    # config does not exist → values pass through untouched
+    assert result == ("x", "pat", None, "STINT_TOKEN", "STINT_USER", False)
 
 
 def test_env_config_rejects_unknown_keys(tmp_path, monkeypatch):
@@ -800,6 +1037,22 @@ def test_env_config_rejects_unknown_keys(tmp_path, monkeypatch):
 # ──────────────────────────────────────────────────────────────────────
 # cmd_upgrade._resolve_connection: env-config token_env / user_env (issue #2)
 # ──────────────────────────────────────────────────────────────────────
+def test_env_config_verify_ssl_must_be_boolean(tmp_path, monkeypatch):
+    """L23: `verify_ssl: "false"` (a truthy YAML *string*) used to leave TLS
+    verification ON while the user meant to disable it; non-bool values now
+    fail loudly at config load."""
+    from stint.exceptions import ConfigurationError
+
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    (cfg_dir / "prod.yaml").write_text('url: https://x\nverify_ssl: "false"\n', encoding="utf-8")
+    monkeypatch.setenv("STINT_CONFIG_DIR", str(cfg_dir))
+    from stint.cli.env_config import load_env_config
+
+    with pytest.raises(ConfigurationError, match="verify_ssl must be"):
+        load_env_config("prod")
+
+
 def test_resolve_connection_reads_token_and_user_env_from_yaml(tmp_path, monkeypatch):
     """YAML's token_env / user_env keys are honored when the CLI doesn't pass them."""
     cfg_dir = tmp_path / "configs"

@@ -14,6 +14,7 @@ prod's customfield_10501; the alias is the same).
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -21,7 +22,13 @@ from stint.exceptions import ConfigurationError
 from stint.fields import _FieldType
 from stint.migrations.context import get_context
 from stint.migrations.exceptions import UnsupportedDowngradeError
-from stint.state.file import CustomFieldMapping, ProjectMapping, ScreenMapping, SimpleMapping
+from stint.state.file import (
+    CustomFieldMapping,
+    ProjectMapping,
+    ScreenMapping,
+    SecuritySchemeMapping,
+    SimpleMapping,
+)
 
 
 # ── Custom fields ────────────────────────────────────────────────────
@@ -32,6 +39,7 @@ async def create_custom_field(
     type: type[_FieldType],
     description: str = "",
     options: Iterable[str] | None = None,
+    searcher_key: str | None = None,
 ) -> str:
     """Create a Jira custom field and register its alias→ID mapping.
 
@@ -61,12 +69,23 @@ async def create_custom_field(
         name=name,
         description=description,
         type_id=type.jira_type_id,
+        # Omitting searcherKey creates a field with search template None:
+        # writes/reads work but every JQL clause on it 400s. Default from the
+        # declared field type; callers may override.
+        searcher_key=searcher_key or type.searcher_key or None,
     )
     # Persist parent before any option create — a mid-loop failure leaves the
     # parent + already-created options on disk so a re-run gives the
     # alias-already-mapped error instead of silently duplicating the field.
     ctx.state.custom_fields[alias] = CustomFieldMapping(id=field_id, options={})
     ctx.persist()
+    # POST /field does not accept a `description` parameter (only name/type/
+    # searcherKey), so Jira creates the field with an empty description even
+    # though we sent one — and the diff re-emits a description update on the
+    # next autogenerate forever. Apply it through the documented update
+    # endpoint now, so a freshly-created field matches the schema immediately.
+    if description:
+        await ctx.engine.dialect.update_custom_field(field_id, description=description)
     for opt_value in options or []:
         opt_id = await ctx.engine.dialect.add_custom_field_option(field_id, opt_value)
         ctx.state.custom_fields[alias].options[opt_value] = opt_id
@@ -79,14 +98,16 @@ async def update_custom_field(
     alias: str,
     name: str | None = None,
     description: str | None = None,
+    searcher_key: str | None = None,
 ) -> None:
-    """Rename or re-describe an existing custom field. id+options unchanged."""
+    """Rename, re-describe, or re-searcher an existing custom field."""
     ctx = get_context()
     mapping = _require_existing("update_custom_field", alias, ctx.state.custom_fields)
     await ctx.engine.dialect.update_custom_field(
         mapping.id,
         name=name,
         description=description,
+        searcher_key=searcher_key,
     )
 
 
@@ -621,7 +642,17 @@ async def create_project(
     """Create a Jira project. ``style`` selects CMP vs TMP (Cloud only).
 
     On Cloud, TMP defaults a sensible project_template_key when one is not
-    given (Atlassian's "next-gen" Kanban template).
+    given (Atlassian's "next-gen" Kanban template). CMP now defaults too:
+    **POST /project silently defaults to the same team-managed template when
+    ``projectTemplateKey`` is omitted**, and a team-managed project ignores
+    the entire scheme family (screens, ITSS, security schemes associate but
+    no-op) — so an unplanned CMP create silently built a project the data
+    plane couldn't use (the ``SEC`` incident: every create 400'd with "not
+    on the appropriate screen" despite the migration chaining perfectly).
+
+    Templates are matched to the declared style: a known team-managed
+    template with ``style="company-managed"`` (or vice versa) raises before
+    any wire call.
     """
     ctx = get_context()
     _require_alias(alias, "create_project")
@@ -632,9 +663,23 @@ async def create_project(
         raise ConfigurationError(
             f"create_project: unknown style {style!r}; expected 'company-managed' or 'team-managed'"
         )
+    _default_tmp_template_key = "com.pyxis.greenhopper.jira:gh-simplified-agility-kanban"
+    _default_cmp_template_key = "com.pyxis.greenhopper.jira:gh-kanban-template"
     if style == "team-managed" and project_template_key is None:
-        # Atlassian's default TMP Kanban template
-        project_template_key = "com.pyxis.greenhopper.jira:gh-simplified-agility-kanban"
+        project_template_key = _default_tmp_template_key
+    if style == "company-managed" and project_template_key is None:
+        project_template_key = _default_cmp_template_key
+    # Template/style mismatch is unforgeable at apply time: a project created
+    # on the wrong template ignores its schemes entirely, and every later op
+    # (and the style recorded in state) drifts forever.
+    template_style = "team-managed" if "simplified-agility" in (project_template_key or "") else "company-managed"
+    if project_template_key and template_style != style:
+        raise ConfigurationError(
+            f"create_project: template {project_template_key!r} creates a "
+            f"{template_style} project but the schema declares style={style!r}. "
+            f"Pass a matching project_template_key (for company-managed, "
+            f"e.g. '{_default_cmp_template_key}')."
+        )
     resolved_lead = await ctx.engine.dialect.resolve_lead(lead)
     proj_id = await ctx.engine.dialect.create_project(
         key=key,
@@ -867,6 +912,315 @@ async def set_project_issuetype_scheme(
         project_id=project.id,
         scheme_id=scheme.id,
     )
+
+
+# ── Issue security schemes ───────────────────────────────────────────
+async def create_issue_security_scheme(
+    *,
+    alias: str,
+    name: str,
+    description: str = "",
+    levels: Iterable[Mapping[str, Any]] | None = None,
+) -> str:
+    """Create an issue security scheme with inline levels.
+
+    ``levels`` entries carry the declared shape:
+    ``dict(alias=..., name=..., description=..., is_default=...)``.
+    Member-bearing levels use ``op.add_issue_security_level_member`` after the
+    scheme exists (the create endpoint accepts members inline, but resolving
+    user emails to accountIds happens per-member, and the not-yet-scheme-id'd
+    levels can't be tracked before the create returns anyway).
+
+    Returns the new Jira scheme id. Idempotent: re-run returns the existing
+    id; missing levels from the declaration are filled in (mirroring
+    ``create_custom_field``'s option-fill behavior)."""
+    ctx = get_context()
+    _require_alias(alias, "create_issue_security_scheme")
+    existing = _existing_id_or_none(ctx.state.security_schemes, alias)
+    if existing is not None:
+        declared = {entry["alias"]: entry for entry in levels or []}
+        known = ctx.state.security_schemes[alias].level_ids
+        for entry_alias, entry in declared.items():
+            if entry_alias not in known:
+                await _create_level_and_record(
+                    ctx,
+                    alias,
+                    entry_alias,
+                    name=str(entry.get("name", "")),
+                    description=str(entry.get("description", "")),
+                    is_default=bool(entry.get("is_default", False)),
+                )
+        return existing
+    body_levels: list[dict[str, Any]] = []
+    for entry in levels or []:
+        body_levels.append(
+            {
+                "name": entry.get("name", ""),
+                "description": entry.get("description", ""),
+                "isDefault": bool(entry.get("is_default", False)),
+            }
+        )
+    scheme_id = await ctx.engine.dialect.create_issue_security_scheme(
+        name=name,
+        description=description,
+        levels=body_levels or None,
+    )
+    mapping = SecuritySchemeMapping(id=scheme_id)
+    ctx.state.security_schemes[alias] = mapping
+    ctx.persist()
+    await _capture_level_ids(ctx, alias, mapping, {e.get("alias", ""): e for e in levels or []})
+    return scheme_id
+
+
+async def update_issue_security_scheme(
+    *,
+    alias: str,
+    name: str | None = None,
+    description: str | None = None,
+) -> None:
+    ctx = get_context()
+    mapping = _require_existing("update_issue_security_scheme", alias, ctx.state.security_schemes)
+    await ctx.engine.dialect.update_issue_security_scheme(
+        mapping.id,
+        name=name,
+        description=description,
+    )
+
+
+async def add_issue_security_level(
+    *,
+    scheme_alias: str,
+    level_alias: str,
+    name: str,
+    description: str = "",
+    is_default: bool = False,
+) -> None:
+    """Add one level to an existing scheme. Persists the level id captured by
+    a follow-up GET (the add-level endpoint returns 204 with no body)."""
+    ctx = get_context()
+    mapping = _require_existing("add_issue_security_level", scheme_alias, ctx.state.security_schemes)
+    if level_alias in mapping.level_ids:
+        return  # idempotent re-run
+    await ctx.engine.dialect.add_issue_security_levels(
+        mapping.id,
+        levels=[{"name": name, "description": description, "isDefault": is_default}],
+    )
+    await _capture_level_ids(
+        ctx,
+        scheme_alias,
+        mapping,
+        {level_alias: {"name": name, "description": description, "isDefault": is_default}},
+    )
+
+
+async def add_issue_security_level_member(
+    *,
+    scheme_alias: str,
+    level_alias: str,
+    member_type: str,
+    member_value: str,
+) -> str:
+    """Add a member to an existing level.
+
+    ``member_value`` is a group name, or (for users) an email or raw
+    accountId; emails resolve through the user-search API. Records the
+    *resolved* parameter in state so re-runs stay idempotent even when the
+    declared value is an email the reflection payload will only ever carry
+    as an accountId.
+    """
+    ctx = get_context()
+    mapping = _require_existing("add_issue_security_level_member", scheme_alias, ctx.state.security_schemes)
+    members = mapping.member_values.setdefault(level_alias, [])
+    if member_value in members:
+        return member_value  # idempotent re-run
+    level_id = mapping.level_ids.get(level_alias)
+    if level_id is None:
+        raise ConfigurationError(
+            f"add_issue_security_level_member: scheme {scheme_alias!r} has no "
+            f"tracked level {level_alias!r}. Known levels: {sorted(mapping.level_ids)}"
+        )
+    parameter = await ctx.engine.dialect.resolve_security_level_member(
+        member_type=member_type,
+        member_value=member_value,
+    )
+    await ctx.engine.dialect.add_issue_security_level_member(
+        scheme_id=mapping.id,
+        level_id=level_id,
+        member_type=member_type,
+        member_id_or_name=parameter,
+    )
+    members.append(parameter)
+    ctx.persist()
+    return parameter
+
+
+async def set_default_issue_security_level(*, scheme_alias: str, level_alias: str) -> None:
+    ctx = get_context()
+    mapping = _require_existing("set_default_issue_security_level", scheme_alias, ctx.state.security_schemes)
+    level_id = mapping.level_ids.get(level_alias)
+    if level_id is None:
+        raise ConfigurationError(
+            f"set_default_issue_security_level: scheme {scheme_alias!r} has no "
+            f"tracked level {level_alias!r}. Known levels: {sorted(mapping.level_ids)}"
+        )
+    await ctx.engine.dialect.set_default_issue_security_levels({mapping.id: level_id})
+    mapping.default_level_id = level_id
+    ctx.persist()
+
+
+async def clear_default_issue_security_level(*, scheme_alias: str) -> None:
+    """Reset a scheme's default level to none.
+
+    New issues then carry no issue-security level. This is the only way to
+    make a scheme's issues visible when its current default level has no
+    members: such issues 404 on GET/PUT and never appear in JQL, even for
+    the token that created them."""
+    ctx = get_context()
+    mapping = _require_existing("clear_default_issue_security_level", scheme_alias, ctx.state.security_schemes)
+    await ctx.engine.dialect.set_default_issue_security_levels({mapping.id: None})
+    mapping.default_level_id = None
+    ctx.persist()
+
+
+async def set_project_issue_security_scheme(*, project_alias: str, scheme_alias: str) -> None:
+    """Associate a scheme with a project.
+
+    Jira runs the association (and any issue remapping) asynchronously: the
+    PUT answers 303 with a task bean. Poll the task to completion with a
+    bounded wait so a failed association fails the migration instead of
+    succeeding on the wire (and leaving the op untracked-without-binding)."""
+    ctx = get_context()
+    project = _require_existing("set_project_issue_security_scheme", project_alias, ctx.state.projects)
+    _refuse_tmp(
+        project,
+        project_alias,
+        "set_project_issue_security_scheme",
+        ctx.state.jira_url,
+    )
+    scheme = _require_existing(
+        "set_project_issue_security_scheme",
+        scheme_alias,
+        ctx.state.security_schemes,
+    )
+    task = await ctx.engine.dialect.associate_security_scheme_to_project(
+        project_id=project.id,
+        scheme_id=scheme.id,
+    )
+    await _await_security_task(ctx.engine.dialect, task)
+
+
+_ASSOCIATE_POLL_ATTEMPTS = 30
+_ASSOCIATE_POLL_DELAY = 2.0
+_TASK_TERMINAL_FAILURE = ("FAILED", "CANCELLED", "KILLED", "ERROR", "DEAD")
+
+
+async def _await_security_task(dialect: Any, task: Any) -> None:
+    """Poll an associate task bean to a terminal state, bounded.
+
+    An immediate COMPLETE (common for small projects) never polls. A terminal
+    failure raises. Runs out of attempts → a StintError telling the operator
+    where the task endpoint lives, so the run is visibly wrong rather than
+    silently-green on an unbound project.
+    """
+    from stint.exceptions import StintError
+
+    if not isinstance(task, dict):
+        return  # defensive: mock/stub responses without a task bean
+    status = str(task.get("status", "COMPLETE")).upper()
+    if status in _TASK_TERMINAL_FAILURE:
+        raise StintError(f"security-scheme association task failed: {str(task)[:200]}")
+    if status not in ("ENQUEUED", "RUNNING"):
+        return
+    poll_path = task.get("self") or task.get("location")
+    if not poll_path:
+        raise StintError(
+            f"security-scheme association is not complete ({status}) and the "
+            f"response carries no self/location link to poll; the task status "
+            f"must be checked manually: {str(task)[:200]}"
+        )
+    for _ in range(_ASSOCIATE_POLL_ATTEMPTS):
+        await asyncio.sleep(_ASSOCIATE_POLL_DELAY)
+        task = await dialect.client.get_json(str(poll_path))
+        if not isinstance(task, dict):
+            continue
+        status = str(task.get("status", "")).upper()
+        if status in _TASK_TERMINAL_FAILURE:
+            raise StintError(f"security-scheme association task failed: {str(task)[:200]}")
+        if status not in ("ENQUEUED", "RUNNING"):
+            return
+    raise StintError(
+        f"security-scheme association task did not finish within "
+        f"{_ASSOCIATE_POLL_ATTEMPTS * _ASSOCIATE_POLL_DELAY:.0f}s; check its "
+        f"status at {poll_path} and re-run the migration if it failed."
+    )
+
+
+async def delete_issue_security_scheme(*, alias: str) -> None:
+    """Delete the scheme by id. Idempotent: no-op when absent from state.
+
+    Jira refuses to delete a scheme still associated with a project — the
+    emitted delete order handles that (DeleteProject → scheme deletes), and
+    a hand-written migration must unbind first (its 400 error surfaces here).
+    """
+    ctx = get_context()
+    mapping = ctx.state.security_schemes.get(alias)
+    if mapping is None:
+        return
+    await ctx.engine.dialect.delete_issue_security_scheme(mapping.id)
+    del ctx.state.security_schemes[alias]
+    ctx.persist()
+
+
+async def _capture_level_ids(
+    ctx: Any,
+    scheme_alias: str,
+    mapping: SecuritySchemeMapping,
+    declared: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """Fill ``level_ids``/``default_level_id`` from the live scheme.
+
+    Jira's create/add-level responses carry no level ids, so one GET after
+    the write captures them. Levels are matched to declarations by level
+    name (unique within a scheme).
+    """
+    if not declared:
+        return
+    levels = await ctx.engine.dialect.get_issue_security_levels(mapping.id)
+    by_name: dict[str, tuple[str, bool]] = {}
+    for lv in levels:
+        by_name[lv.name] = (lv.id, lv.is_default)
+        if lv.is_default:
+            mapping.default_level_id = lv.id
+    for level_alias, entry in declared.items():
+        lv = by_name.get(str(entry.get("name", "")))
+        if lv is not None:
+            mapping.level_ids[level_alias] = lv[0]
+            if lv[1]:
+                mapping.default_level_id = lv[0]
+    ctx.persist()
+
+
+async def _create_level_and_record(
+    ctx: Any,
+    scheme_alias: str,
+    level_alias: str,
+    *,
+    name: str,
+    description: str,
+    is_default: bool,
+) -> None:
+    mapping = ctx.state.security_schemes[scheme_alias]
+    if level_alias not in mapping.level_ids:
+        await ctx.engine.dialect.add_issue_security_levels(
+            mapping.id,
+            levels=[{"name": name, "description": description, "isDefault": is_default}],
+        )
+        await _capture_level_ids(
+            ctx,
+            scheme_alias,
+            mapping,
+            {level_alias: {"name": name, "description": description, "isDefault": is_default}},
+        )
 
 
 # ── Escape hatch ─────────────────────────────────────────────────────
