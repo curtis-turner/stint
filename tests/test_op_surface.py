@@ -6,7 +6,9 @@ The runner is exercised by test_m2_migrations.py; tests here focus on the
 op-level alias resolution and dialect contract.
 """
 
+import json
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 import httpx
 import pytest
@@ -25,6 +27,16 @@ from stint.state.file import (
 
 BASE = "https://jira.example.com"
 CLOUD_ROOT = f"{BASE}/rest/api/3"
+
+
+def _sent_json(response_call: Any) -> Any:
+    """Parse the JSON body a recorded request sent.
+
+    httpx(the lowest-declared floor version) serializes `json=` payloads
+    with space separators while newer releases use compact form, so asserts
+    on what stint put *in* the request must parse it, never match bytes.
+    """
+    return json.loads(response_call.request.read())
 
 
 def _cloud_engine() -> Engine:
@@ -1147,9 +1159,9 @@ async def test_create_issue_security_scheme_records_levels_and_default():
     assert mapping.id == "9001"
     assert mapping.level_ids == {"level-public": "10021", "level-internal": "10022"}
     assert mapping.default_level_id == "10021"  # captured from the scheme GET's isDefault
-    body_sent = create_route.calls[0].request.read()
-    assert b'"isDefault":true' in body_sent
-    assert b"alias" not in body_sent  # op-only key never reaches the wire
+    levels = _sent_json(create_route.calls[0])["levels"]
+    assert [entry["isDefault"] for entry in levels] == [True, False]
+    assert b"alias" not in create_route.calls[0].request.read()  # op-only key never reaches the wire
 
 
 @pytest.mark.asyncio
@@ -1237,10 +1249,9 @@ async def test_add_issue_security_level_member_group_and_user():
     finally:
         await engine.close()
     assert len(respx.get(f"{CLOUD_ROOT}/user/search").calls) == 1
-    bodies = [c.request.read() for c in put.calls]
-    assert b'"parameter":"jira-admins"' in bodies[0]
-    assert b'"parameter":"5b10ac8b86e24b0016d46e0f"' in bodies[1]
-    assert b'"type":"group"' in bodies[0] and b'"type":"user"' in bodies[1]
+    bodies = [_sent_json(c) for c in put.calls]
+    assert bodies[0]["members"] == [{"parameter": "jira-admins", "type": "group"}]
+    assert bodies[1]["members"] == [{"parameter": "5b10ac8b86e24b0016d46e0f", "type": "user"}]
     members = state.security_schemes["bug_security"].member_values["level-internal"]
     # Declared member value resolution #  resolved accounts recorded, not emails.
     assert members == ["jira-admins", "5b10ac8b86e24b0016d46e0f"]
@@ -1279,12 +1290,11 @@ async def test_set_default_issue_security_level_and_associate():
         )
     finally:
         await engine.close()
-    assert b'"defaultValues":[{"issueSecuritySchemeId":"sc-9","defaultLevelId":"10021"}]' in (
-        default_put.calls[0].request.read()
-    )
-    assoc_body = associate_put.calls[0].request.read()
-    assert b'"projectId":"p-99"' in assoc_body
-    assert b'"schemeId":"sc-9"' in assoc_body
+    assert _sent_json(default_put.calls[0]) == {
+        "defaultValues": [{"issueSecuritySchemeId": "sc-9", "defaultLevelId": "10021"}]
+    }
+    assoc_body = _sent_json(associate_put.calls[0])
+    assert assoc_body == {"projectId": "p-99", "schemeId": "sc-9"}
     assert state.security_schemes["bug_security"].default_level_id == "10021"
 
 
@@ -1309,9 +1319,9 @@ async def test_clear_default_issue_security_level_sends_null_and_forgets_state()
         )
     finally:
         await engine.close()
-    assert b'"defaultValues":[{"issueSecuritySchemeId":"sc-9","defaultLevelId":null}]' in (
-        default_put.calls[0].request.read()
-    )
+    assert _sent_json(default_put.calls[0])["defaultValues"] == [
+        {"issueSecuritySchemeId": "sc-9", "defaultLevelId": None}
+    ]
     assert state.security_schemes["bug_security"].default_level_id is None
 
 
