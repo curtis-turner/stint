@@ -161,7 +161,7 @@ def create_engine(
         return Engine(base_url=base_url, dialect=dialect_obj, client=client)
     except Exception:
         # L9: a dialect/engine construction failure must not strand the
-        # freshly constructed httpx pool (ResourceWarning on GC).
+        # freshly constructed httpx2 pool (ResourceWarning on GC).
         client.close_sync()
         raise
 

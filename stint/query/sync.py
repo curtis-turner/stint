@@ -11,11 +11,11 @@
       session.commit()
 
 Session owns a private asyncio event loop and runs AsyncSession on it. The
-engine's httpx client binds to that loop on first I/O, so by default closing
+engine's httpx2 client binds to that loop on first I/O, so by default closing
 the Session also closes the engine. ``close_engine=False`` keeps the engine's
 client *open* — but its connection pool stays bound to the Session's now-closed
 loop, so the pool can never serve I/O again: a later ``Session(engine, ...)``
-raises a precise error, not a raw httpx ``RuntimeError``. The only thing
+raises a precise error, not a raw httpx2 ``RuntimeError``. The only thing
 ``close_engine=False`` enables is closing the engine yourself afterwards via
 ``asyncio.run(engine.close())``.
 
@@ -61,7 +61,7 @@ class Session:
             # L12: a previous Session with close_engine=False died with the
             # engine's connection pool still bound to its (now closed) loop.
             # Any further I/O on that pool raises a raw
-            # ``RuntimeError: Event loop is closed`` from inside httpx — say
+            # ``RuntimeError: Event loop is closed`` from inside httpx2 — say
             # so here instead of letting that escape at first request time.
             raise RuntimeError(
                 "this engine's connection pool was bound to a Session that "
@@ -114,7 +114,7 @@ class Session:
                 # L12: the engine survives, but its connection pool's loop
                 # does not — every pooled connection is now unusable. Record
                 # that so future Sessions raise a precise error instead of
-                # ``RuntimeError: Event loop is closed`` from inside httpx.
+                # ``RuntimeError: Event loop is closed`` from inside httpx2.
                 self._engine._pool_loop_orphaned = True  # ty: ignore[unresolved-attribute]
         finally:
             self._loop.close()

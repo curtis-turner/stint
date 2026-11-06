@@ -1,4 +1,4 @@
-"""Thin async httpx wrapper for Jira REST. Handles auth, JSON, basic error mapping.
+"""Thin async httpx2 wrapper for Jira REST. Handles auth, JSON, basic error mapping.
 
 Does not know about admin objects or JQL. The dialect calls this for raw GETs.
 
@@ -10,7 +10,7 @@ Retry policy:
   arrive *after* the server committed a non-idempotent POST write, so
   retrying POSTs risks duplicating the created object.
 - Transport-level failures (connection refused/reset, DNS, read timeout —
-  ``httpx.RequestError``): retried with the same backoff, then re-raised
+  ``httpx2.RequestError``): retried with the same backoff, then re-raised
   as ``TransportError`` with ``status_code=None`` so callers can
   ``except StintError`` for every network failure path.
 Non-retryable HTTP errors (401/403/404/4xx) propagate immediately.
@@ -23,7 +23,7 @@ import json
 import random
 from typing import Any
 
-import httpx
+import httpx2
 
 from stint.client.auth import Auth
 from stint.exceptions import (
@@ -66,7 +66,7 @@ class JiraHTTPClient:
         backoff_base: float = 0.5,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self._client = httpx.AsyncClient(
+        self._client = httpx2.AsyncClient(
             base_url=self.base_url,
             auth=auth.to_httpx_auth(),
             verify=verify_ssl,
@@ -108,20 +108,20 @@ class JiraHTTPClient:
         method: str,
         path: str,
         **kwargs: Any,
-    ) -> httpx.Response:
+    ) -> httpx2.Response:
         """Issue the request, applying the documented retry policy.
 
         Retries: 429 always; 503 only for idempotent methods;
-        transport-level ``httpx.RequestError`` for all methods (the failure
+        transport-level ``httpx2.RequestError`` for all methods (the failure
         happened before the request could complete, so re-sending cannot
         duplicate a committed write). Exhausted transport retries raise
-        ``TransportError(status_code=None)`` — never a raw httpx exception.
+        ``TransportError(status_code=None)`` — never a raw httpx2 exception.
         """
         attempt = 0
         while True:
             try:
                 response = await self._client.request(method, path, **kwargs)
-            except httpx.RequestError as exc:
+            except httpx2.RequestError as exc:
                 if attempt >= self._max_retries:
                     raise TransportError(
                         f"{method} {path} failed at the transport layer: {exc}",
@@ -145,7 +145,7 @@ class JiraHTTPClient:
         (no ``Retry-After`` exists without a response)."""
         return self._backoff_base * (2**attempt) + random.uniform(0, 0.1)
 
-    def _compute_delay(self, response: httpx.Response, attempt: int) -> float:
+    def _compute_delay(self, response: httpx2.Response, attempt: int) -> float:
         """Honor Retry-After when present; otherwise exponential backoff + jitter."""
         ra = response.headers.get("Retry-After")
         if ra is not None:
@@ -179,7 +179,7 @@ class JiraHTTPClient:
     async def __aexit__(self, *_: object) -> None:
         await self.close()
 
-    def _display_url(self, url: httpx.URL) -> str:
+    def _display_url(self, url: httpx2.URL) -> str:
         """Endpoint identity for error messages, minus the query string.
 
         The path names the failed call; echoing the full query string would
@@ -188,7 +188,7 @@ class JiraHTTPClient:
         """
         return str(url).split("?", 1)[0]
 
-    def _unwrap(self, response: httpx.Response, *, expect_json: bool = True) -> Any:
+    def _unwrap(self, response: httpx2.Response, *, expect_json: bool = True) -> Any:
         status = response.status_code
         url = self._display_url(response.request.url)
         if status == 401:
