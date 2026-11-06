@@ -27,6 +27,7 @@ import tempfile
 from pathlib import Path
 
 import httpx
+import pytest_httpx2  # noqa: F401  (registers the httpcore2 mocker with respx)
 import respx
 
 from stint import StateFile
@@ -127,7 +128,7 @@ def main() -> int:
 
         sys.path.insert(0, str(tmp_dir))
 
-        with respx.mock:
+        with respx.mock(using="httpcore2"):
             _stub_empty_jira(respx.mock)
             rc = stint_main(
                 [

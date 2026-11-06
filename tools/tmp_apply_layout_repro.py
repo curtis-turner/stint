@@ -29,6 +29,7 @@ import json
 from typing import Annotated, Literal
 
 import httpx
+import pytest_httpx2  # noqa: F401  (registers the httpcore2 mocker with respx)
 import respx
 
 from stint import CustomField, IssueType, Project
@@ -80,7 +81,7 @@ async def run() -> int:
         print(f"  {type(change).__name__:<16} alias={change.alias!r}")
     print()
 
-    with respx.mock:
+    with respx.mock(using="httpcore2"):
         # Field create: returns the two declared fields with predictable ids.
         def _field_dispatch(request: httpx.Request) -> httpx.Response:
             body = json.loads(request.content)
