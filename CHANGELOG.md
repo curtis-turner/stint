@@ -25,6 +25,11 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Internal
 
+- CI matrix now covers Python 3.11–3.15; the floors job resolves every
+  direct dependency minimum on 3.11. To keep that honest the dev floor is
+  `respx>=0.23.1`: 0.21.1 predates the mocker-registry shape the
+  pytest-httpx2 bridge relies on (236 failures at minimums; 612 passing at
+  0.23.1).
 - Loggers renamed by the httpx2 switch: `httpx` → `httpx2`,
   `httpcore.*` → `httpcore2.*` (stint configures neither today).
 - Default User-Agent preserved as `stint/<version>` (httpx2's own rename to

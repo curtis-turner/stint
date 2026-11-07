@@ -27,6 +27,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Topic :: Database",
   "Typing :: Typed",
@@ -69,7 +70,11 @@ dev = [
   "pytest>=9.0.3",
   "pytest-asyncio>=0.21",
   "pytest-cov>=4.0",
-  "respx>=0.21.1",
+  # Older respx lacks the mocker-registry shape the pytest-httpx2 bridge
+  # relies on (verified: 0.21.1 fails 236 tests under the bridge; 0.23.1
+  # passes). Bump the floor in lockstep with respx's next httpx2-native
+  # release when the conftest bridge is retired.
+  "respx>=0.23.1",
   "pytest-httpx2>=1.0",
   "ruff>=0.15.14",
   "types-PyYAML>=6.0",
