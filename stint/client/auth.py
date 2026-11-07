@@ -11,16 +11,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
-import httpx
+import httpx2
 
 
 class Auth(Protocol):
-    """Anything that knows how to turn itself into an httpx.Auth."""
+    """Anything that knows how to turn itself into an httpx2.Auth."""
 
-    def to_httpx_auth(self) -> httpx.Auth: ...
+    def to_httpx_auth(self) -> httpx2.Auth: ...
 
 
-class _BearerAuth(httpx.Auth):
+class _BearerAuth(httpx2.Auth):
     """Authorization: Bearer <token>."""
 
     requires_request_body = False
@@ -40,7 +40,7 @@ class PATAuth:
 
     token: str = field(repr=False)
 
-    def to_httpx_auth(self) -> httpx.Auth:
+    def to_httpx_auth(self) -> httpx2.Auth:
         return _BearerAuth(self.token)
 
 
@@ -51,8 +51,8 @@ class BasicAuth:
     username: str
     password: str = field(repr=False)
 
-    def to_httpx_auth(self) -> httpx.Auth:
-        return httpx.BasicAuth(self.username, self.password)
+    def to_httpx_auth(self) -> httpx2.Auth:
+        return httpx2.BasicAuth(self.username, self.password)
 
 
 @dataclass(frozen=True)
@@ -65,5 +65,5 @@ class APITokenAuth:
     email: str
     token: str = field(repr=False)
 
-    def to_httpx_auth(self) -> httpx.Auth:
-        return httpx.BasicAuth(self.email, self.token)
+    def to_httpx_auth(self) -> httpx2.Auth:
+        return httpx2.BasicAuth(self.email, self.token)

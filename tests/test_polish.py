@@ -5,6 +5,7 @@ import sys
 from collections.abc import Awaitable, Callable
 
 import httpx
+import httpx2
 import pytest
 import respx
 
@@ -744,10 +745,10 @@ async def test_put_503_is_retried():
 @pytest.mark.asyncio
 @respx.mock
 async def test_transport_error_raised_as_transporterror():
-    """httpx.ConnectError is retried then re-raised as
-    TransportError(status_code=None) — never a raw httpx exception. (H7)"""
+    """httpx2.ConnectError is retried then re-raised as
+    TransportError(status_code=None) — never a raw httpx2 exception. (H7)"""
     respx.get(f"{CLOUD_ROOT}/serverInfo").mock(
-        side_effect=httpx.ConnectError("connection refused"),
+        side_effect=httpx2.ConnectError("connection refused"),
     )
     engine = _engine()
     try:

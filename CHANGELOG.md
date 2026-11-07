@@ -6,6 +6,38 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-06
+
+### Changed
+
+- **Broke: swapped HTTP client from `httpx` to `httpx2`**. httpx2 is
+  Pydantic's maintained continuation of httpx (same public API); requires
+  Python 3.11+ (stint's floor moves to >=3.11 accordingly). `Auth`
+  implementations that return an `httpx.Auth` via `to_httpx_auth()` now
+  return `httpx2.Auth`; `exceptions.TransportError` wraps `httpx2.RequestError`.
+  Because httpx2 verifies TLS against the OS trust store via `truststore`
+  instead of httpx's bundled certifi roots, corporate-proxy users may observe
+  different CA behavior; `verify_ssl` passthrough is unchanged.
+- Test suite mocks httpx2 with the `pytest-httpx2` plugin, which registers a
+  native `httpcore2` mocker with respx (respx 0.23 has no httpx2 support of
+  its own). When respx ships native httpx2 support, the conftest bridge can
+  be retired.
+
+### Internal
+
+- CI matrix now covers Python 3.11–3.15; the floors job resolves every
+  direct dependency minimum on 3.11. To keep that honest the dev floor is
+  `respx>=0.23.1`: 0.21.1 predates the mocker-registry shape the
+  pytest-httpx2 bridge relies on (236 failures at minimums; 612 passing at
+  0.23.1).
+- Loggers renamed by the httpx2 switch: `httpx` → `httpx2`,
+  `httpcore.*` → `httpcore2.*` (stint configures neither today).
+- Default User-Agent preserved as `stint/<version>` (httpx2's own rename to
+  `python-httpx2/...` never shows on the wire).
+- `ty` is pinned `>=0.0.55,<0.0.99`: 0.0.99 regresses TypeVar inference for
+  forward-referenced bounds (flags `stint/query/sync.py`'s passing
+  `AsyncSession.get` call as `Never`); unpin once fixed upstream.
+
 ## [0.7.1] - 2026-11-01
 
 ### Fixed

@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 
 import httpx
+import pytest_httpx2  # noqa: F401  (registers the httpcore2 mocker with respx)
 import respx
 
 from stint import PATAuth, StateFile, op
@@ -44,7 +45,7 @@ async def _run_in_ctx(engine: Engine, state: StateFile, body, reset_token_holder
 
 async def success_path() -> int:
     registry.reset()
-    with respx.mock:
+    with respx.mock(using="httpcore2"):
         respx.post(
             f"{CLOUD_ROOT}/fieldconfiguration",
             json__eq={"name": "Bug FC", "description": ""},
@@ -76,7 +77,7 @@ async def success_path() -> int:
 
 async def retired_path() -> int:
     registry.reset()
-    with respx.mock:
+    with respx.mock(using="httpcore2"):
         respx.post(
             f"{CLOUD_ROOT}/fieldconfiguration",
             json__eq={"name": "Bug FC", "description": ""},
@@ -138,7 +139,7 @@ async def other_4xx_path() -> int:
     must keep the original TransportError so a real wire error stays
     visible."""
     registry.reset()
-    with respx.mock:
+    with respx.mock(using="httpcore2"):
         respx.post(
             f"{CLOUD_ROOT}/fieldconfiguration",
             json__eq={"name": "Bug FC", "description": ""},
