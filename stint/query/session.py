@@ -43,6 +43,7 @@ from stint.exceptions import (
     TransitionError,
     TransportError,
 )
+from stint.fields import CustomField, MultiUserField, UserField
 from stint.query import adf
 from stint.query.hydrate import field_keys_for_model, hydrate
 from stint.query.payload import (
@@ -227,6 +228,10 @@ class AsyncSession:
         # 1. Inserts (in add() order)
         for instance, project_key in self._pending_inserts:
             try:
+                # Emails in user-typed fields resolve first (reporter is
+                # stripped from inserts, so it never needs resolving).
+                insert_attrs = {name for name in type(instance).model_fields if name not in ("key", "reporter")}
+                await self._resolve_user_typed_values(instance, only=insert_attrs)
                 body = build_insert_payload(
                     instance,
                     self.state,
@@ -263,6 +268,7 @@ class AsyncSession:
             if not dirty:
                 continue
             try:
+                await self._resolve_user_typed_values(instance, only=dirty)
                 body = build_update_payload(
                     instance,
                     self.state,
@@ -599,6 +605,54 @@ class AsyncSession:
         await self.engine.dialect.delete_issue_link(link_id)
 
     # ── Helpers ──────────────────────────────────────────────────────
+    async def _resolve_user_typed_values(self, instance: IssueType, *, only: set[str]) -> None:
+        """Resolve emails to platform user ids on user-typed attributes,
+        in place, before payload building.
+
+        Covers the system user fields (assignee, reporter, creator) and
+        custom ``UserField``/``MultiUserField`` attributes. Lookups go
+        through the dialect's resolver, which caches per engine — one
+        user-search per email no matter how many issues name the same
+        person. Failures raise ConfigurationError naming the model,
+        attribute and email; the commit's per-instance try treats that like
+        any other write failure (PartialCommitError, nothing silently
+        dropped).
+        """
+        model = type(instance)
+        for attr_name, field_info in model.model_fields.items():
+            if attr_name == "key" or attr_name not in only:
+                continue
+            value = getattr(instance, attr_name, None)
+            if value is None:
+                continue
+            cf = _custom_field_meta(field_info)
+            if cf is not None:
+                user_typed = cf.type in (UserField, MultiUserField)
+            else:
+                user_typed = attr_name in ("assignee", "reporter", "creator")
+            if not user_typed:
+                continue
+            if isinstance(value, str) and "@" in value:
+                try:
+                    resolved = await self.engine.dialect.resolve_user(value)
+                except ConfigurationError as exc:
+                    raise ConfigurationError(f"{model.__name__}.{attr_name}: {exc}") from exc
+                setattr(instance, attr_name, resolved)
+            elif isinstance(value, list):
+                resolved_items = []
+                changed = False
+                for item in value:
+                    if isinstance(item, str) and "@" in item:
+                        try:
+                            resolved_items.append(await self.engine.dialect.resolve_user(item))
+                        except ConfigurationError as exc:
+                            raise ConfigurationError(f"{model.__name__}.{attr_name}: {exc}") from exc
+                        changed = True
+                    else:
+                        resolved_items.append(item)
+                if changed:
+                    setattr(instance, attr_name, resolved_items)
+
     def _hydrate_with_identity(
         self,
         model: type[M],
@@ -640,6 +694,11 @@ def _comment_from_payload(raw: dict[str, Any]) -> Comment:
         created=str(raw.get("created", "")),
         body_text=adf.parse_text(body) if isinstance(body, dict) else str(body or ""),
     )
+
+
+def _custom_field_meta(field_info: Any) -> CustomField | None:
+    """The CustomField in a Pydantic Annotated metadata list, if any."""
+    return next((m for m in field_info.metadata if isinstance(m, CustomField)), None)
 
 
 def _attachment_from_payload(raw: dict[str, Any]) -> Attachment:

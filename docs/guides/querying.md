@@ -212,6 +212,19 @@ class Patch(IssueType):
 
 Object-shaped system fields (`components`, `fixVersions`) also pass through, but the caller supplies the raw Jira JSON shape (e.g. `[{"name": "Backend"}]`) and gets it back the same way; those may gain typed support later. Check the create/update screen carries the field, or Jira will reject the request.
 
+## Users by email
+
+The service knows people by email; Jira Cloud wants accountIds. On commit, stint resolves email values in user-typed fields — `assignee`, `reporter`, `creator`, and custom `UserField`/`MultiUserField` attributes — through the same user-search resolver the schema plane uses:
+
+```python
+session.add(WorkItem(summary="...", assignee="someone@example.com"))
+await session.commit()  # sent as {"accountId": "..."}
+```
+
+- **One lookup per email per engine** (cached), no matter how many issues or fields name the same person. Raw accountIds pass through untouched.
+- **No silent drops**: an email that matches no active user, or more than one without an exact match, fails the commit for that issue with an error naming the field and email — surfaced through `PartialCommitError` like every other per-issue write failure.
+- After the write the instance carries the accountId, the same shape hydration fills, so read-modify-write comparisons don't flap.
+
 ## Descriptions: Atlassian Document Format
 
 Jira descriptions are ADF documents, not plain text. The [`stint.query.adf`](../api/query.md) module wraps plain text going in and parses it coming back:
