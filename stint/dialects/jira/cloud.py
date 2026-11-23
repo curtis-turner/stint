@@ -2167,6 +2167,37 @@ class JiraCloudDialect:
     async def delete_attachment(self, attachment_id: str) -> None:
         await self.client.delete(f"{self.api_root}/attachment/{attachment_id}")
 
+    # ── Issue links (data plane) ─────────────────────────────────────
+    async def get_issuelinks(self, key: str) -> list[dict[str, Any]]:
+        """One GET /issue/{key} with ``fields=issuelinks``; no extra request
+        per link."""
+        payload = await self.client.get_json(
+            f"{self.api_root}/issue/{key}",
+            params={"fields": "issuelinks"},
+        )
+        fields = payload.get("fields") if isinstance(payload, dict) else None
+        raw = (fields or {}).get("issuelinks") or []
+        if not isinstance(raw, list):
+            raise ReflectionError(
+                f"GET {self.api_root}/issue/{key} fields.issuelinks returned {type(raw).__name__} instead of a list"
+            )
+        return [entry for entry in raw if isinstance(entry, dict)]
+
+    async def create_issue_link(self, *, link_type: str, outward_key: str, inward_key: str) -> None:
+        """POST /issueLink. ``outward_key`` is the subject (A in "A blocks
+        B"), ``inward_key`` the object (B)."""
+        await self.client.post_json(
+            f"{self.api_root}/issueLink",
+            json={
+                "type": {"name": link_type},
+                "outwardIssue": {"key": outward_key},
+                "inwardIssue": {"key": inward_key},
+            },
+        )
+
+    async def delete_issue_link(self, link_id: str) -> None:
+        await self.client.delete(f"{self.api_root}/issueLink/{link_id}")
+
     # ── Issue security schemes ────────────────────────────────────────────
 
     async def _reflect_issue_security_schemes(self) -> dict[str, SecuritySchemeSnapshot]:

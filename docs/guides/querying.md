@@ -142,6 +142,18 @@ if "nag text" not in existing:
     await session.add_comment(bug, "nag text")
 ```
 
+## Issue links
+
+```python
+await session.link(blocker, blocked, link_type="Blocks")  # outward/inward resolved for you
+links = await session.links(bug)  # [IssueLink(id, type, direction, other_key)]
+await session.unlink(links[0].id)
+```
+
+- Link types are addressed by name; `source` is the outward subject ("A blocks B"), `target` the inward object. Accepts instances or keys.
+- **Creating a link that already exists (same type, same direction, same pair) is a no-op** — checked locally before the request, with a duplicate race tolerated server-side — so a sync loop can re-derive dependencies every pass.
+- `links()` reads `fields.issuelinks` in one GET (never one request per link); `direction` is relative to the issue that was read.
+
 ## Attachments
 
 ```python
