@@ -6,6 +6,13 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-23
+
+### Added
+
+- Data plane: workflow transitions
+  ([#44](https://github.com/curtis-turner/stint/issues/44)). `session.transition(issue, to_status=..., transition_id=..., resolution=..., fields=...)` addresses the destination by target status name (case-insensitive) or raw transition id, with `resolution` and transition-screen fields riding in the same POST. Moving an issue to its current status is a no-op, keeping sync loops idempotent; no reachable transition raises `TransitionError` naming the statuses that ARE reachable. `session.available_transitions(issue)` returns `(id, name, to_status)` triples. Models can declare the read-only `status_category` attribute (`"new"` / `"indeterminate"` / `"done"`), hydrated from the status payload and refused by the payload builder; after a transition a hydrated instance's status fields refresh in place with the dirty-tracking baseline adjusted, so a later `commit()` does not PUT the old status back.
+
 ## [0.11.0] - 2026-11-23
 
 ### Added
@@ -829,7 +836,8 @@ end-to-end against Jira Data Center and Jira Cloud.
 - TMP awareness: project style tracked in state, CMP-only ops raise
   `UnsupportedTMPOpError` with a deep link to the Jira UI.
 
-[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/curtis-turner/stint/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/curtis-turner/stint/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/curtis-turner/stint/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/curtis-turner/stint/compare/v0.8.0...v0.9.0
