@@ -422,6 +422,34 @@ def test_non_subtask_type_has_no_parent_guard():
     assert "parent" not in body["fields"]
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_subtask_guard_surfaces_through_partial_commit():
+    """The parentless-subtask guard raises inside the payload builder, which
+    session.commit() wraps per-instance — callers see PartialCommitError
+    carrying a ConfigurationError that names parent (the live-smoke
+    contract). No issue POST may leave the process."""
+    model = _workitem_model()
+    state = _workitem_state()
+
+    class FollowUp(model):
+        __alias__ = "followup"
+        __subtask__ = True
+
+    state.issuetypes["followup"] = SimpleMapping(id="10011")
+
+    engine = _cloud_engine()
+    session = AsyncSession(engine, state)
+    session.add(FollowUp(summary="x"), project="PLAT")
+    with pytest.raises(PartialCommitError) as exc_info:
+        await session.commit()
+    failed = [r for r in exc_info.value.results if not r.success]
+    assert len(failed) == 1
+    err = failed[0].error
+    assert isinstance(err, ConfigurationError)
+    assert "parent" in str(err) and "__subtask__" in str(err)
+
+
 # ── add / delete plumbing (no commit) ────────────────────────────────
 def test_add_rejects_instance_with_existing_key():
     import examples.company_managed.platform_schema as p
