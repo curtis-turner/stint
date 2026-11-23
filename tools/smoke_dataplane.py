@@ -14,8 +14,10 @@ create screen requires custom fields are supported via
 --required-field "Name=Value" (repeatable; values shaped from the reflect
 snapshot's field type — select options become {"value": ...}, and so on).
 Pass --task-type / --subtask-type to pin names. If the project has no
-creatable sub-task type, the parent checks are SKIPPED with a notice and
-only the duedate checks run.
+creatable sub-task type, --provision-subtask stands one up through
+stint's dialect ops (create-or-reuse + scheme membership, persists after
+the run); otherwise the parent checks are SKIPPED with a notice and only
+the duedate checks run.
 
 Prerequisites:
   - A company-managed sandbox project.
@@ -73,7 +75,7 @@ from stint.query import select  # noqa: E402
 from stint.query.session import AsyncSession, PartialCommitError  # noqa: E402
 from stint.schema.issuetype import IssueTypeMeta  # noqa: E402
 from stint.state.file import CustomFieldMapping, ProjectMapping, SimpleMapping  # noqa: E402
-from stint.state.snapshot import CustomFieldSnapshot  # noqa: E402
+from stint.state.snapshot import CustomFieldSnapshot, IssueTypeSnapshot  # noqa: E402
 
 
 # ── Harness ───────────────────────────────────────────────────────────
@@ -223,6 +225,44 @@ class Plan:
     subtask_required: list[RequiredField] = field(default_factory=list)
 
 
+async def provision_subtask(engine, proj, snapshot, args: argparse.Namespace) -> tuple[str, str]:
+    """Ensure a creatable global sub-task type is on the project's issue-type
+    scheme, using stint's own dialect ops (no schema-plane migration, no UI).
+
+    Creates the type only if no global type carries the name; scheme
+    membership appends (reconcile removes nothing here — current ⊆ desired).
+    The type and membership persist after the smoke: harmless on a sandbox
+    and reusable by later runs; remove in the Jira UI if unwanted.
+    """
+    name = args.subtask_type or "Smoke Sub-task"
+    existing = await engine.dialect.find_issuetype_id_by_name(name)
+    if existing:
+        print(f"provision: reusing global issue type {name!r} (id {existing})")
+    else:
+        existing = await engine.dialect.create_issuetype(
+            name=name,
+            description="Provisioned by tools/smoke_dataplane.py (--provision-subtask)",
+            subtask=True,
+        )
+        print(f"provision: created global sub-task type {name!r} (id {existing})")
+
+    scheme_id = proj.issuetype_scheme_id
+    if not scheme_id:
+        raise SystemExit(
+            f"project {proj.key!r} uses the global default issue-type scheme; "
+            f"adding a member would affect every project sharing it. Assign a "
+            f"project-level issue-type scheme first, or add {name!r} in the UI."
+        )
+    scheme = snapshot.issuetype_schemes.get(scheme_id)
+    members = list(scheme.issuetype_ids) if scheme else []
+    if existing not in members:
+        await engine.dialect.set_issuetype_scheme_issuetypes(scheme_id, issuetype_ids=[*members, existing])
+        print(f"provision: added {name!r} to issue-type scheme {scheme_id!r}")
+    else:
+        print(f"provision: {name!r} is already on issue-type scheme {scheme_id!r}")
+    return name, existing
+
+
 async def build_state(engine, base_url: str, project_key: str, args: argparse.Namespace) -> tuple[StateFile, Plan]:
     """Reflect the tenant and build the minimal in-memory state the data
     plane needs: the target project plus global issue-type ids. No schema
@@ -264,20 +304,36 @@ async def build_state(engine, base_url: str, project_key: str, args: argparse.Na
     # Identity/system fields stint's payload builder handles automatically
     # (project + issuetype injected from state, reporter stripped on insert)
     # are not the caller's problem — createmeta still lists them required.
-    meta = await engine.client.get_json(
-        f"{engine.dialect.api_root}/issue/createmeta",
-        params={"projectKeys": project_key, "expand": "projects.issuetypes.fields"},
-    )
-    handled_by_stint = {"summary", "project", "issuetype", "reporter"}
-    creatable: list[dict[str, Any]] = []
-    for p in meta.get("projects", []):
-        for t in p.get("issuetypes", []):
-            required = [
-                (fid, str(f.get("name", fid)))
-                for fid, f in (t.get("fields") or {}).items()
-                if fid not in handled_by_stint and f.get("required")
-            ]
-            creatable.append({"name": str(t.get("name", "")), "subtask": bool(t.get("subtask")), "required": required})
+    async def fetch_creatable() -> list[dict[str, Any]]:
+        meta = await engine.client.get_json(
+            f"{engine.dialect.api_root}/issue/createmeta",
+            params={"projectKeys": project_key, "expand": "projects.issuetypes.fields"},
+        )
+        parsed: list[dict[str, Any]] = []
+        for p in meta.get("projects", []):
+            for t in p.get("issuetypes", []):
+                required = [
+                    (fid, str(f.get("name", fid)))
+                    for fid, f in (t.get("fields") or {}).items()
+                    if fid not in {"summary", "project", "issuetype", "reporter"} and f.get("required")
+                ]
+                parsed.append({"name": str(t.get("name", "")), "subtask": bool(t.get("subtask")), "required": required})
+        return parsed
+
+    creatable = await fetch_creatable()
+
+    # No creatable sub-task type? --provision-subtask stands one up through
+    # stint's own dialect ops: create (or reuse) a global subtask type, then
+    # append it to the project's issue-type scheme. The type and its scheme
+    # membership persist after the smoke — harmless on a sandbox, and
+    # reusable by later runs.
+    provisioned: tuple[str, str] | None = None  # (name, id)
+    if args.provision_subtask and not any(c["subtask"] for c in creatable):
+        provisioned = await provision_subtask(engine, proj, snapshot, args)
+        globals_by_name.setdefault(provisioned[0].lower(), []).append(
+            IssueTypeSnapshot(id=provisioned[1], name=provisioned[0])
+        )
+        creatable = await fetch_creatable()
 
     def resolve(role: str, pinned: str | None, want_subtask: bool) -> dict[str, Any]:
         """Pick the createmeta entry for a role: the pinned type, else the
@@ -301,22 +357,29 @@ async def build_state(engine, base_url: str, project_key: str, args: argparse.Na
             f"no creatable non-subtask issue type on {project_key!r} "
             f"(creatable: {[c['name'] for c in creatable]}); nothing to smoke."
         )
-    subtask_entry = resolve("subtask", args.subtask_type, want_subtask=True)
+    # A provisioned name is guaranteed creatable — pin it so resolve() can't
+    # be thrown off by ordering.
+    subtask_pinned = args.subtask_type or (provisioned[0] if provisioned else None)
+    subtask_entry = resolve("subtask", subtask_pinned, want_subtask=True)
 
-    # --required-field values by field name (case-insensitive); each consumed
-    # value is removed so leftovers (typos) can be reported at the end.
+    # --required-field values by field name (case-insensitive). Both roles
+    # may require the same field (e.g. Severity on Bug and on sub-tasks), so
+    # lookups never pop; leftovers (typos) are reported after both binds.
     provided = {k.lower(): v for k, v in (a.split("=", 1) for a in args.required_field)}
+    consumed: set[str] = set()
 
     def bind_required(entry: dict[str, Any]) -> list[RequiredField]:
         fields: list[RequiredField] = []
         for field_id, field_name in entry.get("required", []):
-            raw = provided.pop(field_name.lower(), None)
+            key = field_name.lower()
+            raw = provided.get(key)
             if raw is None:
                 raise SystemExit(
                     f"issue type {entry['name']!r} requires {field_name!r} "
                     f"({field_id}) on create. Pass --required-field "
                     f'"{field_name}=<value>" (repeatable).'
                 )
+            consumed.add(key)
             snap = snapshot.custom_fields.get(field_id)
             if snap is None:
                 raise SystemExit(
@@ -328,8 +391,9 @@ async def build_state(engine, base_url: str, project_key: str, args: argparse.Na
 
     task_required = bind_required(task_entry)
     subtask_required = bind_required(subtask_entry) if subtask_entry else []
-    if provided:
-        print(f"  warn: unused --required-field value(s): {sorted(provided)}", file=sys.stderr)
+    leftover = sorted(set(provided) - consumed)
+    if leftover:
+        print(f"  warn: unused --required-field value(s): {leftover}", file=sys.stderr)
 
     # Bind ids from the global snapshot. Every creatable CMP type must exist
     # globally; a mismatch means createmeta and /issuetype disagree, which is
@@ -607,7 +671,16 @@ def main() -> None:
         help="pin the parent-role type name (default: fewest-required creatable non-subtask)",
     )
     parser.add_argument(
-        "--subtask-type", default=None, help="pin the sub-task role name (default: first creatable subtask)"
+        "--subtask-type",
+        default=None,
+        help="pin the sub-task role name (default: first creatable subtask)",
+    )
+    parser.add_argument(
+        "--provision-subtask",
+        action="store_true",
+        help="no creatable sub-task type? create (or reuse) a global sub-task "
+        "type and append it to the project's issue-type scheme. Persists "
+        "after the run.",
     )
     parser.add_argument(
         "--required-field",
