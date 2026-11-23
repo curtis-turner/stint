@@ -36,7 +36,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, cast
 
-from stint.exceptions import ConfigurationError, NotFoundError, PartialCommitError, TransitionError
+from stint.exceptions import (
+    ConfigurationError,
+    NotFoundError,
+    PartialCommitError,
+    TransitionError,
+    TransportError,
+)
 from stint.query import adf
 from stint.query.hydrate import field_keys_for_model, hydrate
 from stint.query.payload import (
@@ -94,6 +100,21 @@ class Attachment:
     filename: str
     size: int
     created: str
+
+
+@dataclass
+class IssueLink:
+    """One entry of the issue's ``fields.issuelinks``.
+
+    ``direction`` is relative to the issue that was read: ``"outward"``
+    means the issue is the subject (A in "A blocks B"), ``"inward"`` the
+    object ("B is blocked by A"). ``type`` is the link type's name.
+    """
+
+    id: str
+    type: str
+    direction: Literal["outward", "inward"]
+    other_key: str
 
 
 class AsyncSession:
@@ -509,6 +530,73 @@ class AsyncSession:
             if existing.filename == name:
                 await self.delete_attachment(existing.id)
         return await self.attach(issue, data, filename=name)
+
+    # ── Issue links ──────────────────────────────────────────────────
+    async def link(self, source: IssueType | str, target: IssueType | str, *, link_type: str) -> None:
+        """Create a typed link between two issues: ``source`` is the outward
+        subject (A in "A blocks B"), ``target`` the inward object.
+
+        Link types are addressed by name; stint resolves the direction
+        bookkeeping. Creating a link that already exists (same type, same
+        direction, same pair) is a no-op — checked locally before the
+        request, with the race tolerated server-side — so sync loops can
+        re-derive dependencies every pass. Accepts instances or keys.
+        """
+        source_key = self._issue_key_of(source)
+        target_key = self._issue_key_of(target)
+        if source_key.lower() == target_key.lower():
+            raise ConfigurationError(f"link: cannot link {source_key} to itself.")
+
+        for existing in await self.links(source_key):
+            if (
+                existing.type.lower() == link_type.lower()
+                and existing.direction == "outward"
+                and existing.other_key.lower() == target_key.lower()
+            ):
+                return  # already there: idempotent no-op
+
+        try:
+            await self.engine.dialect.create_issue_link(
+                link_type=link_type,
+                outward_key=source_key,
+                inward_key=target_key,
+            )
+        except TransportError as exc:
+            # Lost the race with another writer: Jira 400s a duplicate pair.
+            # "already ..." in the body is the same state we pre-checked, so
+            # treat it as done (same tolerance as add_project_role_actor).
+            if exc.status_code == 400 and "already" in (exc.body or "").lower():
+                return
+            raise
+
+    async def links(self, issue: IssueType | str) -> list[IssueLink]:
+        """List the issue's links, one GET total (not one per link)."""
+        key = self._issue_key_of(issue)
+        out: list[IssueLink] = []
+        for entry in await self.engine.dialect.get_issuelinks(key):
+            link_type = str((entry.get("type") or {}).get("name", ""))
+            other: dict[str, Any] | None
+            if entry.get("outwardIssue") is not None:
+                direction = "outward"
+                other = entry["outwardIssue"]
+            elif entry.get("inwardIssue") is not None:
+                direction = "inward"
+                other = entry["inwardIssue"]
+            else:
+                continue
+            out.append(
+                IssueLink(
+                    id=str(entry.get("id", "")),
+                    type=link_type,
+                    direction=direction,  # type: ignore[arg-type]
+                    other_key=str((other or {}).get("key", "")),
+                )
+            )
+        return out
+
+    async def unlink(self, link_id: str) -> None:
+        """Delete one link by id (as returned by :meth:`links`)."""
+        await self.engine.dialect.delete_issue_link(link_id)
 
     # ── Helpers ──────────────────────────────────────────────────────
     def _hydrate_with_identity(
