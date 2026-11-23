@@ -235,7 +235,14 @@ async def provision_subtask(engine, proj, snapshot, args: argparse.Namespace) ->
     and reusable by later runs; remove in the Jira UI if unwanted.
     """
     name = args.subtask_type or "Smoke Sub-task"
+    # Vanilla tenants ship a global "Sub-task" type — prefer reusing it over
+    # creating a duplicate subtask type.
     existing = await engine.dialect.find_issuetype_id_by_name(name)
+    if not existing and not args.subtask_type:
+        existing = await engine.dialect.find_issuetype_id_by_name("Sub-task")
+        if existing:
+            name = "Sub-task"
+            print('provision: reusing the vanilla global "Sub-task" type')
     if existing:
         print(f"provision: reusing global issue type {name!r} (id {existing})")
     else:
@@ -302,8 +309,10 @@ async def build_state(engine, base_url: str, project_key: str, args: argparse.Na
     # mid-smoke (observed live: "Specify a valid issue type"), and a required
     # custom field would too (observed live: "Severity is required.").
     # Identity/system fields stint's payload builder handles automatically
-    # (project + issuetype injected from state, reporter stripped on insert)
-    # are not the caller's problem — createmeta still lists them required.
+    # (project + issuetype injected from state, reporter stripped on insert,
+    # parent supplied by the smoke's own parent-group steps) are not the
+    # caller's problem — createmeta still lists them required (observed
+    # live: "issue type 'Smoke Sub-task' requires 'Parent' (parent)").
     async def fetch_creatable() -> list[dict[str, Any]]:
         meta = await engine.client.get_json(
             f"{engine.dialect.api_root}/issue/createmeta",
@@ -315,7 +324,7 @@ async def build_state(engine, base_url: str, project_key: str, args: argparse.Na
                 required = [
                     (fid, str(f.get("name", fid)))
                     for fid, f in (t.get("fields") or {}).items()
-                    if fid not in {"summary", "project", "issuetype", "reporter"} and f.get("required")
+                    if fid not in {"summary", "project", "issuetype", "reporter", "parent"} and f.get("required")
                 ]
                 parsed.append({"name": str(t.get("name", "")), "subtask": bool(t.get("subtask")), "required": required})
         return parsed
