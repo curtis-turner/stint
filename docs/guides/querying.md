@@ -89,6 +89,42 @@ except PartialCommitError as exc:
 
 Each result also names the operation kind and the affected instance, so you can reconcile manually and re-commit the survivors.
 
+## Workflow transitions
+
+Status changes are not field writes; they move the issue through the project's workflow:
+
+```python
+bug = await session.get(Bug, "PLAT-123")
+await session.transition(bug, to_status="Done", resolution="Fixed")
+```
+
+- `to_status=` is matched **case-insensitively** against the target status of each available transition. A raw transition id works too, via `transition_id=`.
+- Transitioning to the issue's **current status is a no-op**, so a sync loop that re-derives the desired state every pass stays idempotent.
+- `resolution=` and `fields={...}` (raw Jira JSON for transition-screen fields) ride in the same POST as the transition.
+- When no transition leads to the requested status, stint raises [`TransitionError`](../api/exceptions.md) naming the statuses that ARE reachable.
+- `available_transitions(issue)` lists what the workflow allows right now; each entry unpacks as `(id, name, to_status)`:
+
+```python
+for tid, name, to_status in await session.available_transitions(bug):
+    print(tid, name, "->", to_status)
+```
+
+Models can declare the read-only `status_category` attribute alongside `status`. It is hydrated from the status payload's category (`"new"`, `"indeterminate"` or `"done"`), so callers can ask "is it done?" without hardcoding each workflow's status names:
+
+```python
+class Bug(IssueType):
+    __alias__ = "bug"
+    summary: str
+    status: str | None = None
+    status_category: str | None = None  # "new" / "indeterminate" / "done"
+
+
+if bug.status_category == "done":
+    ...
+```
+
+After a successful transition, a hydrated instance's `status`/`status_category` are refreshed in place and excluded from dirty tracking, so a later `commit()` does not PUT the old status back.
+
 ## System fields: duedate and parent
 
 Beyond `summary`, `description`, `priority`, `reporter` and `assignee`, models can declare the typed system fields `duedate` and `parent`:

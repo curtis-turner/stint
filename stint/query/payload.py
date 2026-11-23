@@ -91,6 +91,10 @@ def build_fields_payload(
     for attr_name, field_info in model.model_fields.items():
         if attr_name == "key":
             continue
+        if attr_name == "status_category":
+            # Derived read-only attribute (hydrated from fields.status's
+            # statusCategory); Jira rejects it as a writeable field.
+            continue
         if only is not None and attr_name not in only:
             continue
         value = getattr(instance, attr_name, None)

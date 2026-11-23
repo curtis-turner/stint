@@ -2075,6 +2075,27 @@ class JiraCloudDialect:
     async def delete_issue(self, key: str) -> None:
         await self.client.delete(f"{self.api_root}/issue/{key}")
 
+    # ── Workflow transitions (data plane) ────────────────────────────
+    async def get_transitions(self, key: str) -> list[dict[str, Any]]:
+        """GET /issue/{key}/transitions. Returns the raw transition list.
+
+        Each entry carries ``id``, ``name`` (the transition name, e.g. "Done")
+        and ``to`` (the target status: ``{"name": ..., "statusCategory": {...}}``).
+        """
+        payload = await self.client.get_json(f"{self.api_root}/issue/{key}/transitions")
+        if not isinstance(payload, dict):
+            raise ReflectionError(
+                f"GET {self.api_root}/issue/{key}/transitions returned "
+                f"{type(payload).__name__} instead of a transitions envelope"
+            )
+        transitions = payload.get("transitions", [])
+        return [t for t in transitions if isinstance(t, dict)]
+
+    async def perform_transition(self, key: str, body: dict[str, Any]) -> None:
+        """POST /issue/{key}/transitions. Body is
+        ``{"transition": {"id": ...}, "fields": {...}}``."""
+        await self.client.post_json(f"{self.api_root}/issue/{key}/transitions", json=body)
+
     # ── Issue security schemes ────────────────────────────────────────────
 
     async def _reflect_issue_security_schemes(self) -> dict[str, SecuritySchemeSnapshot]:

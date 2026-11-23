@@ -24,14 +24,18 @@ differ from the baseline are sent in the UPDATE PUT.
 Commit ordering: inserts first, then updates, then deletes. If any operation
 fails, ``PartialCommitError`` is raised carrying per-instance results.
 Successful work is NOT rolled back (Jira admin REST has no transactions).
+
+Workflow transitions live outside commit(): ``transition()`` POSTs
+immediately, by target status name (case-insensitive) or raw transition id.
+Moving to the current status is a no-op, so sync loops stay idempotent.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, cast
 
-from stint.exceptions import ConfigurationError, PartialCommitError
+from stint.exceptions import ConfigurationError, NotFoundError, PartialCommitError, TransitionError
 from stint.query.hydrate import field_keys_for_model, hydrate
 from stint.query.payload import (
     build_insert_payload,
@@ -55,6 +59,18 @@ class CommitResult:
     operation: Literal["insert", "update", "delete"]
     success: bool
     error: Exception | None = None
+
+
+class Transition(NamedTuple):
+    """One available workflow transition out of an issue's current status.
+
+    ``to_status`` is the target status name; unpacks as ``(id, name,
+    to_status)`` for quick scans.
+    """
+
+    id: str
+    name: str
+    to_status: str
 
 
 class AsyncSession:
@@ -114,8 +130,6 @@ class AsyncSession:
         cached = cast("M | None", self._identity.get((model, key)))
         if cached is not None and not fresh:
             return cached
-        from stint.exceptions import NotFoundError
-
         fields = field_keys_for_model(model, self.state)
         try:
             issue = await self.engine.dialect.get_issue(key, fields=fields)
@@ -262,6 +276,139 @@ class AsyncSession:
             raise PartialCommitError(results)
         return results
 
+    # ── Workflow transitions ─────────────────────────────────────────
+    @staticmethod
+    def _issue_key_of(instance: IssueType | str) -> str:
+        if isinstance(instance, str):
+            return instance
+        key = getattr(instance, "key", None)
+        if not key:
+            raise ConfigurationError(
+                "transition: instance has no `key`. Hydrate it via session.get() or pass the issue key string directly."
+            )
+        return str(key)
+
+    async def available_transitions(self, issue: IssueType | str) -> list[Transition]:
+        """List the workflow transitions available on the issue right now.
+
+        Accepts a hydrated instance or a bare issue key. Returns
+        ``(id, name, to_status)`` triples; ``to_status`` is the target
+        status name.
+        """
+        key = self._issue_key_of(issue)
+        return [
+            Transition(
+                id=str(t.get("id", "")),
+                name=str(t.get("name", "")),
+                to_status=str((t.get("to") or {}).get("name", "")),
+            )
+            for t in await self.engine.dialect.get_transitions(key)
+        ]
+
+    async def transition(
+        self,
+        issue: IssueType | str,
+        *,
+        to_status: str | None = None,
+        transition_id: str | None = None,
+        resolution: str | None = None,
+        fields: dict[str, Any] | None = None,
+    ) -> None:
+        """Move the issue through its workflow.
+
+        Address the destination by target status name (case-insensitive) via
+        ``to_status=`` — the common sync case — or by raw transition id via
+        ``transition_id=``. Passing the issue's current status as ``to_status``
+        is a no-op, so sync loops stay idempotent.
+
+        ``resolution=`` names the resolution to set (e.g. "Fixed") on
+        transitions whose screen asks for one; ``fields=`` carries any other
+        transition-screen fields as raw Jira JSON. Both ride in the same
+        POST as the transition.
+
+        On success a hydrated instance's ``status``/``status_category``
+        attributes (when declared) are refreshed in place, and the session's
+        dirty-tracking baseline is updated so a later commit() does not PUT
+        the old status back.
+        """
+        if to_status is None and transition_id is None:
+            raise ConfigurationError("transition: pass to_status= or transition_id=.")
+        if to_status is not None and transition_id is not None:
+            raise ConfigurationError("transition: pass to_status= or transition_id=, not both.")
+
+        key = self._issue_key_of(issue)
+
+        # Idempotency: moving to the current status is a no-op. Only possible
+        # to detect when the instance carries a hydrated `status` attribute.
+        if to_status is not None and not isinstance(issue, str):
+            current = getattr(issue, "status", None)
+            if isinstance(current, str) and current.lower() == to_status.lower():
+                return
+
+        transitions = await self.engine.dialect.get_transitions(key)
+        chosen: dict[str, Any] | None = None
+        if transition_id is not None:
+            chosen = next((t for t in transitions if str(t.get("id")) == str(transition_id)), None)
+            if chosen is None:
+                raise TransitionError(
+                    f"transition: issue {key} has no transition id {transition_id!r}. "
+                    f"Available: {_describe_transitions(transitions)}"
+                )
+        else:
+            assert to_status is not None
+            chosen = next(
+                (t for t in transitions if str((t.get("to") or {}).get("name", "")).lower() == to_status.lower()),
+                None,
+            )
+            if chosen is None:
+                raise TransitionError(
+                    f"transition: no workflow transition from the current status "
+                    f"of {key} leads to {to_status!r}. Available target statuses: "
+                    f"{_describe_transitions(transitions)}"
+                )
+
+        body_fields: dict[str, Any] = dict(fields or {})
+        if resolution is not None:
+            body_fields.setdefault("resolution", {"name": resolution})
+        body: dict[str, Any] = {"transition": {"id": str(chosen["id"])}}
+        if body_fields:
+            body["fields"] = body_fields
+
+        await self.engine.dialect.perform_transition(key, body)
+
+        # Refresh the in-memory instance so callers reading `bug.status` after
+        # a transition see the new state, without marking it dirty.
+        if not isinstance(issue, str):
+            to_status_name = str((chosen.get("to") or {}).get("name", "")) or None
+            category = ((chosen.get("to") or {}).get("statusCategory") or {}).get("key")
+            self._refresh_after_transition(issue, key, to_status_name, category)
+
+    def _refresh_after_transition(
+        self,
+        instance: IssueType,
+        key: str,
+        to_status: str | None,
+        status_category: Any,
+    ) -> None:
+        """Mirror the transition's target status onto a hydrated instance.
+
+        Only touches attributes the model declares, and only adjusts the
+        dirty-tracking baseline for exactly those attributes — other pending
+        mutations must stay dirty for the next commit().
+        """
+        key_tuple = (type(instance), key)
+        baseline = self._originals.get(key_tuple)
+        if baseline is None:
+            return  # not session-managed (user-constructed instance or str key path)
+        model_fields = type(instance).model_fields
+        # Loop-setattr because the concrete attributes are subclass-declared
+        # (the base IssueType does not carry them) and the `in model_fields`
+        # guards keep pydantic from seeing an unknown field.
+        for attr, value in (("status", to_status), ("status_category", status_category)):
+            if attr in model_fields and value is not None:
+                setattr(instance, attr, value)
+                baseline[attr] = value
+
     # ── Helpers ──────────────────────────────────────────────────────
     def _hydrate_with_identity(
         self,
@@ -292,6 +439,16 @@ class AsyncSession:
 
     def _is_cloud(self) -> bool:
         return self.engine.dialect.name == "jira_cloud"
+
+
+def _describe_transitions(transitions: list[dict[str, Any]]) -> str:
+    """Render available transitions as 'status (via transition "name")' pairs."""
+    if not transitions:
+        return "(none)"
+    return ", ".join(
+        f"{(t.get('to') or {}).get('name', '?')!r} (via {t.get('name', '?')!r}, id {t.get('id', '?')})"
+        for t in transitions
+    )
 
 
 def _infer_project(instance: IssueType) -> str:

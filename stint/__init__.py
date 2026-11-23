@@ -28,6 +28,7 @@ from stint.exceptions import (
     StateFileError,
     StateFileWriteError,
     StintError,
+    TransitionError,
     TransportError,
     UnsupportedTMPOpError,
 )
@@ -122,6 +123,7 @@ __all__ = [
     "StateFileWriteError",
     "TextAreaField",
     "TextField",
+    "TransitionError",
     "TransportError",
     "URLField",
     "UnsupportedTMPOpError",
