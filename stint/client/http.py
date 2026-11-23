@@ -103,6 +103,30 @@ class JiraHTTPClient:
         """
         return self._unwrap(await self._send_with_retry("DELETE", path, **kwargs))
 
+    async def post_files(
+        self,
+        path: str,
+        *,
+        files: dict[str, Any],
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Multipart POST (attachment upload). httpx2 sets the
+        multipart/form-data Content-Type itself; ``headers`` carries the
+        CSRF-token header Jira requires (``X-Atlassian-Token: no-check``).
+        Retry policy is POST's (see module docstring)."""
+        return self._unwrap(await self._send_with_retry("POST", path, files=files, headers=headers, **kwargs))
+
+    async def get_bytes(self, path: str, **kwargs: Any) -> bytes:
+        """GET returning the raw response body, errors mapped as usual.
+
+        Used by attachment download: the content endpoint may answer with a
+        redirect to a pre-authenticated CDN URL, so callers pass
+        ``follow_redirects=True``."""
+        response = await self._send_with_retry("GET", path, **kwargs)
+        self._unwrap(response, expect_json=False)
+        return response.content
+
     async def _send_with_retry(
         self,
         method: str,
