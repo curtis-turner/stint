@@ -7,11 +7,15 @@ It only creates and deletes its own issues in one sandbox project — no
 schema-plane writes, nothing else on the tenant is touched.
 
 Issue types are chosen from what the project can actually create
-(/issue/createmeta): the parent role goes to the first creatable
-non-subtask type, the sub-task role to the first creatable type with
-``subtask: true``. Pass --task-type / --subtask-type to pin names. If the
-project has no creatable sub-task type, the parent checks are SKIPPED with
-a notice and only the duedate checks run.
+(/issue/createmeta with expand=projects.issuetypes.fields): the parent role
+goes to a creatable non-subtask type (zero-required-fields types first),
+the sub-task role to a creatable type with ``subtask: true``. Types whose
+create screen requires custom fields are supported via
+--required-field "Name=Value" (repeatable; values shaped from the reflect
+snapshot's field type — select options become {"value": ...}, and so on).
+Pass --task-type / --subtask-type to pin names. If the project has no
+creatable sub-task type, the parent checks are SKIPPED with a notice and
+only the duedate checks run.
 
 Prerequisites:
   - A company-managed sandbox project.
@@ -21,7 +25,8 @@ Run it:
 
     STINT_USER='you@example.com' STINT_TOKEN='...' \
     uv run python tools/smoke_dataplane.py \
-        --url https://you.atlassian.net --project-key SANDBOX
+        --url https://you.atlassian.net --project-key SEC \
+        --required-field 'Severity=S1'
 
     # keep the created issues in Jira instead of deleting them:
     ... uv run python tools/smoke_dataplane.py --keep
@@ -36,9 +41,10 @@ import argparse
 import asyncio
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from typing import Annotated, Any, Literal
 
 # Running a script by file path puts the script's directory at sys.path[0].
 # Nothing here needs it, and it can shadow stdlib modules (see
@@ -47,29 +53,27 @@ from pathlib import Path
 _SELF_DIR = Path(__file__).resolve().parent
 sys.path = [entry for entry in sys.path if entry != str(_SELF_DIR)]
 
-from stint import IssueType, StateFile, create_engine  # noqa: E402
+from stint import CustomField, IssueType, StateFile, create_engine  # noqa: E402
 from stint.cli.cmd_reflect import _build_auth  # noqa: E402
 from stint.exceptions import ConfigurationError, NotFoundError  # noqa: E402
+from stint.fields import (  # noqa: E402
+    CheckboxesField,
+    DateField,
+    DateTimeField,
+    LabelsField,
+    MultiSelectField,
+    NumberField,
+    RadioButtonsField,
+    SelectField,
+    TextAreaField,
+    TextField,
+    URLField,
+)
 from stint.query import select  # noqa: E402
 from stint.query.session import AsyncSession, PartialCommitError  # noqa: E402
-from stint.state.file import ProjectMapping, SimpleMapping  # noqa: E402
-
-# Smoke models: __alias__ is bound at run time to the issue-type names the
-# pre-flight chose (payload building reads __alias__ per commit).
-
-
-class SmokeTask(IssueType):
-    __alias__ = "task"
-    summary: str
-    duedate: date | None = None
-
-
-class SmokeSubtask(IssueType):
-    __alias__ = "sub-task"
-    __subtask__ = True
-    summary: str
-    duedate: date | None = None
-    parent: str | None = None
+from stint.schema.issuetype import IssueTypeMeta  # noqa: E402
+from stint.state.file import CustomFieldMapping, ProjectMapping, SimpleMapping  # noqa: E402
+from stint.state.snapshot import CustomFieldSnapshot  # noqa: E402
 
 
 # ── Harness ───────────────────────────────────────────────────────────
@@ -90,11 +94,133 @@ class Checks:
 
 
 @dataclass
-class Plan:
-    """The issue-type names this smoke run will bind each role to."""
+class RequiredField:
+    """One required-on-create custom field of the chosen issue type, with
+    the raw value supplied via --required-field."""
 
-    task: str  # non-subtask type; always present (the run aborts otherwise)
-    subtask: str | None  # subtask type; None -> parent checks are skipped
+    field_id: str
+    name: str
+    raw: str
+    snapshot: CustomFieldSnapshot
+
+    def attr(self, index: int) -> str:
+        return f"req_{index}"
+
+
+# Reflect's customfieldtypes suffixes → (stint field type, value kind).
+# Kinds drive value parsing and (via the field type) the payload shape.
+_FIELD_KINDS: dict[str, tuple[type, str]] = {
+    "select": (SelectField, "single_option"),
+    "radiobuttons": (RadioButtonsField, "single_option"),
+    "multiselect": (MultiSelectField, "multi_option"),
+    "checkboxes": (CheckboxesField, "multi_option"),
+    "text": (TextField, "raw"),
+    "textarea": (TextAreaField, "raw"),
+    "url": (URLField, "raw"),
+    "number": (NumberField, "number"),
+    "date": (DateField, "raw"),
+    "datetime": (DateTimeField, "raw"),
+    "labels": (LabelsField, "raw_list"),
+}
+
+
+def _kind(rf: RequiredField) -> str:
+    type_id = rf.snapshot.type_id.rsplit(":", 1)[-1]
+    mapping = _FIELD_KINDS.get(type_id)
+    if mapping is None:
+        raise SystemExit(
+            f"--required-field {rf.name!r}: field type {rf.snapshot.type_id!r} is "
+            f"not supported by this smoke (needs accountId/name resolution or is "
+            f"unknown). Run against a project/type that doesn't require it."
+        )
+    return mapping[1]
+
+
+def _parse_value(rf: RequiredField) -> Any:
+    """Parse the raw --required-field value per the field's kind, warning
+    when a select-style value isn't among the reflected options."""
+    kind = _kind(rf)
+    options = list(rf.snapshot.options)
+    if kind == "number":
+        text = rf.raw.strip()
+        try:
+            return int(text)
+        except ValueError:
+            return float(text)
+    if kind in ("multi_option", "raw_list"):
+        values = [v.strip() for v in rf.raw.split(",") if v.strip()]
+        if kind == "multi_option":
+            for v in values:
+                if options and v not in options:
+                    print(f"  warn: {rf.name}={v!r} is not a reflected option ({options})", file=sys.stderr)
+            return values
+        return values
+    if kind == "single_option" and options and rf.raw not in options:
+        print(f"  warn: {rf.name}={rf.raw!r} is not a reflected option ({options})", file=sys.stderr)
+    return rf.raw
+
+
+def _annotation_for(rf: RequiredField) -> Any:
+    """The dynamic attribute annotation: stint's field type inside Annotated,
+    so the payload builder shapes the value ({\"value\": ...} for selects)."""
+    type_id = rf.snapshot.type_id.rsplit(":", 1)[-1]
+    field_type, kind = _FIELD_KINDS[type_id]
+    options = list(rf.snapshot.options)
+    # The annotation is assembled at runtime from reflected metadata — ty
+    # cannot see these as static type expressions.
+    cf = CustomField(alias=rf.field_id, name=rf.name, type=field_type, options=options)  # ty: ignore
+    if kind == "single_option":
+        if not options:
+            raise SystemExit(
+                f"--required-field {rf.name!r}: select-style field with no "
+                f"reflected options; cannot declare it. Run against a project "
+                f"that doesn't require it."
+            )
+        return Annotated[Literal[tuple(options)], cf]  # ty: ignore
+    if kind == "multi_option":
+        if not options:
+            raise SystemExit(
+                f"--required-field {rf.name!r}: multi-select-style field with no "
+                f"reflected options; cannot declare it. Run against a project "
+                f"that doesn't require it."
+            )
+        return Annotated[list[Literal[tuple(options)]], cf]  # ty: ignore
+    return Annotated[field_type, cf]  # ty: ignore
+
+
+def build_smoke_model(*, name: str, alias: str, subtask: bool, required: list[RequiredField]) -> type[IssueType]:
+    """Build the issue-type model for one role, with the required custom
+    fields as Annotated attributes resolved via state (alias = field id).
+
+    Built through IssueTypeMeta directly (a dynamic class statement would
+    need exec to keep the metaclass validations)."""
+    annotations: dict[str, Any] = {"summary": str, "duedate": date | None}
+    ns: dict[str, Any] = {"__alias__": alias, "summary": None, "duedate": None}
+    if subtask:
+        ns["__subtask__"] = True
+        annotations["parent"] = str | None
+        ns["parent"] = None
+    for i, rf in enumerate(required):
+        annotations[rf.attr(i)] = _annotation_for(rf)
+        ns[rf.attr(i)] = None
+    ns["__annotations__"] = annotations
+    return IssueTypeMeta(name, (IssueType,), ns)  # type: ignore[return-value]
+
+
+@dataclass
+class Plan:
+    """The issue-type names/models this smoke run will use per role.
+
+    The models are built at runtime from reflected metadata (dynamic
+    annotations), so their type is Any — attribute access on instances is
+    checked by the offline probe and the live run, not by ty."""
+
+    task: str
+    task_model: Any
+    task_required: list[RequiredField] = field(default_factory=list)
+    subtask: str | None = None  # None -> parent checks are skipped
+    subtask_model: Any = None
+    subtask_required: list[RequiredField] = field(default_factory=list)
 
 
 async def build_state(engine, base_url: str, project_key: str, args: argparse.Namespace) -> tuple[StateFile, Plan]:
@@ -130,47 +256,82 @@ async def build_state(engine, base_url: str, project_key: str, args: argparse.Na
             continue
         globals_by_name.setdefault(it.name.lower(), []).append(it)
 
-    # What the project can actually create (createmeta), with the subtask
-    # flag: the role source. A global type the project's issue-type scheme
-    # doesn't carry would still 400 mid-smoke (observed live).
+    # What the project can actually create (createmeta with per-type fields),
+    # with the subtask flag and required-on-create fields: the role source.
+    # A global type the project's scheme doesn't carry would still 400
+    # mid-smoke (observed live: "Specify a valid issue type"), and a required
+    # custom field would too (observed live: "Severity is required.").
     meta = await engine.client.get_json(
         f"{engine.dialect.api_root}/issue/createmeta",
-        params={"projectKeys": project_key},
+        params={"projectKeys": project_key, "expand": "projects.issuetypes.fields"},
     )
-    creatable: list[tuple[str, bool]] = []
+    creatable: list[dict[str, Any]] = []
     for p in meta.get("projects", []):
         for t in p.get("issuetypes", []):
-            creatable.append((str(t.get("name", "")), bool(t.get("subtask", False))))
+            required = [
+                (fid, str(f.get("name", fid)))
+                for fid, f in (t.get("fields") or {}).items()
+                if fid != "summary" and f.get("required")
+            ]
+            creatable.append({"name": str(t.get("name", "")), "subtask": bool(t.get("subtask")), "required": required})
 
-    def resolve(role: str, pinned: str | None, want_subtask: bool) -> str | None:
-        """Pick the type name for a role: the pinned one, or the first
-        creatable match. Returns None when nothing qualifies (parent role
-        only) — a missing task role is a hard abort at the callsite."""
+    def resolve(role: str, pinned: str | None, want_subtask: bool) -> dict[str, Any]:
+        """Pick the createmeta entry for a role: the pinned type, else the
+        first creatable match with the fewest required fields (zero first)."""
+        pool = [c for c in creatable if c["subtask"] == want_subtask]
         if pinned:
-            matches = [name for name, subtask in creatable if name.lower() == pinned.lower()]
+            matches = [c for c in pool if c["name"].lower() == pinned.lower()]
             if not matches:
                 raise SystemExit(
                     f"--{role}-type {pinned!r} is not creatable on {project_key!r} "
-                    f"(creatable: {sorted(n for n, _ in creatable)})."
+                    f"(creatable: {[c['name'] for c in creatable]})."
                 )
             return matches[0]
-        matches = [name for name, subtask in creatable if subtask == want_subtask]
-        return matches[0] if matches else None
+        if not pool:
+            return {}
+        return sorted(pool, key=lambda c: (len(c["required"]), c["name"]))[0]
 
-    task_name = resolve("task", args.task_type, want_subtask=False)
-    if task_name is None:
+    task_entry = resolve("task", args.task_type, want_subtask=False)
+    if not task_entry:
         raise SystemExit(
             f"no creatable non-subtask issue type on {project_key!r} "
-            f"(creatable: {sorted(n for n, _ in creatable)}); nothing to smoke."
+            f"(creatable: {[c['name'] for c in creatable]}); nothing to smoke."
         )
-    subtask_name = resolve("subtask", args.subtask_type, want_subtask=True)
+    subtask_entry = resolve("subtask", args.subtask_type, want_subtask=True)
+
+    # --required-field values by field name (case-insensitive); each consumed
+    # value is removed so leftovers (typos) can be reported at the end.
+    provided = {k.lower(): v for k, v in (a.split("=", 1) for a in args.required_field)}
+
+    def bind_required(entry: dict[str, Any]) -> list[RequiredField]:
+        fields: list[RequiredField] = []
+        for field_id, field_name in entry.get("required", []):
+            raw = provided.pop(field_name.lower(), None)
+            if raw is None:
+                raise SystemExit(
+                    f"issue type {entry['name']!r} requires {field_name!r} "
+                    f"({field_id}) on create. Pass --required-field "
+                    f'"{field_name}=<value>" (repeatable).'
+                )
+            snap = snapshot.custom_fields.get(field_id)
+            if snap is None:
+                raise SystemExit(
+                    f"required field {field_name!r} ({field_id}) is not in the "
+                    f"reflect snapshot's custom fields; cannot shape its value."
+                )
+            fields.append(RequiredField(field_id=field_id, name=field_name, raw=raw, snapshot=snap))
+        return fields
+
+    task_required = bind_required(task_entry)
+    subtask_required = bind_required(subtask_entry) if subtask_entry else []
+    if provided:
+        print(f"  warn: unused --required-field value(s): {sorted(provided)}", file=sys.stderr)
 
     # Bind ids from the global snapshot. Every creatable CMP type must exist
-    # globally; a mismatch means the tenant's createmeta and /issuetype
-    # disagree, which is itself worth refusing loudly.
-    for role, name in (("task", task_name), ("subtask", subtask_name)):
-        if name is None:
-            continue
+    # globally; a mismatch means createmeta and /issuetype disagree, which is
+    # itself worth refusing loudly.
+    def bind_type(entry: dict[str, Any]) -> str:
+        name = entry["name"]
         candidates = globals_by_name.get(name.lower()) or []
         if len(candidates) > 1:
             raise SystemExit(
@@ -183,9 +344,32 @@ async def build_state(engine, base_url: str, project_key: str, args: argparse.Na
                 f"issue type {name!r} is creatable on {project_key!r} but not in "
                 f"the global /issuetype list (global types: {sorted(globals_by_name)})."
             )
-        print(f"state:   {role} role -> {name!r} (issuetype id {candidates[0].id})")
+        required_names = [f[1] for f in entry["required"]] or "none"
+        print(f"state:   {name!r} -> issuetype id {candidates[0].id} (required: {required_names})")
         state.issuetypes[name] = SimpleMapping(id=candidates[0].id)
-    return state, Plan(task=task_name, subtask=subtask_name)
+        return name
+
+    task_name = bind_type(task_entry)
+    subtask_name = bind_type(subtask_entry) if subtask_entry else None
+
+    # Required custom fields resolve through state by alias (= field id).
+    for rf in [*task_required, *subtask_required]:
+        state.custom_fields[rf.field_id] = CustomFieldMapping(id=rf.field_id)
+
+    task_model = build_smoke_model(name="SmokeTaskModel", alias=task_name, subtask=False, required=task_required)
+    subtask_model = (
+        build_smoke_model(name="SmokeSubtaskModel", alias=subtask_name, subtask=True, required=subtask_required)
+        if subtask_name
+        else None
+    )
+    return state, Plan(
+        task=task_name,
+        task_model=task_model,
+        task_required=task_required,
+        subtask=subtask_name,
+        subtask_model=subtask_model,
+        subtask_required=subtask_required,
+    )
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -218,10 +402,12 @@ async def run(args: argparse.Namespace) -> int:
 
     try:
         state, plan = await build_state(engine, args.url, args.project_key, args)
-        SmokeTask.__alias__ = plan.task
-        SmokeSubtask.__alias__ = plan.subtask or "sub-task"
         print(f"tenant:  {args.url}")
         print(f"project: {args.project_key} (company-managed)")
+
+        def kwargs_for(required: list[RequiredField]) -> dict[str, Any]:
+            """Constructor kwargs for the required custom fields."""
+            return {rf.attr(i): _parse_value(rf) for i, rf in enumerate(required)}
 
         try:
             async with AsyncSession(engine, state) as session:
@@ -229,7 +415,9 @@ async def run(args: argparse.Namespace) -> int:
 
                 # ── duedate group (needs any creatable non-subtask type) ──
                 # 1. Insert carrying a duedate.
-                task = SmokeTask(summary="smoke: duedate/parent parent", duedate=target)
+                task = plan.task_model(
+                    summary="smoke: duedate/parent parent", duedate=target, **kwargs_for(plan.task_required)
+                )
                 session.add(task, project=args.project_key)
                 await commit(session, task)
                 task_key = task.key
@@ -238,7 +426,7 @@ async def run(args: argparse.Namespace) -> int:
                 checks.check(f"insert {plan.task} with duedate", True, f"key={task_key}")
 
                 # 2. Read it back: duedate hydrates to a date.
-                reread = await session.get(SmokeTask, task_key, fresh=True)
+                reread = await session.get(type(task), task_key, fresh=True)
                 if reread is None:
                     return bail("duedate hydrates as date", f"GET {task_key} returned nothing")
                 checks.check(
@@ -248,25 +436,26 @@ async def run(args: argparse.Namespace) -> int:
                 )
 
                 # 3. JQL round-trip on duedate (system-field queryability).
-                hits = await session.scalars(select(SmokeTask).where(SmokeTask.c.duedate == target))
+                hits = await session.scalars(
+                    select(type(task)).where(type(task).c.duedate == target)  # type: ignore[attr-defined]
+                )
                 checks.check(
                     "duedate queryable in JQL",
                     any(h.key == task_key for h in hits),
                     f"{len(hits)} hit(s) for duedate == {target.isoformat()}",
                 )
 
-                if plan.subtask is None:
+                if plan.subtask_model is None:
                     checks.skip(
                         "parent group (guard, insert, hydrate, move)",
-                        f"no sub-task type is creatable on {args.project_key!r} "
-                        f"(creatable: non-subtask only) — run against a project "
-                        f"whose scheme carries a sub-task type to cover #45's "
-                        f"parent half",
+                        f"no sub-task type is creatable on {args.project_key!r} — "
+                        f"run against a project whose scheme carries a sub-task "
+                        f"type to cover #45's parent half",
                     )
                     # 4. duedate clear on update, on the task itself.
                     reread.duedate = None
                     await session.commit()
-                    cleared = await session.get(SmokeTask, task_key, fresh=True)
+                    cleared = await session.get(type(task), task_key, fresh=True)
                     if cleared is None:
                         return bail("duedate cleared with null on update", f"GET {task_key} returned nothing")
                     checks.check(
@@ -279,11 +468,13 @@ async def run(args: argparse.Namespace) -> int:
                     return 0
 
                 # ── parent group (needs a creatable sub-task type) ────────
+                subtask_kwargs = kwargs_for(plan.subtask_required)
+
                 # 5. Offline guard: a __subtask__ model without parent must
                 # fail in the payload builder, before any request.
                 guard_raised = False
                 try:
-                    parentless = SmokeSubtask(summary="smoke: parentless")
+                    parentless = plan.subtask_model(summary="smoke: parentless", **subtask_kwargs)
                     session.add(parentless, project=args.project_key)
                     await session.commit()
                     if parentless.key:  # only if Jira somehow accepted it
@@ -297,7 +488,9 @@ async def run(args: argparse.Namespace) -> int:
                     return bail("parentless subtask refused client-side", "no ConfigurationError raised")
 
                 # 6. Insert the sub-task under the task.
-                sub = SmokeSubtask(summary="smoke: duedate/parent subtask", duedate=target, parent=task_key)
+                sub = plan.subtask_model(
+                    summary="smoke: duedate/parent subtask", duedate=target, parent=task_key, **subtask_kwargs
+                )
                 session.add(sub, project=args.project_key)
                 await commit(session, sub)
                 sub_key = sub.key
@@ -306,7 +499,7 @@ async def run(args: argparse.Namespace) -> int:
                 checks.check(f"insert {plan.subtask} with parent + duedate", True, f"key={sub_key}")
 
                 # 7. Read it back: parent hydrates as the parent's key.
-                sub_reread = await session.get(SmokeSubtask, sub_key, fresh=True)
+                sub_reread = await session.get(type(sub), sub_key, fresh=True)
                 if sub_reread is None:
                     return bail("parent hydrates as parent key", f"GET {sub_key} returned nothing")
                 checks.check(
@@ -318,7 +511,7 @@ async def run(args: argparse.Namespace) -> int:
                 # 8. Clear the duedate on update (dirty None -> JSON null).
                 sub_reread.duedate = None
                 await session.commit()
-                cleared = await session.get(SmokeSubtask, sub_key, fresh=True)
+                cleared = await session.get(type(sub), sub_key, fresh=True)
                 if cleared is None:
                     return bail("duedate cleared with null on update", f"GET {sub_key} returned nothing")
                 checks.check(
@@ -328,18 +521,18 @@ async def run(args: argparse.Namespace) -> int:
                 )
 
                 # 9. Move the sub-task to a second parent.
-                task_b = SmokeTask(summary="smoke: second parent")
+                task_b = plan.task_model(summary="smoke: second parent", **kwargs_for(plan.task_required))
                 session.add(task_b, project=args.project_key)
                 await commit(session, task_b)
                 task_b_key = task_b.key
                 if not task_b_key:
                     return bail("parent moved on update", "second insert failed")
-                moved = await session.get(SmokeSubtask, sub_key)
+                moved = await session.get(type(sub), sub_key)
                 if moved is None:
                     return bail("parent moved on update", f"GET {sub_key} returned nothing")
                 moved.parent = task_b_key
                 await session.commit()
-                moved_back = await session.get(SmokeSubtask, sub_key, fresh=True)
+                moved_back = await session.get(type(sub), sub_key, fresh=True)
                 if moved_back is None:
                     return bail("parent moved on update", f"GET {sub_key} returned nothing")
                 checks.check(
@@ -387,10 +580,19 @@ def main() -> None:
     parser.add_argument("--project-key", default=os.environ.get("SMOKE_PROJECT"), help="sandbox project key")
     parser.add_argument("--auth", choices=["api-token", "pat", "basic"], default="api-token")
     parser.add_argument(
-        "--task-type", default=None, help="pin the parent-role type name (default: first creatable non-subtask)"
+        "--task-type",
+        default=None,
+        help="pin the parent-role type name (default: fewest-required creatable non-subtask)",
     )
     parser.add_argument(
         "--subtask-type", default=None, help="pin the sub-task role name (default: first creatable subtask)"
+    )
+    parser.add_argument(
+        "--required-field",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="required-on-create custom field value (repeatable)",
     )
     parser.add_argument("--keep", action="store_true", help="keep created issues (default: delete)")
     parser.add_argument("--no-verify-ssl", action="store_true")
