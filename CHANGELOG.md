@@ -6,6 +6,22 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-23
+
+### Added
+
+- Data plane: issue links ([#48](https://github.com/curtis-turner/stint/issues/48)).
+  `session.link(source, target, link_type="Blocks")` POSTs `/issueLink` with
+  `source` as the outward subject and `target` as the inward object; link
+  types are addressed by name and stint resolves the direction bookkeeping.
+  Creating a link that already exists (same type, direction, pair) is a
+  no-op — pre-checked from `fields.issuelinks` before the request, with a
+  duplicate race tolerated server-side — so sync loops can re-derive
+  dependencies every pass. `session.links(issue)` parses `fields.issuelinks`
+  in one GET into `IssueLink(id, type, direction, other_key)`;
+  `session.unlink(link_id)` deletes by id. Self-links fail locally, before
+  any request.
+
 ## [0.14.0] - 2026-11-23
 
 ### Added
@@ -856,7 +872,8 @@ end-to-end against Jira Data Center and Jira Cloud.
 - TMP awareness: project style tracked in state, CMP-only ops raise
   `UnsupportedTMPOpError` with a deep link to the Jira UI.
 
-[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/curtis-turner/stint/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/curtis-turner/stint/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/curtis-turner/stint/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/curtis-turner/stint/compare/v0.11.0...v0.12.0
