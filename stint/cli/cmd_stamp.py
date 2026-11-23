@@ -7,7 +7,7 @@ by name (or key for projects), populates the state file. No writes.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal
 
 from cyclopts import Parameter
 
@@ -16,10 +16,10 @@ from stint.autogen.stamp import stamp as run_stamp_alg
 from stint.cli.app import app
 from stint.cli.cmd_reflect import _build_auth
 from stint.cli.env_config import require_resolved_connection, resolve_connection
-from stint.engine import base_url_of, create_engine, create_tmp_engine
+from stint.engine import create_engine, create_tmp_engine, resolve_dialect_name
+from stint.registry import registry
 from stint.state.file import StateFile
 from stint.state.lock import StateLock
-from stint.state.snapshot import Snapshot
 
 AuthMode = Literal["pat", "basic", "api-token"]
 DialectName = Literal["jira_cloud", "jira_cloud_tmp"]
@@ -66,6 +66,11 @@ async def stamp(
         no_verify_ssl=no_verify_ssl,
     )
     url, auth = require_resolved_connection(env=env, url=url, auth=auth)
+    # Settle the dialect once from the URL prefix or the flag (same as
+    # cmd_reflect/cmd_apply): the branch below picks the engine constructor
+    # and the stamp algorithm from this name. New names -- the CLI params
+    # keep their declared types.
+    base_url, chosen_dialect = resolve_dialect_name(url, dialect)
     load_schema_module(schema)
     state_path = Path(state)
     # Fail before the (slow) reflect if the state can't be recorded.
@@ -80,26 +85,45 @@ async def stamp(
             state_file = StateFile.load(state_path)
             # Refuse a tenant/env mismatch (M7): stamp binds aliases to ids by
             # name-matching, so a wrong-tenant file would record foreign ids.
-            state_file.validate_target(env=env, jira_url=url, state_path=state_path)
+            state_file.validate_target(env=env, jira_url=base_url, state_path=state_path)
         else:
-            state_file = StateFile(env=env, jira_url=base_url_of(url))
+            state_file = StateFile(env=env, jira_url=base_url)
         auth_obj = _build_auth(auth, token_env, user_env)
-        if dialect == "jira_cloud_tmp":
+        if chosen_dialect == "jira_cloud_tmp":
             if not project_key:
                 raise SystemExit("--project-key is required for --dialect jira_cloud_tmp")
-            engine = create_tmp_engine(url, auth=auth_obj, dialect=dialect, verify_ssl=not no_verify_ssl)
+            # Validate the schema declaration before the (slow) reflect: both
+            # checks need only the loaded schema module.
+            project_cls = registry.projects.get(project_key)
+            if project_cls is None:
+                raise SystemExit(f"no Project with __key__ {project_key!r} found in schema {schema!r}")
+            if getattr(project_cls, "__style__", "company-managed") != "team-managed":
+                raise SystemExit(
+                    f"project {project_key!r} is company-managed; --dialect jira_cloud_tmp only "
+                    "stamps team-managed projects (run plain 'stint stamp' for those)."
+                )
+            engine = create_tmp_engine(base_url, auth=auth_obj, dialect=chosen_dialect, verify_ssl=not no_verify_ssl)
             try:
                 snapshot = await engine.reflect(project_key=project_key)
             finally:
                 await engine.close()
+            # TMP state lives in tmp_projects, the only thing `apply` reads --
+            # and the CMP stamp algorithm can't fill it: it matches against
+            # CMP surfaces (global issue types, screens, schemes) a
+            # team-managed project doesn't have, and synthesizes CMP scheme
+            # objects. Route to the TMP stamp instead (imports deferred: see
+            # cmd_apply's module docstring for the isolation rule).
+            from stint.dialects.jira.tmp.desired import build_tmp_desired
+            from stint.dialects.jira.tmp.stamp import stamp_tmp
+
+            report = stamp_tmp(state_file, project_key, build_tmp_desired(project_cls), snapshot)
         else:
-            engine = create_engine(url, auth=auth_obj, dialect=dialect, verify_ssl=not no_verify_ssl)
+            engine = create_engine(base_url, auth=auth_obj, dialect=chosen_dialect, verify_ssl=not no_verify_ssl)
             try:
                 snapshot = await engine.reflect()
             finally:
                 await engine.close()
-
-        report = run_stamp_alg(state_file, cast(Snapshot, snapshot))
+            report = run_stamp_alg(state_file, snapshot)
         if revision:
             state_file.revision = revision
         state_file.save(state_path)

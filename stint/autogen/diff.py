@@ -1055,6 +1055,24 @@ def _diff_security_schemes(
                     default_level=want.default_level,
                 )
             )
+            # The create endpoint takes no member list (emails resolve
+            # per-member at apply time), so declared members ride along as
+            # phase-45 AddSecurityLevelMember ops: after the create captures
+            # level ids (42), before the project binding (62). Without these,
+            # the first migration creates member-less levels — a project whose
+            # default level has no members hides every new issue from
+            # everyone, including the creating token, until a second
+            # revision/upgrade runs.
+            for level in want.levels:
+                for member in level.members:
+                    r.changes.append(
+                        AddSecurityLevelMember(
+                            scheme_alias=alias,
+                            level_alias=level.alias,
+                            member_type=member.type,
+                            member_value=member.value,
+                        )
+                    )
             # The binding for an existing project fires on the project side
             # (`_diff_projects` → _maybe_emit_set_scheme), which covers both
             # a pending scheme (phase-ordered create → bind) and a drifted

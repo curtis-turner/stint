@@ -239,7 +239,12 @@ def find_untracked_fields(desired: TmpDesired, snapshot: TmpSnapshot, state: Tmp
 def _layout_drifted(current: TmpLayout, desired: TmpDesiredWorkType, desired_field_ids: set[str]) -> bool:
     if current.owner.name != desired.name or current.owner.description != desired.description:
         return True
-    current_custom_ids = {i.field_id for i in current.items if i.custom}
+    # Only project-scope custom items are managed: GLOBAL custom fields
+    # (custom=True, global_=True -- e.g. Team, Start date, Sprint) cannot be
+    # declared by a TMP schema, so counting them as "current but not desired"
+    # would report drift -- and plan a full-replacement SetLayout that strips
+    # them -- on every run, forever. Same treatment as system fields.
+    current_custom_ids = {i.field_id for i in current.items if i.custom and not i.global_}
     return current_custom_ids != desired_field_ids
 
 

@@ -1,5 +1,6 @@
 """Stamp (brownfield): match schema declarations to existing Jira objects."""
 
+import json
 import sys
 
 import httpx
@@ -9,10 +10,12 @@ import respx
 from stint import StateFile
 from stint.autogen.stamp import stamp
 from stint.cli.main import main
+from stint.dialects.jira.tmp.models import TmpSnapshot
 from stint.fields import SelectField, TextField
 from stint.registry import registry
 from stint.state.snapshot import (
     CustomFieldSnapshot,
+    IssueTypeSnapshot,
     ProjectSnapshot,
     ScreenSnapshot,
     ScreenTabSnapshot,
@@ -420,3 +423,303 @@ def test_cli_stamp_refuses_when_state_lock_held(tmp_path, monkeypatch, capsys):
     assert not state_path.exists()
     # The foreign holder's lock file is untouched (not unlinked/stolen).
     assert "pid=999999" in lock_path.read_text(encoding="utf-8")
+
+
+# ── TMP stamp (jira_cloud_tmp): fill tmp_projects, not CMP tables ────
+def _make_tmp_project():
+    """Declare one team-managed project with a select + a text field."""
+    from typing import Annotated, Literal
+
+    from stint import CustomField, IssueType, Project
+
+    sev = CustomField(alias="vuln_severity", name="Severity", type=SelectField, options=["S1", "S2"])
+    root = CustomField(alias="vuln_root_cause", name="Root Cause", type=TextField)
+
+    class Vuln(IssueType):
+        __alias__ = "vulnerability"
+        __title__ = "Vulnerability"
+        severity: Annotated[Literal["S1", "S2"], sev]
+        root_cause: Annotated[str, root] = ""
+
+    class TmpProj(Project):
+        __key__ = "VM"
+        __style__ = "team-managed"
+        __issuetypes__ = [Vuln]
+
+    return TmpProj
+
+
+def _tmp_snapshot(fields: dict[str, CustomFieldSnapshot], worktypes: dict[str, str]) -> TmpSnapshot:
+    """A TmpSnapshot as the TMP reflect builds it: PROJECT-scope fields and
+    the project's own work types (layouts left empty -- layout_ids are
+    diagnostics-only in state)."""
+    return TmpSnapshot(
+        snapshot=Snapshot(
+            server_info=ServerInfoSnapshot(deployment_type="Cloud", version="9", base_url="x"),
+            custom_fields=fields,
+            issuetypes={
+                wt_id: IssueTypeSnapshot(id=wt_id, name=name, project_scoped=True) for wt_id, name in worktypes.items()
+            },
+            projects={"VM": ProjectSnapshot(id="p-1", key="VM", name="Vuln Management", style="next-gen")},
+        )
+    )
+
+
+def test_stamp_tmp_populates_tmp_projects():
+    """The whole point of the TMP route: aliases land in
+    ``tmp_projects[key]`` -- the only state `apply` reads -- instead of the
+    CMP tables the TMP apply never consults."""
+    from stint.dialects.jira.tmp.desired import build_tmp_desired
+    from stint.dialects.jira.tmp.stamp import stamp_tmp
+
+    project_cls = _make_tmp_project()
+    snapshot = _tmp_snapshot(
+        fields={
+            "customfield_1": CustomFieldSnapshot(id="customfield_1", name="Severity", type_id=SelectField.jira_type_id),
+            "customfield_2": CustomFieldSnapshot(id="customfield_2", name="Root Cause", type_id=TextField.jira_type_id),
+        },
+        worktypes={"10007": "Vulnerability"},
+    )
+    state = StateFile(env="dev", jira_url="x")
+    report = stamp_tmp(state, "VM", build_tmp_desired(project_cls), snapshot)
+    assert ("custom_field", "vuln_severity", "customfield_1") in report.matched
+    assert ("custom_field", "vuln_root_cause", "customfield_2") in report.matched
+    assert ("worktype", "vulnerability", "10007") in report.matched
+    assert ("project", "VM", "p-1") in report.matched
+    entry = state.tmp_projects["VM"]
+    assert entry.fields == {"vuln_severity": "customfield_1", "vuln_root_cause": "customfield_2"}
+    assert entry.worktypes == {"vulnerability": "10007"}
+    assert state.projects["VM"].style == "team-managed"
+
+
+def test_stamp_tmp_matches_fields_by_name_and_type():
+    """A same-named field of a different type is not a match: stamping it
+    would bind the alias to an object the schema's type can't drive (the
+    same discriminator as the apply-time adoption scan)."""
+    from stint.dialects.jira.tmp.desired import build_tmp_desired
+    from stint.dialects.jira.tmp.stamp import stamp_tmp
+
+    project_cls = _make_tmp_project()
+    snapshot = _tmp_snapshot(
+        fields={
+            # Name matches, type does not (text, not select).
+            "customfield_7": CustomFieldSnapshot(id="customfield_7", name="Severity", type_id=TextField.jira_type_id),
+            "customfield_2": CustomFieldSnapshot(id="customfield_2", name="Root Cause", type_id=TextField.jira_type_id),
+        },
+        worktypes={"10007": "Vulnerability"},
+    )
+    state = StateFile(env="dev", jira_url="x")
+    report = stamp_tmp(state, "VM", build_tmp_desired(project_cls), snapshot)
+    assert ("custom_field", "vuln_severity") in report.unmatched
+    assert ("custom_field", "vuln_root_cause", "customfield_2") in report.matched
+    assert state.tmp_projects["VM"].fields == {"vuln_root_cause": "customfield_2"}
+
+
+def test_stamp_tmp_skips_ambiguous_and_conflicting_matches():
+    """Ambiguity refuses to guess (L20); an existing mapping that disagrees
+    with Jira is reported, not overwritten; unmatched work types are
+    reported. Existing mappings survive untouched."""
+    from stint.dialects.jira.tmp.desired import build_tmp_desired
+    from stint.dialects.jira.tmp.stamp import stamp_tmp
+    from stint.state.file import TmpProjectState
+
+    project_cls = _make_tmp_project()
+    snapshot = _tmp_snapshot(
+        fields={
+            "customfield_1": CustomFieldSnapshot(id="customfield_1", name="Severity", type_id=SelectField.jira_type_id),
+            "customfield_2": CustomFieldSnapshot(id="customfield_2", name="Severity", type_id=SelectField.jira_type_id),
+            "customfield_3": CustomFieldSnapshot(id="customfield_3", name="Root Cause", type_id=TextField.jira_type_id),
+        },
+        worktypes={},  # no "Vulnerability" work type in Jira
+    )
+    state = StateFile(env="dev", jira_url="x")
+    state.tmp_projects["VM"] = TmpProjectState(fields={"vuln_root_cause": "customfield_99"})
+    report = stamp_tmp(state, "VM", build_tmp_desired(project_cls), snapshot)
+    assert (
+        "custom_field",
+        "vuln_severity",
+        "matches multiple Jira objects (customfield_1, customfield_2); refusing to guess",
+    ) in [(k, a, r) for k, a, r in report.skipped]
+    assert ("custom_field", "vuln_root_cause", "state already maps to 'customfield_99', Jira has 'customfield_3'") in [
+        (k, a, r) for k, a, r in report.skipped
+    ]
+    assert ("worktype", "vulnerability") in report.unmatched
+    # Pre-existing mappings are preserved, not clobbered.
+    assert state.tmp_projects["VM"].fields == {"vuln_root_cause": "customfield_99"}
+
+
+@respx.mock
+def test_cli_stamp_jira_cloud_tmp_end_to_end(tmp_path, monkeypatch, capsys):
+    """`stint stamp --dialect jira_cloud_tmp` reflects the TMP project and
+    writes tmp_projects. Pre-fix, this ran the CMP stamp algorithm: fields
+    landed in state.custom_fields (which apply ignores), work types came
+    back unmatched, and a CMP issue-type scheme was synthesized."""
+    from stint.dialects.jira.tmp.graphql import FIELDS_GATEWAY_PATH, LAYOUT_READ_PATH
+
+    base = "https://tmpstamp.example.com"
+    api_root = f"{base}/rest/api/3"
+    respx.get(f"{base}/_edge/tenant_info").mock(return_value=httpx.Response(200, json={"cloudId": "cloud-1"}))
+    respx.get(f"{api_root}/serverInfo").mock(
+        return_value=httpx.Response(200, json={"deploymentType": "Cloud", "version": "1001.0.0", "baseUrl": base})
+    )
+
+    def _gateway_dispatch(request: httpx.Request) -> httpx.Response:
+        op = json.loads(request.content).get("operationName")
+        if op == "StintTmpResolveProject":
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "jira_projectByIdOrKey": {
+                            "projectId": 10001,
+                            "key": "VM",
+                            "uuid": "proj-uuid-1",
+                            "name": "Vuln Management",
+                            "projectType": "software",
+                            "projectStyle": "TEAM_MANAGED_PROJECT",
+                        }
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "jira": {
+                        "jiraProjectByKey": {
+                            "projectWithVisibleIssueTypeIds": {
+                                "fieldAssociationWithIssueTypes": {
+                                    "edges": [
+                                        {
+                                            "node": {
+                                                "field": {
+                                                    "fieldId": "customfield_1",
+                                                    "name": "Severity",
+                                                    "scope": "PROJECT",
+                                                    "typeKey": SelectField.jira_type_id,
+                                                    "description": "",
+                                                },
+                                                "fieldOptions": {"edges": []},
+                                            }
+                                        },
+                                        {
+                                            "node": {
+                                                "field": {
+                                                    "fieldId": "customfield_2",
+                                                    "name": "Root Cause",
+                                                    "scope": "PROJECT",
+                                                    "typeKey": TextField.jira_type_id,
+                                                    "description": "",
+                                                },
+                                                "fieldOptions": {"edges": []},
+                                            }
+                                        },
+                                    ],
+                                    "pageInfo": {"hasNextPage": False},
+                                }
+                            }
+                        }
+                    }
+                },
+            },
+        )
+
+    respx.post(f"{base}{FIELDS_GATEWAY_PATH}").mock(side_effect=_gateway_dispatch)
+    respx.get(f"{api_root}/issuetype/project").mock(
+        return_value=httpx.Response(200, json=[{"id": 10007, "name": "Vulnerability", "subtask": False}])
+    )
+    respx.post(f"{base}{LAYOUT_READ_PATH}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "issueLayoutConfiguration": {
+                        "__typename": "JiraIssueLayoutConfigurationResult",
+                        "issueLayoutResult": {
+                            "id": "lay-1",
+                            "name": "KAN-Vulnerability",
+                            "usageInfo": {
+                                "edges": [
+                                    {
+                                        "currentProject": True,
+                                        "node": {
+                                            "layoutOwners": [
+                                                {
+                                                    "__typename": "JiraIssueLayoutIssueTypeOwner",
+                                                    "id": "10007",
+                                                    "name": "Vulnerability",
+                                                    "description": "",
+                                                    "avatarId": "1",
+                                                    "iconUrl": "x",
+                                                }
+                                            ]
+                                        },
+                                    }
+                                ]
+                            },
+                            "containers": [],
+                        },
+                        "metadata": {"configuration": {"items": {"nodes": [], "pageInfo": {"hasNextPage": False}}}},
+                    }
+                }
+            },
+        )
+    )
+
+    state_path = tmp_path / "state.yaml"
+    monkeypatch.setenv("STINT_TOKEN", "tok")
+    monkeypatch.setenv("STINT_USER", "you@example.com")
+    rc = main(
+        [
+            "stamp",
+            "--schema",
+            "examples.team_managed.vuln_management",
+            "--state",
+            str(state_path),
+            "--env",
+            "dev",
+            "--url",
+            f"jira_cloud_tmp+{base}",
+            "--auth",
+            "api-token",
+            "--project-key",
+            "VM",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "matched=" in out
+    on_disk = StateFile.load(state_path)
+    entry = on_disk.tmp_projects["VM"]
+    assert entry.fields == {"vuln_severity": "customfield_1", "vuln_root_cause": "customfield_2"}
+    assert entry.worktypes == {"vulnerability": "10007"}
+    # The CMP stamp tables stay out of it: no CMP issue-type scheme was
+    # synthesized, no global-issuetype mapping recorded.
+    assert on_disk.issuetype_schemes == {}
+    assert on_disk.issuetypes == {}
+
+
+@respx.mock
+def test_cli_stamp_jira_cloud_tmp_requires_tmp_project(tmp_path, monkeypatch):
+    """A company-managed project class under --dialect jira_cloud_tmp is a
+    user error: fail before the reflect instead of stamping CMP tables."""
+    monkeypatch.setenv("STINT_TOKEN", "tok")
+    monkeypatch.setenv("STINT_USER", "you@example.com")
+    with pytest.raises(SystemExit, match="company-managed"):
+        main(
+            [
+                "stamp",
+                "--schema",
+                "examples.company_managed.platform_schema",
+                "--state",
+                str(tmp_path / "state.yaml"),
+                "--env",
+                "prod",
+                "--url",
+                "jira_cloud_tmp+https://tmpstamp.example.com",
+                "--auth",
+                "api-token",
+                "--project-key",
+                "PLAT",
+            ]
+        )

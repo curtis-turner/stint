@@ -219,9 +219,18 @@ async def tmp_set_layout(
     full-replacement write would be a real, visible regression -- see
     module docstring). New items are appended after ``kept_items`` in the
     order they appear in ``desired.field_aliases``.
+
+    GLOBAL-scope custom items (``custom=True, global_=True`` -- e.g. Team,
+    Start date, Sprint, tenant-wide fields) are unmanaged, like system
+    fields: a TMP schema cannot declare a GLOBAL field, so ``desired_field_ids``
+    can never contain one, and dropping them would strip Jira-template fields
+    from every imported work type on a full-replacement write. They are kept
+    unchanged and in place.
     """
     desired_field_ids = {ctx.state.fields[a] for a in desired.field_aliases if a in ctx.state.fields}
-    kept_items = tuple(item for item in current.items if not item.custom or item.field_id in desired_field_ids)
+    kept_items = tuple(
+        item for item in current.items if not item.custom or item.global_ or item.field_id in desired_field_ids
+    )
     kept_field_ids = {item.field_id for item in kept_items if item.custom}
 
     next_position = max((item.position for item in kept_items), default=0) + 100

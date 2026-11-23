@@ -6,6 +6,36 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `stint apply` (jira_cloud_tmp) no longer strips GLOBAL-scope custom fields
+  (Team, Start date, Sprint, tenant-wide fields) from existing work-type
+  layouts. A TMP schema cannot declare a GLOBAL field, so the old kept-items
+  filter dropped them on every full-replacement layout write, and the drift
+  check then saw them as undeclared on every run — the plan never converged
+  and a real apply broke live workflows. GLOBAL custom items are now
+  unmanaged, like system fields: kept in place on write, ignored by the
+  layout drift check.
+- `stint stamp --dialect jira_cloud_tmp` now populates `tmp_projects` in the
+  state file (fields matched by name and type, work types by name), which is
+  the only state `stint apply` reads. It previously ran the company-managed
+  stamp algorithm: matched fields landed in tables the TMP apply never
+  consults, work types came back unmatched, and a CMP issue-type scheme was
+  synthesized. `--url jira_cloud_tmp+…` also resolves the dialect from the
+  prefix now, matching `reflect`/`apply`.
+- `stint apply` (jira_cloud_tmp) can now manage project-scoped fields that
+  sit on no work-type layout. A module-level `CustomField` no `IssueType`
+  references is included in the desired state (created or adopted, and
+  deletable with `--allow-delete`) without first being put on a layout;
+  its layout membership stays unmanaged.
+- `stint revision --autogenerate` no longer omits security-scheme level
+  members from a new scheme's first migration. The create emitted levels
+  only; the first `upgrade` then left the project's default level with no
+  members, hiding every new issue from everyone (including the creating
+  token) until a second revision/upgrade. Declared members now ride along
+  as `add_issue_security_level_member` ops, phase-ordered after the scheme
+  create and before the project binding.
+
 ## [0.8.0] - 2026-11-06
 
 ### Changed
