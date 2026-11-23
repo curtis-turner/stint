@@ -19,7 +19,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from stint.exceptions import ConfigurationError
-from stint.fields import _FieldType
+from stint.fields import _FieldType, jira_system_field_id
 from stint.migrations.context import get_context
 from stint.migrations.exceptions import UnsupportedDowngradeError
 from stint.state.file import (
@@ -243,7 +243,7 @@ async def add_screen_tab_field(
     if field_alias in ctx.state.custom_fields:
         field_id = ctx.state.custom_fields[field_alias].id
     else:
-        field_id = field_alias.replace(" ", "").lower()
+        field_id = jira_system_field_id(field_alias)
     await ctx.engine.dialect.add_screen_tab_field(
         screen.id,
         tab_id,
@@ -474,7 +474,7 @@ async def set_field_configuration_item(
     if field_alias in ctx.state.custom_fields:
         field_id = ctx.state.custom_fields[field_alias].id
     else:
-        field_id = field_alias.replace(" ", "").lower()
+        field_id = jira_system_field_id(field_alias)
     await ctx.engine.dialect.set_field_configuration_item(
         fc.id,
         field_id=field_id,
@@ -498,6 +498,26 @@ async def create_field_configuration_scheme(
     _require_alias(alias, "create_field_configuration_scheme")
     existing = _existing_id_or_none(ctx.state.field_configuration_schemes, alias)
     if existing is not None:
+        # Resume path: the mappings PUT was deliberately ordered *after* the
+        # state persist, so a failure there leaves the scheme tracked but
+        # its merged associations unapplied. Re-apply before returning — the
+        # mappings PUT is idempotent on both v1 and v2 — otherwise a resumed
+        # migration reports success while the project's field scheme is
+        # missing its associations and issue creation fails later with
+        # "not on the appropriate screen", pointing nowhere near the cause.
+        if "default" not in mappings:
+            raise ConfigurationError("create_field_configuration_scheme: `mappings` must include 'default' issuetype")
+        resolved = _resolve_scheme_mappings(
+            ctx,
+            "create_field_configuration_scheme",
+            mappings,
+            scheme_table=ctx.state.field_configurations,
+            scheme_key="fieldConfigurationId",
+        )
+        await ctx.engine.dialect.set_field_configuration_scheme_mappings(
+            existing,
+            mappings=resolved,
+        )
         return existing
     if "default" not in mappings:
         raise ConfigurationError("create_field_configuration_scheme: `mappings` must include 'default' issuetype")
@@ -638,8 +658,15 @@ async def create_project(
     description: str = "",
     project_template_key: str | None = None,
     style: str = "company-managed",
+    lead_role: str | None = None,
 ) -> str:
     """Create a Jira project. ``style`` selects CMP vs TMP (Cloud only).
+
+    ``lead_role`` names an existing Jira project role the lead is added to
+    after creation (rendered from ``Project.__lead_role__``): POST /project
+    grants the lead no role, so tenants whose default permission scheme
+    grants BROWSE_PROJECTS only through roles left the lead unable to see
+    the project they own.
 
     On Cloud, TMP defaults a sensible project_template_key when one is not
     given (Atlassian's "next-gen" Kanban template). CMP now defaults too:
@@ -656,13 +683,24 @@ async def create_project(
     """
     ctx = get_context()
     _require_alias(alias, "create_project")
-    existing = _existing_id_or_none(ctx.state.projects, alias)
-    if existing is not None:
-        return existing
     if style not in ("company-managed", "team-managed"):
         raise ConfigurationError(
             f"create_project: unknown style {style!r}; expected 'company-managed' or 'team-managed'"
         )
+    if lead_role and style == "team-managed":
+        raise ConfigurationError(
+            "create_project: lead_role is a company-managed surface; "
+            "team-managed projects do not support project-role actors"
+        )
+    existing = _existing_id_or_none(ctx.state.projects, alias)
+    if existing is not None:
+        # Resume path: a failed create may have persisted the project in
+        # state without adding the lead to __lead_role__ (POST /project
+        # grants no role). Re-apply — the role add is idempotent.
+        if lead_role:
+            resolved_lead = await ctx.engine.dialect.resolve_lead(lead)
+            await _add_lead_to_role(ctx, existing, lead_role, resolved_lead)
+        return existing
     _default_tmp_template_key = "com.pyxis.greenhopper.jira:gh-simplified-agility-kanban"
     _default_cmp_template_key = "com.pyxis.greenhopper.jira:gh-kanban-template"
     if style == "team-managed" and project_template_key is None:
@@ -689,9 +727,24 @@ async def create_project(
         description=description,
         project_template_key=project_template_key,
     )
+    if lead_role:
+        await _add_lead_to_role(ctx, proj_id, lead_role, resolved_lead)
     ctx.state.projects[alias] = ProjectMapping(id=proj_id, style=style, key=key)
     ctx.persist()
     return proj_id
+
+
+async def _add_lead_to_role(ctx: Any, project_id: str, role_name: str, account_id: str) -> None:
+    """Add the resolved lead to a named project role.
+
+    POST /project grants the lead no role; tenants whose default permission
+    scheme grants BROWSE_PROJECTS only through project roles leave the lead
+    unable to browse the project they own (see Project.__lead_role__)."""
+    await ctx.engine.dialect.add_project_role_actor(
+        project_id,
+        role_name=role_name,
+        account_id=account_id,
+    )
 
 
 async def update_project(

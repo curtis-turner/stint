@@ -4,7 +4,55 @@ All notable changes to stint are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version
 numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.0] - 2026-11-22
+
+### Fixed
+
+- Field Schemes (v2): merging a FieldConfigurationScheme onto a project's
+  scheme no longer fails on the ghost field rows Jira seeds into brand-new
+  schemes (associations to custom fields the tenant has since deleted, plus
+  `dataclassification`). Rows whose `fieldId` the field registry doesn't
+  know are filtered out of scheme reads, and association PUTs drop the ids
+  Jira per-item-reports as "doesn't exist" and retry instead of rejecting
+  the whole batch.
+- Field Schemes (v2): the FCS merge's required-flag PUT no longer aborts the
+  migration on fields whose required flag Jira won't change (`created`,
+  `updated`, `status`, `summary`, ...). The endpoint fails the whole request
+  when any field is immutable; the denied fields are now dropped from the
+  parsed per-item error body and the remainder re-sent, instead of applying
+  the tolerance only to single-field requests.
+- HTTP error bodies are no longer truncated to 200 characters inside the
+  exception. `TransportError` now carries the full response body as
+  `.body`; the human-readable message keeps its truncation, but stint's own
+  error classifiers (tolerable parameter denials, retired-field-configuration,
+  duplicate security-level member) parse `.body`, so a long multi-item
+  response no longer becomes unparseable JSON and a tolerable error no
+  longer surfaces as a failure.
+- Re-running a partially applied migration no longer fails on the first
+  screen field the previous run added: `add_screen_tab_field` treats Jira's
+  "The field with id X already exists on the screen." 400 as done, so
+  `upgrade` resumes where it left off.
+- Re-running a migration whose `create_field_configuration_scheme` failed
+  at the mappings PUT no longer silently skips the mappings: the
+  existing-scheme path re-applies the (idempotent) mappings PUT instead of
+  reporting success with the project's field scheme unpopulated.
+- `create_project` now optionally adds the lead to a project role
+  (`Project.__lead_role__`, e.g. `__lead_role__ = "Browse"`). `POST
+  /project` grants the lead no role, so tenants whose default permission
+  scheme grants `BROWSE_PROJECTS` only through project roles left the lead
+  unable to see the project they own — Jira's own UI flow adds the creator
+  to a role; the REST create does not.
+- `revision --autogenerate` no longer warns that declared system fields
+  (Summary, Description, Assignee, Reporter, Created, Updated) are "not on
+  the reflected screen" / missing from a field configuration on every run:
+  the drift helpers now normalize non-state field references the same way
+  the ops write them.
+- Pagination no longer yields duplicate rows when a lagging Jira endpoint
+  serves the previous page under the next `startAt` (observed on `/screens`
+  and `/config/fieldschemes/{id}/fields`, where reflection made about twice
+  the per-screen `/tabs` calls): consecutive page overlap is detected and
+  dropped. The "skipped team-managed synthetic screens" warning is now a
+  count plus the first few names instead of one line listing every screen.
 
 ## [0.9.0] - 2026-11-22
 
@@ -765,7 +813,8 @@ end-to-end against Jira Data Center and Jira Cloud.
 - TMP awareness: project style tracked in state, CMP-only ops raise
   `UnsupportedTMPOpError` with a deep link to the Jira UI.
 
-[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/curtis-turner/stint/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/curtis-turner/stint/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/curtis-turner/stint/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/curtis-turner/stint/compare/v0.6.1...v0.7.0

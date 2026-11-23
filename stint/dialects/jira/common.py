@@ -38,6 +38,28 @@ _MAX_PAGES = 1000
 _ECHO_MISMATCH_REFETCHES = 2  # extra fetches before trusting a cursor bug
 
 
+def _drop_page_overlap(
+    prev_page: list[dict[str, Any]] | None,
+    fetched: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Drop the rows ``fetched`` repeats from the immediately previous page.
+
+    Correct pagination never overlaps, but a lagging Jira endpoint serves the
+    previous page under the next ``startAt`` (observed live on ``/screens``
+    and ``/config/fieldschemes/{id}/fields``, 2026-11), so every row came
+    back twice. The overlap is always a suffix of the previous page matching
+    a prefix of the new one; skipping it makes reflection idempotent without
+    trusting row counts. Rows further back than the previous page are not
+    deduped — callers key results by id where that matters.
+    """
+    if not prev_page or not fetched:
+        return fetched
+    for overlap in range(min(len(prev_page), len(fetched)), 0, -1):
+        if prev_page[len(prev_page) - overlap :] == fetched[:overlap]:
+            return fetched[overlap:]
+    return fetched
+
+
 async def paginate(
     client: JiraHTTPClient,
     path: str,
@@ -78,6 +100,14 @@ async def paginate(
     own numbering risks skipping items. A misaligned cursor never loops: a
     later echo *behind* our aligned position is treated as clamped
     duplicates already seen (end of pages).
+
+    Overlap policy: a lagging endpoint can serve the previous page's rows
+    under the next ``startAt`` (observed on ``/screens`` and the v2
+    ``/config/fieldschemes/{id}/fields`` endpoints, 2026-11), so every row
+    came back twice. Rows shared between the previous page's suffix and the
+    current page's prefix are skipped (see ``_drop_page_overlap``); page
+    numbering still advances by the fetched count. Only consecutive pages
+    are compared — callers key results by id where deeper dedup matters.
     """
     start = 0
     pages_fetched = 0
@@ -85,6 +115,7 @@ async def paginate(
     warned_cursor = False
     next_url: str | None = None
     preloaded: dict[str, Any] | None = None  # recovered-from-glitch response
+    prev_page: list[dict[str, Any]] | None = None  # last page's raw values, for overlap detection
     while True:
         if preloaded is not None:
             resp = preloaded
@@ -163,9 +194,10 @@ async def paginate(
                     warned_cursor = True
                 start = echoed_int
 
-        values = resp.get(envelope_key) or []
-        for item in values:
+        fetched = resp.get(envelope_key) or []
+        for item in _drop_page_overlap(prev_page, fetched):
             yield item
+        prev_page = fetched
 
         cursor = resp.get("nextPage")
         if isinstance(cursor, str) and cursor.startswith("http"):
@@ -203,7 +235,7 @@ async def paginate(
             next_url = cursor
             continue
 
-        if not values:
+        if not fetched:
             return
         if resp.get("isLast") is True:
             return
@@ -215,7 +247,7 @@ async def paginate(
         # mistake /issuesecurityschemes made when routed through paginate).
         if "startAt" not in resp:
             return
-        start += len(values)
+        start += len(fetched)
 
 
 # ── Custom fields ─────────────────────────────────────────────────────

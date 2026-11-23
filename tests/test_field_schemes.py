@@ -574,3 +574,140 @@ async def test_remove_fields_warns_on_unexpected_per_field_failure():
             await eng.dialect.remove_fields_from_field_scheme(
                 "7", field_ids=["customfield_1", "customfield_2", "customfield_3"]
             )
+
+
+# ── Per-item 400 tolerance (SECURITY_SCHEME_ISSUE findings 1–3) ──────
+@pytest.mark.asyncio
+@respx.mock
+async def test_associate_fields_drops_doesnt_exist_ids_and_retries():
+    """Jira seeds a brand-new v2 field scheme with associations to fields
+    its own registry no longer has (deleted custom fields). Re-associating
+    such an id 400s the WHOLE batch with per-item "doesn't exist" rows; the
+    stale ids must be dropped and the remainder re-sent (finding 1)."""
+    _stub_probe(respx.mock, httpx.Response(200, json=_paginated([])))
+    respx.get(f"{ROOT}/field").mock(return_value=httpx.Response(200, json=[{"id": "summary"}, {"id": "customfield_1"}]))
+    respx.get(f"{ROOT}/field/search").mock(return_value=httpx.Response(200, json=_paginated([])))
+    put = respx.put(f"{SCHEMES}/fields").mock(
+        side_effect=[
+            httpx.Response(
+                400,
+                json={
+                    "results": [
+                        {"fieldId": "summary", "schemeId": 1103, "success": True},
+                        {
+                            "fieldId": "customfield_1",
+                            "schemeId": 1103,
+                            "success": False,
+                            "error": "Field customfield_1 doesn't exist",
+                        },
+                    ]
+                },
+            ),
+            httpx.Response(204),
+        ]
+    )
+    async with _engine() as eng:
+        await eng.dialect.associate_fields_with_field_scheme("1103", field_ids=["summary", "customfield_1"])
+    assert len(put.calls) == 2
+    retried = json.loads(put.calls[-1].request.content)
+    assert retried == {"summary": [{"schemeIds": [1103]}]}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_associate_fields_raise_on_unrecognized_per_item_400():
+    _stub_probe(respx.mock, httpx.Response(200, json=_paginated([])))
+    respx.get(f"{ROOT}/field").mock(return_value=httpx.Response(200, json=[{"id": "summary"}]))
+    respx.get(f"{ROOT}/field/search").mock(return_value=httpx.Response(200, json=_paginated([])))
+    respx.put(f"{SCHEMES}/fields").mock(
+        return_value=httpx.Response(
+            400,
+            json={"results": [{"fieldId": "summary", "success": False, "error": "scheme is locked"}]},
+        )
+    )
+    from stint.exceptions import TransportError
+
+    async with _engine() as eng:
+        with pytest.raises(TransportError):
+            await eng.dialect.associate_fields_with_field_scheme("1103", field_ids=["summary"])
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_parameter_batch_drops_immutable_denials_and_retries():
+    """Jira rejects the whole parameters PUT whenever any field cannot have
+    its required flag changed; the denied fields are dropped and the
+    remainder re-sent instead of failing the migration (finding 2)."""
+    _stub_probe(respx.mock, httpx.Response(200, json=_paginated([])))
+    put = respx.put(f"{SCHEMES}/fields/parameters").mock(
+        side_effect=[
+            httpx.Response(
+                400,
+                json={
+                    "results": [
+                        {"fieldId": "summary", "success": False, "error": "Field summary cannot have required changed"},
+                        {"fieldId": "created", "success": False, "error": "Field created cannot have required changed"},
+                    ]
+                },
+            ),
+            httpx.Response(204),
+        ]
+    )
+    async with _engine() as eng:
+        await eng.dialect.set_field_scheme_field_parameters("1103", field_id="summary", required=False)
+    # The single-field caller tolerates its own denial without a retry:
+    assert len(put.calls) == 1
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_merge_parameter_batch_retries_without_denied_fields():
+    _stub_probe(respx.mock, httpx.Response(200, json=_paginated([])))
+    put = respx.put(f"{SCHEMES}/fields/parameters").mock(
+        side_effect=[
+            httpx.Response(
+                400,
+                json={
+                    "results": [
+                        {"fieldId": "created", "success": False, "error": "Field created cannot have required changed"},
+                    ]
+                },
+            ),
+            httpx.Response(204),
+        ]
+    )
+    body = {
+        "created": [{"schemeIds": [1103], "parameters": {"isRequired": False}}],
+        "customfield_1": [{"schemeIds": [1103], "parameters": {"isRequired": True}}],
+    }
+    async with _engine() as eng:
+        await eng.dialect._put_field_scheme_parameters(body)
+    assert len(put.calls) == 2
+    retried = json.loads(put.calls[-1].request.content)
+    assert retried == {"customfield_1": [{"schemeIds": [1103], "parameters": {"isRequired": True}}]}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_field_scheme_fields_hides_unknown_field_rows():
+    """Ghost rows (fields Jira seeded into a new scheme but no longer knows)
+    must not flow into reflection or the FCS merge, which re-associates what
+    it reads (finding 1)."""
+    _stub_probe(respx.mock, httpx.Response(200, json=_paginated([])))
+    respx.get(f"{ROOT}/field").mock(return_value=httpx.Response(200, json=[{"id": "summary"}]))
+    respx.get(f"{ROOT}/field/search").mock(return_value=httpx.Response(200, json=_paginated([])))
+    respx.get(f"{SCHEMES}/1103/fields").mock(
+        return_value=httpx.Response(
+            200,
+            json=_paginated(
+                [
+                    {"fieldId": "summary"},
+                    {"fieldId": "customfield_10033"},  # deleted custom field: ghost row
+                    {"fieldId": "dataclassification"},
+                ]
+            ),
+        )
+    )
+    async with _engine() as eng:
+        rows = [row async for row in eng.dialect.get_field_scheme_fields("1103")]
+    assert [row["fieldId"] for row in rows] == ["summary"]

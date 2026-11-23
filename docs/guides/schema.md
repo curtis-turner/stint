@@ -103,12 +103,21 @@ class Platform(Project):
     __key__ = "PLAT"  # required
     __title__ = "Platform"
     __lead__ = "cturner@example.com"
+    __lead_role__ = "Browse"  # optional; see note below
     __style__ = "company-managed"  # or the experimental "team-managed"
     __issuetypes__ = [Bug]
 ```
 
 !!! note
     `__lead__` requires the token owner to hold the "Browse users and groups" permission. Built-in issue types (`Bug`, `Task`, ...) that you reference are **adopted**, not recreated.
+
+!!! note
+    `POST /project` grants the lead no project role. Tenants whose default
+    permission scheme grants `BROWSE_PROJECTS` only through project roles
+    leave the lead unable to see the project they own (Jira's own UI flow
+    adds the creator to a role; the REST create does not). Set
+    `__lead_role__` to an existing project role name and stint adds the
+    lead to it during apply. Company-managed projects only.
 
 ## Security schemes
 

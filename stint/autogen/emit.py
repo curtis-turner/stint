@@ -675,13 +675,14 @@ def _render_one(change: Change) -> str:
 
     if isinstance(change, CreateProject):
         desc_kv = f",\n        description={change.description!r}" if change.description else ""
+        role_kv = f",\n        lead_role={change.lead_role!r}" if change.lead_role else ""
         return (
             f"    await op.create_project(\n"
             f"        alias={change.alias!r},\n"
             f"        key={change.key!r},\n"
             f"        name={change.name!r},\n"
             f"        project_type_key={change.project_type_key!r},\n"
-            f"        lead={change.lead!r}{desc_kv},\n"
+            f"        lead={change.lead!r}{desc_kv}{role_kv},\n"
             f"    )"
         )
 

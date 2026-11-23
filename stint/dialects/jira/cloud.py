@@ -418,10 +418,14 @@ class JiraCloudDialect:
                 tabs=tuple(tabs),
             )
         if skipped:
+            # Summarize: a busy tenant has dozens of these, and listing every
+            # id on one line buries the rest of reflection's output.
+            shown = ", ".join(skipped[:3])
+            more = "" if len(skipped) <= 3 else f" (+{len(skipped) - 3} more)"
             warnings.warn(
                 f"reflection skipped {len(skipped)} team-managed synthetic "
                 f"screen(s) (their /tabs endpoint returns 400; not "
-                f"stint-managed): {', '.join(skipped)}",
+                f"stint-managed): {shown}{more}",
                 stacklevel=2,
             )
         return screens
@@ -742,10 +746,21 @@ class JiraCloudDialect:
         *,
         field_id: str,
     ) -> None:
-        await self.client.post_json(
-            f"{self.api_root}/screens/{screen_id}/tabs/{tab_id}/fields",
-            json={"fieldId": field_id},
-        )
+        try:
+            await self.client.post_json(
+                f"{self.api_root}/screens/{screen_id}/tabs/{tab_id}/fields",
+                json={"fieldId": field_id},
+            )
+        except TransportError as exc:
+            # Re-running a partially applied migration hits this exact 400
+            # for every field the first run already added ("The field with id
+            # summary already exists on the screen."). The field is on the
+            # tab, which is the declared state: treat it as done so resume
+            # picks up where it left off instead of failing on the first
+            # already-applied field.
+            if exc.status_code == 400 and "already exists on the screen" in _transport_body(exc):
+                return
+            raise
 
     # ── Screen schemes ───────────────────────────────────────────────
     async def create_screen_scheme(
@@ -1412,13 +1427,26 @@ class JiraCloudDialect:
 
         Each row carries ``fieldId``, ``parameters`` (defaults across work
         types), ``restrictedToWorkTypes``, and ``workTypeParameters``.
+
+        Rows whose ``fieldId`` the field registry doesn't know are dropped:
+        Jira seeds a brand-new v2 field scheme with associations to fields
+        its own registry no longer has (deleted custom fields,
+        ``dataclassification``). Copying those rows back onto a scheme — the
+        FCS merge does exactly that — 400s the whole association PUT. The
+        registry lookup is best-effort: when it fails, nothing is filtered.
         """
         extra_params = {"fieldId": field_ids} if field_ids else None
+        known_field_ids = await self._all_field_ids()
         async for entry in common.paginate(
             self.client,
             self._field_schemes_path(scheme_id, "fields"),
             extra_params=extra_params,
         ):
+            row_field_id = entry.get("fieldId")
+            if not row_field_id:
+                continue
+            if known_field_ids and str(row_field_id) not in known_field_ids:
+                continue
             yield entry
 
     async def associate_fields_with_field_scheme(
@@ -1440,7 +1468,7 @@ class JiraCloudDialect:
             association["restrictedToWorkTypes"] = [_as_api_int(wt) for wt in restricted_to_work_types]
         body = {field_id: [association] for field_id in field_ids}
         for batch in _field_scheme_batches(body, self.FIELD_SCHEME_BATCH_SIZE):
-            await self.client.put_json(self._field_schemes_path("fields"), json=batch)
+            await self._put_field_scheme_associations(batch)
 
     async def remove_fields_from_field_scheme(
         self,
@@ -1518,22 +1546,81 @@ class JiraCloudDialect:
         }
         if work_type_parameters:
             entry["workTypeParameters"] = work_type_parameters
-        try:
-            await self.client.put_json(
-                self._field_schemes_path("fields", "parameters"),
-                json={field_id: [entry]},
-            )
-        except TransportError as exc:
-            # The endpoint fails whole-request even when a single field
-            # legitimately cannot take the parameter — e.g. Jira refuses to
-            # change required-ness for `summary` ("Field summary cannot have
-            # required changed" / 400 with per-item results). Such a field is
-            # already effectively as-required as declared: treat that exact
-            # per-item denial as success; re-raise anything else so real
-            # failures still fail the migration.
-            if exc.status_code == 400 and _parameter_denials_are_tolerable(str(exc.args[0]) if exc.args else ""):
+        await self._put_field_scheme_parameters({field_id: [entry]})
+
+    async def _put_field_scheme_parameters(self, batch: dict[str, Any]) -> None:
+        """PUT /config/fieldschemes/fields/parameters with immutable-parameter tolerance.
+
+        Jira rejects the whole request whenever any field in it cannot take
+        the parameter (live v2 tenant, 2026-11: 64 system/custom fields, e.g.
+        "Field created cannot have required changed"). Such a field already
+        behaves as-required as declared, so with the full per-item body
+        (``TransportError.body``) the denied fields are dropped and the
+        remainder re-sent, instead of splitting every field into its own
+        request. An unparseable body or any unrecognized per-item error is a
+        real failure and re-raises.
+        """
+        pending = dict(batch)
+        # Each retry drops at least one field, so len(batch)+1 is enough to
+        # converge; the bound keeps a pathological server from looping.
+        for _ in range(len(batch) + 1):
+            try:
+                await self.client.put_json(self._field_schemes_path("fields", "parameters"), json=pending)
                 return
-            raise
+            except TransportError as exc:
+                if exc.status_code != 400:
+                    raise
+                body = _transport_body(exc)
+                failed = _failed_field_rows(body)
+                if failed is None:
+                    if _parameter_denials_are_tolerable(body):
+                        return
+                    raise
+                denied = {
+                    field_id
+                    for field_id, error in failed.items()
+                    if any(fragment in error.lower() for fragment in _TOLERABLE_PARAMETER_ERROR_FRAGMENTS)
+                }
+                if failed.keys() - denied:
+                    raise  # an unrecognized per-item failure must propagate
+                drop = denied & pending.keys()
+                if not drop:
+                    raise  # denials name fields we never sent: cannot converge
+                for field_id in drop:
+                    del pending[field_id]
+                if not pending:
+                    return
+
+    async def _put_field_scheme_associations(self, batch: dict[str, Any]) -> None:
+        """PUT /config/fieldschemes/fields with per-field "doesn't exist" tolerance.
+
+        Jira seeds a brand-new v2 field scheme with associations to fields
+        its own field registry no longer knows (deleted custom fields,
+        ``dataclassification``; live v2 tenant, 2026-11). Re-associating such
+        ids 400s the whole request with per-item "Field <id> doesn't exist"
+        rows. Those ids are dropped and the remainder re-sent; any other
+        per-item failure, or an unclassifiable body, propagates.
+        """
+        pending = dict(batch)
+        for _ in range(len(batch) + 1):
+            try:
+                await self.client.put_json(self._field_schemes_path("fields"), json=pending)
+                return
+            except TransportError as exc:
+                if exc.status_code != 400:
+                    raise
+                failed = _failed_field_rows(_transport_body(exc))
+                if failed is None:
+                    raise
+                drop = {
+                    field_id for field_id, error in failed.items() if "doesn't exist" in error.lower()
+                } & pending.keys()
+                if not drop:
+                    raise
+                for field_id in drop:
+                    del pending[field_id]
+                if not pending:
+                    return
 
     async def associate_projects_with_field_scheme(
         self,
@@ -1704,7 +1791,7 @@ class JiraCloudDialect:
                 entry["restrictedToWorkTypes"] = sorted(_as_api_int(wt) for wt in restricted)
             association_body[field_id] = [entry]
         for batch in _field_scheme_batches(association_body, self.FIELD_SCHEME_BATCH_SIZE):
-            await self.client.put_json(self._field_schemes_path("fields"), json=batch)
+            await self._put_field_scheme_associations(batch)
 
         # Set required flags: defaults from the "default" mapping, then
         # per-work-type overrides from the specific mappings.
@@ -1722,10 +1809,7 @@ class JiraCloudDialect:
                 ]
             parameter_body[field_id] = [entry]
         for batch in _field_scheme_batches(parameter_body, self.FIELD_SCHEME_BATCH_SIZE):
-            await self.client.put_json(
-                self._field_schemes_path("fields", "parameters"),
-                json=batch,
-            )
+            await self._put_field_scheme_parameters(batch)
 
     # ── Issue types ──────────────────────────────────────────────────
     async def find_issuetype_id_by_name(self, name: str) -> str | None:
@@ -1873,6 +1957,52 @@ class JiraCloudDialect:
     async def delete_project(self, *, project_id: str, project_key: str) -> None:
         """Cloud's delete-by-id is the safer call."""
         await self.client.delete(f"{self.api_root}/project/{project_id}")
+
+    async def add_project_role_actor(
+        self,
+        project_id: str,
+        *,
+        role_name: str,
+        account_id: str,
+    ) -> None:
+        """Add one user (by accountId) to a project role, resolved by name.
+
+        ``POST /project`` grants the lead no project role; tenants whose
+        default permission scheme grants ``BROWSE_PROJECTS`` only through
+        roles leave the lead unable to browse the project they own. Jira's
+        own UI flow adds the creator to a role; the REST create does not, so
+        ``__lead_role__`` reproduces that step (live-tenant observed,
+        2026-11: lead had ``CREATE_ISSUES``/``EDIT_ISSUES`` but
+        ``BROWSE_PROJECTS: false``).
+
+        Re-adding an actor that is already in the role 400s ("already in");
+        that is the idempotent re-run case and is treated as done.
+        """
+        roles = await self.client.get_json(f"{self.api_root}/project/{project_id}/role")
+        if not isinstance(roles, dict):
+            raise ConfigurationError(
+                f"add_project_role_actor: GET /project/{project_id}/role did not "
+                f"return a role-name → URL mapping (got {type(roles).__name__})."
+            )
+        role_id: str | None = None
+        for name, url in roles.items():
+            if str(name).lower() == role_name.lower():
+                role_id = str(url).rstrip("/").rsplit("/", 1)[-1]
+                break
+        if role_id is None:
+            raise ConfigurationError(
+                f"Project {project_id} has no project role named {role_name!r}. "
+                f"Existing roles: {sorted(map(str, roles))}. Check __lead_role__."
+            )
+        try:
+            await self.client.post_json(
+                f"{self.api_root}/project/{project_id}/role/{role_id}",
+                json={"user": [account_id]},
+            )
+        except TransportError as exc:
+            if exc.status_code == 400 and "already" in _transport_body(exc).lower():
+                return
+            raise
 
     async def update_project(
         self,
@@ -2316,6 +2446,20 @@ def _expect_id(result: Any, where: str) -> str:
     return str(result["id"])
 
 
+def _transport_body(exc: TransportError) -> str:
+    """The full error body when available, else the exception message.
+
+    ``TransportError.body`` carries the untruncated response text; older
+    messages (or callers constructing TransportError by hand) only have the
+    truncated text in the message string.
+    """
+    if isinstance(exc.body, str) and exc.body:
+        return exc.body
+    if exc.args and isinstance(exc.args[0], str):
+        return exc.args[0]
+    return ""
+
+
 _RETIRED_FC_HINTS = ("Cannot create a new field configuration", "use Field Scheme instead")
 
 
@@ -2353,12 +2497,42 @@ def _parameter_denials_are_tolerable(error_body: str) -> bool:
     return True
 
 
+def _failed_field_rows(error_body: str) -> dict[str, str] | None:
+    """fieldId → error text for every failed row of a per-item Jira response.
+
+    The v2 field-scheme association and parameter endpoints report per-item
+    outcomes as ``{"results": [{"fieldId", "success", "error"}, ...]}``. The
+    HTTP status is a single 400 even though only some rows failed, so callers
+    use the field ids to drop-and-retry. Returns None when the body is not
+    that shape (callers must not swallow unclassifiable errors).
+    """
+    body = error_body.strip()
+    start = body.find("{")
+    if start < 0:
+        return None
+    try:
+        parsed = json.loads(body[start:])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    results = parsed.get("results") if isinstance(parsed, dict) else None
+    if not isinstance(results, list):
+        return None
+    failed: dict[str, str] = {}
+    for row in results:
+        if not isinstance(row, dict) or row.get("success", True):
+            continue
+        field_id = str(row.get("fieldId", ""))
+        error = str(row.get("error", ""))
+        if field_id:
+            failed[field_id] = error
+    return failed
+
+
 def _is_retired_field_configuration_error(exc: TransportError) -> bool:
     """True for the specific 400 Jira returns for the retired classic API."""
-    if exc.status_code != 400 or not exc.args or not isinstance(exc.args[0], str):
+    if exc.status_code != 400:
         return False
-    body = exc.args[0]
-    return all(hint in body for hint in _RETIRED_FC_HINTS)
+    return all(hint in _transport_body(exc) for hint in _RETIRED_FC_HINTS)
 
 
 def _is_duplicate_member_400(exc: TransportError) -> bool:
@@ -2371,9 +2545,9 @@ def _is_duplicate_member_400(exc: TransportError) -> bool:
     whose *every* error message says "already exists" (and no per-field
     errors) counts. Anything else — permission, malformed id, unknown
     payload — must propagate."""
-    if exc.status_code != 400 or not exc.args or not isinstance(exc.args[0], str):
+    if exc.status_code != 400:
         return False
-    body = exc.args[0]
+    body = _transport_body(exc)
     start = body.find("{")
     if start < 0:
         return False
@@ -2410,7 +2584,7 @@ def _maybe_wrap_retired_field_configuration(exc: TransportError) -> BaseExceptio
     """
     if not _is_retired_field_configuration_error(exc):
         return exc
-    body = exc.args[0]
+    body = _transport_body(exc)
     return ConfigurationError(
         "Jira Cloud retired classic field configurations in May 2026: "
         f"{body[:200]}. "

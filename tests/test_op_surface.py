@@ -1385,3 +1385,143 @@ async def test_associate_task_polls_to_failure():
             )
     finally:
         await engine.close()
+
+
+# ── SECURITY_SCHEME_ISSUE findings 5, 7 ──────────────────────────────
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_field_configuration_scheme_resume_reapplies_mappings():
+    """The mappings PUT is deliberately ordered after the state persist; on
+    resume the existing-id early return skipped it, leaving the project's
+    field scheme without its merged associations (finding 5). The PUT is
+    idempotent, so re-apply it."""
+    state = StateFile(env="dev", jira_url=BASE)
+    state.field_configurations["default_fc"] = SimpleMapping(id="fc-1")
+    state.field_configuration_schemes["bug_fcs"] = SimpleMapping(id="fcs-1")
+    mapping_put = respx.put(
+        f"{CLOUD_ROOT}/fieldconfigurationscheme/fcs-1/mapping",
+        json__eq={
+            "mappings": [
+                {"issueTypeId": "default", "fieldConfigurationId": "fc-1"},
+            ]
+        },
+    ).mock(return_value=httpx.Response(204))
+    create_post = respx.post(f"{CLOUD_ROOT}/fieldconfigurationscheme")
+    engine = _cloud_engine()
+    try:
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.create_field_configuration_scheme(
+                alias="bug_fcs",
+                name="Bug FCS",
+                mappings={"default": "default_fc"},
+            ),
+        )
+    finally:
+        await engine.close()
+    assert mapping_put.called  # mappings re-applied on the resume path
+    assert not create_post.called  # no duplicate scheme created
+    assert state.field_configuration_schemes["bug_fcs"].id == "fcs-1"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_project_lead_role_adds_lead_to_role():
+    """POST /project grants the lead no project role; tenants granting
+    BROWSE_PROJECTS only through roles left the lead unable to see the
+    project they own (finding 7). lead_role adds the lead to the role."""
+    search = respx.get(f"{CLOUD_ROOT}/user/search", params={"query": "lead@acme.com"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"accountId": "acc-999", "emailAddress": "lead@acme.com"}],
+        )
+    )
+    respx.post(f"{CLOUD_ROOT}/project").mock(return_value=httpx.Response(201, json={"id": "p-1"}))
+    respx.get(f"{CLOUD_ROOT}/project/p-1/role").mock(
+        return_value=httpx.Response(200, json={"Browse": f"{CLOUD_ROOT}/project/p-1/role/10001"})
+    )
+    role_post = respx.post(f"{CLOUD_ROOT}/project/p-1/role/10001").mock(return_value=httpx.Response(200, json={}))
+    state = StateFile(env="dev", jira_url=BASE)
+    engine = _cloud_engine()
+    try:
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.create_project(
+                alias="bug_tracker",
+                key="BUG",
+                name="Bug Tracker",
+                project_type_key="software",
+                lead="lead@acme.com",
+                lead_role="Browse",
+            ),
+        )
+    finally:
+        await engine.close()
+    assert search.called
+    assert role_post.called
+    assert _sent_json(role_post.calls[0]) == {"user": ["acc-999"]}
+    assert state.projects["bug_tracker"].id == "p-1"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_project_resume_reapplies_lead_role():
+    """A create that persisted the project but failed before the role add
+    must re-apply it on resume (the role add is idempotent)."""
+    respx.get(f"{CLOUD_ROOT}/user/search", params={"query": "lead@acme.com"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"accountId": "acc-999", "emailAddress": "lead@acme.com"}],
+        )
+    )
+    respx.get(f"{CLOUD_ROOT}/project/p-1/role").mock(
+        return_value=httpx.Response(200, json={"Browse": f"{CLOUD_ROOT}/project/p-1/role/10001"})
+    )
+    role_post = respx.post(f"{CLOUD_ROOT}/project/p-1/role/10001").mock(return_value=httpx.Response(200, json={}))
+    project_post = respx.post(f"{CLOUD_ROOT}/project")
+    state = StateFile(env="dev", jira_url=BASE)
+    state.projects["bug_tracker"] = ProjectMapping(id="p-1", key="BUG", style="company-managed")
+    engine = _cloud_engine()
+    try:
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.create_project(
+                alias="bug_tracker",
+                key="BUG",
+                name="Bug Tracker",
+                project_type_key="software",
+                lead="lead@acme.com",
+                lead_role="Browse",
+            ),
+        )
+    finally:
+        await engine.close()
+    assert not project_post.called
+    assert role_post.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_project_lead_role_rejected_for_team_managed():
+    state = StateFile(env="dev", jira_url=BASE)
+    engine = _cloud_engine()
+    try:
+        with pytest.raises(ConfigurationError, match="lead_role"):
+            await _run_in_ctx(
+                engine,
+                state,
+                lambda: op.create_project(
+                    alias="bug_tracker",
+                    key="BUG",
+                    name="Bug Tracker",
+                    project_type_key="software",
+                    lead="acc-123",
+                    style="team-managed",
+                    lead_role="Browse",
+                ),
+            )
+    finally:
+        await engine.close()

@@ -298,9 +298,9 @@ async def test_paginate_self_referential_next_page_that_resolves_recovers():
     )
     items = await _collect(common.paginate(_client(), TEST_PATH))
     # The stale envelope carried page-1's rows a second time ('a' twice) —
-    # what the real stale-glitch serves; "b" arrives after recovery. Callers
-    # dedupe rows by field id (items dicts), so this is the documented cost.
-    assert [item["id"] for item in items] == ["a", "a", "b"]
+    # what the real stale-glitch serves. The page-overlap drop now suppresses
+    # the duplicate: consecutive identical rows between pages are skipped.
+    assert [item["id"] for item in items] == ["a", "b"]
     assert cursor_route.call_count == 2
 
 
@@ -320,3 +320,35 @@ async def test_paginate_clamped_startat_echo_is_end_of_pages():
     )
     items = await _collect(common.paginate(_client(), TEST_PATH))
     assert [item["id"] for item in items] == ["a", "b"]  # no duplicates, no raise
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_paginate_drops_lagging_server_page_overlap():
+    """A lagging Jira endpoint serves the previous page under the next
+    startAt (observed live on /screens and the v2 field-scheme fields
+    endpoints): every row came back twice (finding 9). The overlap between
+    the previous page's suffix and the next page's prefix is skipped, while
+    page-size accounting still advances by the fetched count."""
+    respx.get(f"{BASE}{TEST_PATH}").mock(
+        side_effect=[
+            httpx.Response(200, json=_paginated([{"id": "a"}, {"id": "b"}], start_at=0, is_last=False)),
+            # Lagging server: asked for startAt=2, served rows 0-1 again.
+            httpx.Response(200, json=_paginated([{"id": "a"}, {"id": "b"}], start_at=2, is_last=False)),
+            # Caught up: rows 2-3, sharing the boundary row only.
+            httpx.Response(200, json=_paginated([{"id": "b"}, {"id": "c"}], start_at=4, is_last=False)),
+            httpx.Response(200, json=_paginated([{"id": "c"}], start_at=5, is_last=True)),
+        ]
+    )
+    items = await _collect(common.paginate(_client(), TEST_PATH, page_size=2))
+    assert [item["id"] for item in items] == ["a", "b", "c"]
+
+
+def test_drop_page_overlap_partial_suffix_match():
+    """Only the boundary rows overlap: a full-page repeat and a one-row
+    boundary are both handled; distinct pages are returned unchanged."""
+    prev = [{"id": "1"}, {"id": "2"}]
+    assert common._drop_page_overlap(prev, [{"id": "1"}, {"id": "2"}]) == []
+    assert common._drop_page_overlap(prev, [{"id": "2"}, {"id": "3"}]) == [{"id": "3"}]
+    assert common._drop_page_overlap(prev, [{"id": "3"}]) == [{"id": "3"}]
+    assert common._drop_page_overlap(None, [{"id": "3"}]) == [{"id": "3"}]

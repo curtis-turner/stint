@@ -75,6 +75,19 @@ class ProjectMeta(StintMeta):
                 f"Project {name!r} references a SecurityScheme with no alias; give the declaration an explicit alias."
             )
 
+        lead_role = getattr(cls, "__lead_role__", None)
+        if lead_role is not None:
+            if not isinstance(lead_role, str) or not lead_role.strip():
+                raise ConfigurationError(
+                    f"Project {name!r} has an invalid __lead_role__ {lead_role!r}; "
+                    f"use the name of an existing Jira project role, or omit it."
+                )
+            if style == "team-managed":
+                raise ConfigurationError(
+                    f"Project {name!r} is team-managed but declares __lead_role__; "
+                    f"project-role actors are a company-managed scheme surface."
+                )
+
         # Track inverse linkage: each issuetype learns which project(s) include
         # it. Used by AsyncSession.add() to infer project when unambiguous.
         for it in issuetypes:
@@ -95,6 +108,12 @@ class Project(BaseModel, metaclass=ProjectMeta):
       Jira Cloud accountId at apply time via the user-search API. A raw
       accountId (no ``@``) is passed through unchanged. Resolution needs the
       "Browse users and groups" permission.
+    - ``__lead_role__``: optional name of an existing Jira project role
+      (e.g. ``"Browse"``) the lead is added to at apply time. ``POST
+      /project`` does not grant the lead any role, and tenants whose
+      permission scheme grants ``BROWSE_PROJECTS`` only through project
+      roles leave the lead unable to see the project they own (adding the
+      lead to a role is what Jira's own UI flow does). CMP only.
     - ``__style__``: ``"company-managed"`` (default) or ``"team-managed"`` (Cloud only).
     - ``__issuetypes__``: list of IssueType subclasses included in this project.
     - ``__security_scheme__``: optional SecurityScheme declaration to
@@ -107,5 +126,6 @@ class Project(BaseModel, metaclass=ProjectMeta):
 
     # Set by ProjectMeta after class creation; declared for the type checker.
     __title__: ClassVar[str]
+    __lead_role__: ClassVar[str | None] = None
 
     _ALLOWED_STYLES: ClassVar[tuple[str, ...]] = _ALLOWED_STYLES

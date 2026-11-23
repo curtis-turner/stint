@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from stint.autogen.desired import (
     DesiredSnapshot,
 )
+from stint.fields import jira_system_field_id
 
 if TYPE_CHECKING:
     from stint.state.file import StateFile
@@ -259,6 +260,7 @@ class CreateProject(Change):
     project_type_key: str
     lead: str
     description: str
+    lead_role: str | None = None
 
 
 @dataclass
@@ -920,6 +922,7 @@ def _diff_projects(
                     project_type_key=want.project_type_key,
                     lead=want.lead,
                     description=want.description,
+                    lead_role=want.lead_role,
                 )
             )
             if want.issuetype_scheme is not None:
@@ -1307,8 +1310,8 @@ def _missing_screen_fields(
 ) -> list[str]:
     """L21 helper: declared screen fields (aliases) whose resolved Jira field
     id appears on no tab of the reflected screen. Resolution goes through
-    state (custom-field alias → id); anything else is treated as a Jira
-    field id directly (system fields are addressed by name)."""
+    state (custom-field alias → id); anything else is normalized to Jira's
+    system-field id the same way ``op.add_screen_tab_field`` writes it."""
     actual_fields: set[str] = set()
     for tab in actual.tabs:
         actual_fields.update(tab.fields)
@@ -1316,7 +1319,7 @@ def _missing_screen_fields(
     for tab in want.tabs:
         for ref in tab.field_refs:
             mapping = state.custom_fields.get(ref)
-            field_id = mapping.id if mapping is not None else ref
+            field_id = mapping.id if mapping is not None else jira_system_field_id(ref)
             if field_id not in actual_fields:
                 missing.append(f"{ref!r} ({field_id!r})")
     return missing
@@ -1329,11 +1332,12 @@ def _field_configuration_item_drift(
 ) -> str | None:
     """L21 helper for existing field configurations: describe declared-item
     drift that reflection can see but the diff cannot act on (op-level item
-    updates for existing FCs need an alias→field_id round-trip)."""
+    updates for existing FCs need an alias→field_id round-trip). Non-state
+    references normalize to Jira's system-field id like the ops write them."""
     problems: list[str] = []
     for item in want.items:
         mapping = state.custom_fields.get(item.field_alias)
-        field_id = mapping.id if mapping is not None else item.field_alias
+        field_id = mapping.id if mapping is not None else jira_system_field_id(item.field_alias)
         existing = actual.items.get(field_id)
         if existing is None:
             problems.append(f"declared item {item.field_alias!r} ({field_id!r}) is not in the Jira configuration")
