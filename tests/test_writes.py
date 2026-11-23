@@ -290,6 +290,138 @@ def test_project_meta_sets_projects_on_issuetype():
     assert "PLAT" in p.Bug.__projects__
 
 
+# ── Typed system fields: duedate and parent (#45) ────────────────────
+def _workitem_model():
+    """Local model declaring the typed system fields (the example fixture
+    doesn't declare them, and Pydantic rejects unknown kwargs)."""
+    from datetime import date
+
+    import examples.company_managed.platform_schema as p
+
+    class WorkItem(p.IssueType):
+        __alias__ = "workitem"
+        summary: str
+        duedate: date | None = None
+        parent: str | None = None
+
+    return WorkItem
+
+
+def _workitem_state() -> StateFile:
+    state = _platform_state()
+    state.issuetypes["workitem"] = SimpleMapping(id="10012")
+    return state
+
+
+def test_insert_payload_sends_duedate_isoformat():
+    """`duedate: date | None` needs no code: the generic system-field
+    passthrough already emits YYYY-MM-DD (regression coverage for the
+    documented behavior)."""
+    from datetime import date
+
+    model = _workitem_model()
+    state = _workitem_state()
+    item = model(summary="x", duedate=date(2026, 12, 1))
+    body = build_insert_payload(item, state, is_cloud=True, project_key="PLAT")
+    assert body["fields"]["duedate"] == "2026-12-01"
+
+
+def test_update_payload_clears_duedate_with_null():
+    from datetime import date
+
+    model = _workitem_model()
+    state = _workitem_state()
+    item = model(summary="x", duedate=date(2026, 12, 1), key="PLAT-1")
+    item.duedate = None
+    body = build_update_payload(item, state, is_cloud=True, dirty={"duedate"})
+    assert body["fields"] == {"duedate": None}
+
+
+def test_hydrate_coerces_duedate_string_to_date():
+    from datetime import date
+
+    model = _workitem_model()
+    item = hydrate(model, {"key": "PLAT-1", "fields": {"summary": "x", "duedate": "2026-12-01"}}, _workitem_state())
+    assert item.duedate == date(2026, 12, 1)
+
+
+def test_insert_payload_wraps_parent_key():
+    """parent must be an object with a key (Cloud and DC), not a bare string."""
+    model = _workitem_model()
+    state = _workitem_state()
+    item = model(summary="x", parent="PLAT-9")
+    body = build_insert_payload(item, state, is_cloud=True, project_key="PLAT")
+    assert body["fields"]["parent"] == {"key": "PLAT-9"}
+
+
+def test_update_payload_wraps_parent_key():
+    """Moving a sub-task to a new parent goes through the same PUT shape."""
+    model = _workitem_model()
+    state = _workitem_state()
+    item = model(summary="x", parent="PLAT-1", key="PLAT-2")
+    item.parent = "PLAT-10"
+    body = build_update_payload(item, state, is_cloud=True, dirty={"parent"})
+    assert body["fields"] == {"parent": {"key": "PLAT-10"}}
+
+
+def test_hydrate_extracts_parent_key_from_object():
+    model = _workitem_model()
+    item = hydrate(
+        model,
+        {
+            "key": "PLAT-2",
+            "fields": {"summary": "x", "parent": {"id": "10001", "key": "PLAT-9", "fields": {"summary": "u"}}},
+        },
+        _workitem_state(),
+    )
+    assert item.parent == "PLAT-9"
+
+
+def test_subtask_insert_without_parent_raises_before_request():
+    """A type declared __subtask__ = True needs a parent on insert; the
+    guard fires in the payload builder, before any request is sent."""
+    model = _workitem_model()
+
+    class FollowUp(model):
+        __alias__ = "followup"
+        __subtask__ = True
+
+    state = _workitem_state()
+    state.issuetypes["followup"] = SimpleMapping(id="10011")
+    subtask = FollowUp(summary="x")
+    with pytest.raises(ConfigurationError) as e:
+        build_insert_payload(subtask, state, is_cloud=True, project_key="PLAT")
+    message = str(e.value)
+    assert "parent" in message
+    assert "__subtask__" in message
+
+
+def test_subtask_insert_with_parent_passes_guard():
+    model = _workitem_model()
+
+    class FollowUp(model):
+        __alias__ = "followup"
+        __subtask__ = True
+
+    state = _workitem_state()
+    state.issuetypes["followup"] = SimpleMapping(id="10011")
+    subtask = FollowUp(summary="x", parent="PLAT-9")
+    body = build_insert_payload(subtask, state, is_cloud=True, project_key="PLAT")
+    assert body["fields"]["parent"] == {"key": "PLAT-9"}
+
+
+def test_non_subtask_type_has_no_parent_guard():
+    """The default is False: a model without __subtask__ treats parent as an
+    ordinary optional field and a parentless insert is not blocked."""
+    import examples.company_managed.platform_schema as p
+
+    state = _platform_state()
+    bug = p.Bug(summary="x", reporter="alice", severity="S1")
+    assert p.Bug.__subtask__ is False
+    body = build_insert_payload(bug, state, is_cloud=True, project_key="PLAT")
+    assert "parent" not in body["fields"]
+
+
 # ── add / delete plumbing (no commit) ────────────────────────────────
 def test_add_rejects_instance_with_existing_key():
     import examples.company_managed.platform_schema as p

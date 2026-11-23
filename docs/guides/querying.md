@@ -89,6 +89,46 @@ except PartialCommitError as exc:
 
 Each result also names the operation kind and the affected instance, so you can reconcile manually and re-commit the survivors.
 
+## System fields: duedate and parent
+
+Beyond `summary`, `description`, `priority`, `reporter` and `assignee`, models can declare the typed system fields `duedate` and `parent`:
+
+```python
+from datetime import date
+
+
+class WorkItem(IssueType):
+    __alias__ = "workitem"
+    summary: str
+    duedate: date | None = None  # system "duedate", sent as YYYY-MM-DD
+
+
+class FollowUp(IssueType):  # a sub-task type
+    __alias__ = "followup"
+    __subtask__ = True
+    summary: str
+    parent: str | None = None  # parent issue key, e.g. "PLAT-9"
+```
+
+Behavior:
+
+- `duedate` is sent as `YYYY-MM-DD`; setting it to `None` on update clears it (sends `null`), and it's queryable in JQL.
+- `parent` is sent as `{"key": ...}` and hydrated back as the parent's key. It also works for moving a sub-task to a new parent on update.
+- A model with `__subtask__ = True` must carry a `parent` on insert; stint raises a `ConfigurationError` before the request is sent. Types without the flag treat `parent` as an ordinary optional field.
+
+## Other system fields: the passthrough
+
+The payload and hydration layers pass any unrecognized attribute name through to Jira as a system field of the same name. Fields stint knows the JSON shapes of are translated (selects, users, dates, parent, ...); bare-scalar system fields such as `environment` work as plain attributes without needing a stint release:
+
+```python
+class Patch(IssueType):
+    __alias__ = "patch"
+    summary: str
+    environment: str | None = None  # sent as-is, read back as-is
+```
+
+Object-shaped system fields (`components`, `fixVersions`) also pass through, but the caller supplies the raw Jira JSON shape (e.g. `[{"name": "Backend"}]`) and gets it back the same way; those may gain typed support later. Check the create/update screen carries the field, or Jira will reject the request.
+
 ## Descriptions: Atlassian Document Format
 
 Jira descriptions are ADF documents, not plain text. The [`stint.query.adf`](../api/query.md) module wraps plain text going in and parses it coming back:
