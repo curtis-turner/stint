@@ -865,3 +865,108 @@ async def test_update_issue_security_scheme_sends_changed_fields():
         await eng.dialect.update_issue_security_scheme("42", name="New Name")
     assert put_route.call_count == 1
     assert json.loads(put_route.calls[0].request.read()) == {"name": "New Name"}
+
+
+# ── SECURITY_SCHEME_ISSUE findings 3, 4, 7 ───────────────────────────
+@pytest.mark.asyncio
+@respx.mock
+async def test_transport_error_carries_full_body_and_truncated_message():
+    """Dialect helpers classify errors by parsing the JSON body; the message
+    truncates at 200 chars, which made multi-item bodies unparseable and a
+    tolerable error surfaced as a failure (finding 3)."""
+    from stint.exceptions import TransportError
+
+    long_results = {
+        "results": [
+            {"fieldId": f"field_{i}", "success": False, "error": "Field x cannot have required changed"}
+            for i in range(40)
+        ]
+    }
+    respx.post(f"{CLOUD_ROOT}/fieldconfiguration").mock(
+        return_value=httpx.Response(400, json=long_results),
+    )
+    engine = _cloud_engine()
+    try:
+        with pytest.raises(TransportError) as exc_info:
+            await engine.dialect.create_field_configuration(name="X")
+    finally:
+        await engine.close()
+    body = exc_info.value.body or ""
+    assert len(body) > 200  # full body kept
+    # The human-readable message keeps its 200-char truncation.
+    assert "field_39" not in str(exc_info.value)
+    assert "field_39" in body
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_add_screen_tab_field_tolerates_already_exists_400():
+    """Re-running a partially applied migration hits "The field with id
+    summary already exists on the screen." for every field the first run
+    added; resume must treat that as done, not fail (finding 4)."""
+    from stint.exceptions import TransportError
+
+    post = respx.post(f"{CLOUD_ROOT}/screens/11655/tabs/11661/fields").mock(
+        side_effect=[
+            httpx.Response(
+                400,
+                json={"errors": {"fieldId": "The field with id summary already exists on the screen."}},
+            ),
+            httpx.Response(400, json={"errors": {"fieldId": "Screen is locked"}}),
+        ]
+    )
+    async with _cloud_engine() as eng:
+        await eng.dialect.add_screen_tab_field("11655", "11661", field_id="summary")
+        with pytest.raises(TransportError):
+            await eng.dialect.add_screen_tab_field("11655", "11661", field_id="summary")
+    assert len(post.calls) == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_add_project_role_actor_resolves_role_by_name():
+    """POST /project grants the lead no role; __lead_role__ adds the lead to
+    a named role so tenants granting BROWSE_PROJECTS only through roles
+    don't strand the lead (finding 7)."""
+    roles_url = respx.get(f"{CLOUD_ROOT}/project/12345/role").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "Browse": f"{CLOUD_ROOT}/project/12345/role/10001",
+                "atlassian-addons-project-access": f"{CLOUD_ROOT}/project/12345/role/10002",
+            },
+        )
+    )
+    post = respx.post(f"{CLOUD_ROOT}/project/12345/role/10001").mock(return_value=httpx.Response(200, json={}))
+    async with _cloud_engine() as eng:
+        await eng.dialect.add_project_role_actor("12345", role_name="browse", account_id="acct-1")
+    assert roles_url.called
+    assert post.called
+    assert json.loads(post.calls[0].request.content) == {"user": ["acct-1"]}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_add_project_role_actor_unknown_role_raises_with_roles():
+    respx.get(f"{CLOUD_ROOT}/project/12345/role").mock(
+        return_value=httpx.Response(200, json={"Browse": f"{CLOUD_ROOT}/project/12345/role/10001"})
+    )
+    from stint.exceptions import ConfigurationError
+
+    async with _cloud_engine() as eng:
+        with pytest.raises(ConfigurationError, match="no project role named 'Admins'"):
+            await eng.dialect.add_project_role_actor("12345", role_name="Admins", account_id="acct-1")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_add_project_role_actor_tolerates_already_in_role():
+    respx.get(f"{CLOUD_ROOT}/project/12345/role").mock(
+        return_value=httpx.Response(200, json={"Browse": f"{CLOUD_ROOT}/project/12345/role/10001"})
+    )
+    post = respx.post(f"{CLOUD_ROOT}/project/12345/role/10001").mock(
+        return_value=httpx.Response(400, json={"errorMessages": ["User 'acct-1' is already in the role."]})
+    )
+    async with _cloud_engine() as eng:
+        await eng.dialect.add_project_role_actor("12345", role_name="Browse", account_id="acct-1")
+    assert post.called

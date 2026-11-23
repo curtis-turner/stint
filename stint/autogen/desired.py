@@ -149,6 +149,7 @@ class DesiredProject:
     issuetype_screen_scheme: str | None  # alias
     field_configuration_scheme: str | None  # alias
     security_scheme: str | None  # alias
+    lead_role: str | None  # project role name the lead is added to (CMP only)
 
 
 @dataclass
@@ -420,6 +421,7 @@ def build_desired_snapshot(
             issuetype_screen_scheme=itss_alias,
             field_configuration_scheme=fcs_alias,
             security_scheme=security_scheme_of_project.get(project_key),
+            lead_role=getattr(proj_cls, "__lead_role__", None),
         )
     # ── Security schemes ─────────────────────────────────────────────
     for alias, scheme in reg.security_schemes.items():

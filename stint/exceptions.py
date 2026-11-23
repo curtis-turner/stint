@@ -19,11 +19,24 @@ class TransportError(StintError):
 
     ``status_code`` is the HTTP status when the error came from a response;
     ``None`` for connection-level failures with no response.
+
+    ``body`` is the full response body when there was one (untruncated).
+    The human-readable message truncates at 200 chars, but dialect helpers
+    that classify errors parse the JSON here — multi-item Jira responses
+    (per-field parameter denials, per-field association failures) exceed the
+    truncated message, so parse ``body``, never the message.
     """
 
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        body: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.body = body
 
 
 class AuthenticationError(StintError):

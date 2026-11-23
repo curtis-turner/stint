@@ -191,8 +191,15 @@ class JiraHTTPClient:
     def _unwrap(self, response: httpx2.Response, *, expect_json: bool = True) -> Any:
         status = response.status_code
         url = self._display_url(response.request.url)
+        # Keep the full body on the exception: dialect helpers classify
+        # errors by parsing the JSON in it (per-field parameter denials,
+        # per-field association failures). Only the human-readable message
+        # truncates — a 200-char cut turns multi-item JSON into something
+        # unparseable and a tolerable error would surface as a failure.
+        full_body = response.text
+        truncated = full_body[:200]
         if status == 401:
-            raise AuthenticationError(f"401 from {url}: {response.text[:200]}")
+            raise AuthenticationError(f"401 from {url}: {truncated}")
         if status == 403:
             raise PermissionError(
                 f"403 from {url}: likely insufficient permission. "
@@ -202,13 +209,15 @@ class JiraHTTPClient:
             raise NotFoundError(f"404 from {url}")
         if 500 <= status < 600:
             raise TransportError(
-                f"{status} from {url}: {response.text[:200]}",
+                f"{status} from {url}: {truncated}",
                 status_code=status,
+                body=full_body,
             )
         if status >= 400:
             raise TransportError(
-                f"{status} from {url}: {response.text[:200]}",
+                f"{status} from {url}: {truncated}",
                 status_code=status,
+                body=full_body,
             )
         if not expect_json:
             return None
@@ -220,6 +229,7 @@ class JiraHTTPClient:
             # Captive portals, proxies, or a wrong base_url can answer 2xx
             # with HTML/text. Surface it as a StintError, not a raw traceback.
             raise TransportError(
-                f"non-JSON response from {url}: {response.text[:200]}",
+                f"non-JSON response from {url}: {truncated}",
                 status_code=status,
+                body=full_body,
             ) from exc

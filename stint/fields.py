@@ -129,6 +129,19 @@ class ReadOnlyField(_FieldType):
 _SELECT_TYPES = (SelectField, MultiSelectField, RadioButtonsField, CheckboxesField)
 
 
+def jira_system_field_id(ref: str) -> str:
+    """Normalize a field reference that is not a state alias to a Jira field id.
+
+    Custom fields resolve through state by alias; system fields ("Summary",
+    "Description", ...) are not in state and are addressed by their Jira
+    field id, which is the display name lowercased with spaces stripped
+    ("Summary" -> "summary"). Shared so the screen/field-configuration ops
+    (which write this form) and the autogen drift helpers (which compare
+    against it) can never disagree.
+    """
+    return ref.replace(" ", "").lower()
+
+
 @dataclass(frozen=False)
 class CustomField:
     """A custom field declaration. Auto-registers with the global registry on creation."""
