@@ -82,7 +82,15 @@ class Checks:
 async def build_state(engine, base_url: str, project_key: str) -> StateFile:
     """Reflect the tenant and build the minimal in-memory state the data
     plane needs: the target project plus global issue-type ids. No schema
-    module, no state file — the same name-matching `stint stamp` does."""
+    module, no state file — the same name-matching `stint stamp` does.
+
+    Name-matching rules borrowed from the stamp algorithm
+    (`stint/autogen/stamp.py`): project-scoped (team-managed) issue types are
+    ignored — /issuetype returns them alongside global ones, several can
+    share a display name (one per TMP project), and their ids are invalid
+    for POST /issue elsewhere (observed live: "Specify a valid issue type").
+    Ambiguous global names are refused rather than bound arbitrarily.
+    """
     snapshot = await engine.dialect.reflect()
     state = StateFile(env="smoke", jira_url=base_url)
 
@@ -97,15 +105,42 @@ async def build_state(engine, base_url: str, project_key: str) -> StateFile:
         )
     state.projects[project_key] = ProjectMapping(id=proj.id, key=proj.key)
 
-    by_name = {it.name.lower(): it for it in snapshot.issuetypes.values()}
+    globals_by_name: dict[str, list] = {}
+    for it in snapshot.issuetypes.values():
+        if it.project_scoped:
+            continue
+        globals_by_name.setdefault(it.name.lower(), []).append(it)
+
+    # What the project can actually create (createmeta): a global type the
+    # project's issue-type scheme doesn't carry would still 400 mid-smoke.
+    meta = await engine.client.get_json(
+        f"{engine.dialect.api_root}/issue/createmeta",
+        params={"projectKeys": project_key},
+    )
+    creatable = {str(t.get("name", "")).lower() for p in meta.get("projects", []) for t in p.get("issuetypes", [])}
+
     for alias in (SmokeTask.__alias__, SmokeSubtask.__alias__):
-        it = by_name.get(alias.lower())
+        candidates = globals_by_name.get(alias.lower()) or []
+        if len(candidates) > 1:
+            raise SystemExit(
+                f"issue type name {alias!r} matches multiple global issue types "
+                f"({[c.id for c in candidates]}); refusing to guess. Rename the "
+                f"sandbox type or pass --task-type / --subtask-type."
+            )
+        it = candidates[0] if candidates else None
         if it is None:
             raise SystemExit(
-                f"issue type {alias!r} not found on the tenant (visible: "
-                f"{sorted(by_name)}). Pass --task-type / --subtask-type to match "
-                f"the sandbox project's type names."
+                f"issue type {alias!r} not found on the tenant (global types: "
+                f"{sorted(globals_by_name)}). Pass --task-type / --subtask-type "
+                f"to match the sandbox project's type names."
             )
+        if alias.lower() not in creatable:
+            raise SystemExit(
+                f"issue type {alias!r} exists globally (id {it.id}) but is not "
+                f"creatable on {project_key!r} (creatable: {sorted(creatable)}). "
+                f"Add it to the project's issue-type scheme or pick another project."
+            )
+        print(f"state:   {alias!r} -> issuetype id {it.id}")
         state.issuetypes[alias] = SimpleMapping(id=it.id)
     return state
 
@@ -124,6 +159,20 @@ async def run(args: argparse.Namespace) -> int:
         checks.check(label, False, detail)
         return 1
 
+    async def commit(session: AsyncSession, *instances: IssueType) -> None:
+        """Commit, recording every successful insert for cleanup even when
+        the batch raises PartialCommitError (those instances exist in Jira)."""
+        try:
+            await session.commit()
+        except PartialCommitError as exc:
+            for result in exc.results:
+                if result.success and result.instance.key:
+                    created.append(result.instance)
+            raise
+        for instance in instances:
+            if instance.key:
+                created.append(instance)
+
     try:
         state = await build_state(engine, args.url, args.project_key)
         print(f"tenant:  {args.url}")
@@ -136,8 +185,7 @@ async def run(args: argparse.Namespace) -> int:
                 # 1. Insert a task carrying a duedate.
                 task = SmokeTask(summary="smoke: duedate/parent parent", duedate=target)
                 session.add(task, project=args.project_key)
-                await session.commit()
-                created.append(task)
+                await commit(session, task)
                 task_key = task.key
                 if not task_key:
                     return bail("insert task with duedate", "no key assigned")
@@ -173,8 +221,7 @@ async def run(args: argparse.Namespace) -> int:
                 # 4. Insert the sub-task under the task.
                 sub = SmokeSubtask(summary="smoke: duedate/parent subtask", duedate=target, parent=task_key)
                 session.add(sub, project=args.project_key)
-                await session.commit()
-                created.append(sub)
+                await commit(session, sub)
                 sub_key = sub.key
                 if not sub_key:
                     return bail("insert subtask with parent + duedate", "no key assigned")
@@ -205,8 +252,7 @@ async def run(args: argparse.Namespace) -> int:
                 # 7. Move the sub-task to a second parent.
                 task_b = SmokeTask(summary="smoke: second parent")
                 session.add(task_b, project=args.project_key)
-                await session.commit()
-                created.append(task_b)
+                await commit(session, task_b)
                 task_b_key = task_b.key
                 if not task_b_key:
                     return bail("parent moved on update", "second task insert failed")
@@ -251,8 +297,8 @@ async def run(args: argparse.Namespace) -> int:
                     print(f"cleanup FAILED: {e}; delete manually: {keys}", file=sys.stderr)
             elif args.keep:
                 print(f"kept {[i.key for i in created if i.key]} (--keep)")
-    except (NotFoundError, ConfigurationError) as e:
-        print(f"ABORT: {e}", file=sys.stderr)
+    except (NotFoundError, ConfigurationError, PartialCommitError) as e:
+        print(f"ABORT: {type(e).__name__}: {e}", file=sys.stderr)
         return 1
     finally:
         await engine.close()
