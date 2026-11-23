@@ -6,6 +6,13 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-23
+
+### Added
+
+- Data plane: attachments
+  ([#47](https://github.com/curtis-turner/stint/issues/47)). `session.attach(issue, path_or_bytes, filename=...)` uploads multipart with the required `X-Atlassian-Token: no-check` header; size limits and server errors surface as `StintError` subclasses. `session.attachments(issue)` lists in one GET (`fields=attachment`, no per-file request); `session.download_attachment(id)` returns bytes, following the CDN redirect the content endpoint may serve; `session.delete_attachment(id)` deletes. `session.replace_attachment(issue, file, filename=...)` offers the regenerated-export pattern: delete same-named attachments, then upload the new one.
+
 ## [0.13.0] - 2026-11-23
 
 ### Added
@@ -849,7 +856,8 @@ end-to-end against Jira Data Center and Jira Cloud.
 - TMP awareness: project style tracked in state, CMP-only ops raise
   `UnsupportedTMPOpError` with a deep link to the Jira UI.
 
-[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/curtis-turner/stint/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/curtis-turner/stint/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/curtis-turner/stint/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/curtis-turner/stint/compare/v0.10.0...v0.11.0
