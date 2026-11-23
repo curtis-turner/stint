@@ -6,6 +6,8 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-23
+
 ### Added
 
 - Data plane: `parent` and `duedate` as typed system fields on issue models
@@ -827,7 +829,8 @@ end-to-end against Jira Data Center and Jira Cloud.
 - TMP awareness: project style tracked in state, CMP-only ops raise
   `UnsupportedTMPOpError` with a deep link to the Jira UI.
 
-[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/curtis-turner/stint/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/curtis-turner/stint/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/curtis-turner/stint/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/curtis-turner/stint/compare/v0.7.0...v0.8.0
