@@ -261,17 +261,21 @@ async def build_state(engine, base_url: str, project_key: str, args: argparse.Na
     # A global type the project's scheme doesn't carry would still 400
     # mid-smoke (observed live: "Specify a valid issue type"), and a required
     # custom field would too (observed live: "Severity is required.").
+    # Identity/system fields stint's payload builder handles automatically
+    # (project + issuetype injected from state, reporter stripped on insert)
+    # are not the caller's problem — createmeta still lists them required.
     meta = await engine.client.get_json(
         f"{engine.dialect.api_root}/issue/createmeta",
         params={"projectKeys": project_key, "expand": "projects.issuetypes.fields"},
     )
+    handled_by_stint = {"summary", "project", "issuetype", "reporter"}
     creatable: list[dict[str, Any]] = []
     for p in meta.get("projects", []):
         for t in p.get("issuetypes", []):
             required = [
                 (fid, str(f.get("name", fid)))
                 for fid, f in (t.get("fields") or {}).items()
-                if fid != "summary" and f.get("required")
+                if fid not in handled_by_stint and f.get("required")
             ]
             creatable.append({"name": str(t.get("name", "")), "subtask": bool(t.get("subtask")), "required": required})
 
