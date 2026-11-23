@@ -172,6 +172,17 @@ await session.delete_attachment(files[0].id)
 await session.replace_attachment(bug, "export.csv")  # deletes same-named files, then uploads
 ```
 
+## Changelog
+
+```python
+async for change in session.changelog(bug):
+    print(change.created, change.author, change.field, change.from_value, "->", change.to_value)
+```
+
+- Paginates the changelog endpoint; one `ChangeItem(created, author, field, from_value, to_value)` per changed field per event.
+- Custom field ids are mapped back to declared aliases where the state file knows them (`customfield_10044` -> `bug_severity`), so audit and migration exports speak the schema's language.
+- `from_value`/`to_value` prefer the human-readable strings Jira records; a freshly-set value has `from_value=None`.
+
 ## System fields: duedate and parent
 
 Beyond `summary`, `description`, `priority`, `reporter` and `assignee`, models can declare the typed system fields `duedate` and `parent`:
