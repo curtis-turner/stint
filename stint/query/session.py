@@ -32,6 +32,7 @@ Moving to the current status is a no-op, so sync loops stay idempotent.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, cast
@@ -91,6 +92,24 @@ class Comment:
     author: str
     created: str
     body_text: str
+
+
+@dataclass
+class ChangeItem:
+    """One field change from the issue's changelog.
+
+    ``field`` is the attribute name where possible: custom field ids are
+    mapped back to their declared aliases when the state file knows them
+    (``customfield_10044`` -> ``bug_severity``), otherwise the raw id or
+    system field name. ``from_value``/``to_value`` prefer the human-readable
+    strings Jira records; a fresh value has ``from_value=None``.
+    """
+
+    created: str
+    author: str
+    field: str
+    from_value: str | None
+    to_value: str | None
 
 
 @dataclass
@@ -482,6 +501,34 @@ class AsyncSession:
         key = self._issue_key_of(issue)
         await self.engine.dialect.delete_comment(key, comment_id)
 
+    # ── Changelog ────────────────────────────────────────────────────
+    async def changelog(self, issue: IssueType | str) -> AsyncIterator[ChangeItem]:
+        """Yield the issue's field changes, oldest page first, paginated.
+
+        Custom field ids are mapped back to their declared aliases where the
+        state file knows them, so audit output speaks the schema's language.
+        One entry per changed field per change event.
+        """
+        key = self._issue_key_of(issue)
+        id_to_alias = {m.id: alias for alias, m in self.state.custom_fields.items()}
+        async for entry in self.engine.dialect.get_changelog(key):
+            author = entry.get("author") or {}
+            author_name = str(author.get("displayName") or author.get("accountId") or "")
+            created = str(entry.get("created", ""))
+            for item in entry.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                field_name = str(item.get("field", ""))
+                if field_name.startswith("customfield_") and field_name in id_to_alias:
+                    field_name = id_to_alias[field_name]
+                yield ChangeItem(
+                    created=created,
+                    author=author_name,
+                    field=field_name,
+                    from_value=_change_value(item, "from"),
+                    to_value=_change_value(item, "to"),
+                )
+
     # ── Attachments ──────────────────────────────────────────────────
     async def attach(
         self,
@@ -694,6 +741,16 @@ def _comment_from_payload(raw: dict[str, Any]) -> Comment:
         created=str(raw.get("created", "")),
         body_text=adf.parse_text(body) if isinstance(body, dict) else str(body or ""),
     )
+
+
+def _change_value(item: dict[str, Any], side: Literal["from", "to"]) -> str | None:
+    """Human-readable value first (``fromString``/``toString``), raw id
+    second, None when the field had no value on that side."""
+    readable = item.get(f"{side}String")
+    if readable is not None:
+        return str(readable)
+    raw = item.get(side)
+    return str(raw) if raw is not None else None
 
 
 def _custom_field_meta(field_info: Any) -> CustomField | None:

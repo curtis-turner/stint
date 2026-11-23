@@ -2138,6 +2138,19 @@ class JiraCloudDialect:
     async def delete_comment(self, key: str, comment_id: str) -> None:
         await self.client.delete(f"{self.api_root}/issue/{key}/comment/{comment_id}")
 
+    # ── Changelog (data plane) ───────────────────────────────────────
+    def get_changelog(self, key: str) -> AsyncIterator[dict[str, Any]]:
+        """Yield history entries from ``GET /issue/{key}/changelog``, paginated.
+
+        Each entry carries ``author``, ``created`` and ``items`` (the
+        per-field changes).
+        """
+        return common.paginate(
+            self.client,
+            f"{self.api_root}/issue/{key}/changelog",
+            envelope_key="values",
+        )
+
     # ── Attachments (data plane) ─────────────────────────────────────
     async def attach(self, key: str, *, data: bytes, filename: str) -> dict[str, Any]:
         """POST /issue/{key}/attachments, multipart.
