@@ -127,5 +127,9 @@ class Project(BaseModel, metaclass=ProjectMeta):
     # Set by ProjectMeta after class creation; declared for the type checker.
     __title__: ClassVar[str]
     __lead_role__: ClassVar[str | None] = None
+    # Declared so type-checkers see the key subclasses carry (validated by
+    # ProjectMeta). __issuetypes__ is read via getattr() like validate.py,
+    # since schemas declare it as a list and ProjectMeta normalizes it.
+    __key__: ClassVar[str]
 
     _ALLOWED_STYLES: ClassVar[tuple[str, ...]] = _ALLOWED_STYLES

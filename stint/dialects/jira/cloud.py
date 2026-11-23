@@ -2167,6 +2167,17 @@ class JiraCloudDialect:
             )
         return [a for a in raw if isinstance(a, dict)]
 
+    async def get_createmeta(self, project_key: str) -> dict[str, Any]:
+        """GET /issue/createmeta for one project (read-only).
+
+        Used by the runtime schema check to answer "settable on create":
+        the response embeds, per issuetype, the fields on its create screen.
+        """
+        return await self.client.get_json(
+            f"{self.api_root}/issue/createmeta",
+            params={"projectKeys": project_key, "expand": "fields"},
+        )
+
     async def download_attachment(self, attachment_id: str) -> bytes:
         """GET /attachment/content/{id} as raw bytes.
 

@@ -15,6 +15,7 @@ modules named after them.
   current    - show the current migration revision recorded in a state file  [cmd_upgrade]
   history    - list all migrations in revision order  [cmd_upgrade]
   validate   - run stint.validate() on a Python schema module (no network calls)  [cmd_validate]
+  check      - check a declared project against the live tenant (read-only)  [cmd_check]
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import sys
 
 from stint.cli import (  # noqa: F401 — side-effect: registers @app.command
     cmd_apply,
+    cmd_check,
     cmd_reflect,
     cmd_revision,
     cmd_stamp,

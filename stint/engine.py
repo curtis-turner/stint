@@ -42,8 +42,11 @@ from stint.exceptions import ConfigurationError
 from stint.state.snapshot import Snapshot
 
 if TYPE_CHECKING:
+    from stint.check import CheckReport
     from stint.dialects.jira.tmp.dialect import TmpDialect
     from stint.dialects.jira.tmp.models import TmpSnapshot
+    from stint.schema.project import Project
+    from stint.state.file import StateFile
 
 
 @dataclass
@@ -60,6 +63,17 @@ class Engine:
     async def detect(self) -> bool:
         """Confirm the configured dialect matches the live server."""
         return await self.dialect.detect()
+
+    async def check(self, project: type[Project], state: StateFile) -> CheckReport:
+        """Read-only runtime schema check (see ``stint.check``).
+
+        Reflects the tenant plus the create-metadata endpoint and compares
+        the declared project against what Jira actually has. Nothing is
+        written; safe to call at service startup.
+        """
+        from stint.check import check_project
+
+        return await check_project(self, project, state)
 
     async def close(self) -> None:
         await self.client.close()
