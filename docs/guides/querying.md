@@ -142,6 +142,24 @@ if "nag text" not in existing:
     await session.add_comment(bug, "nag text")
 ```
 
+## Attachments
+
+```python
+await session.attach(bug, "export.csv")  # path; name inferred
+await session.attach(bug, raw_bytes, filename="export.csv")
+
+files = await session.attachments(bug)  # [Attachment(id, filename, size, created)]
+data = await session.download_attachment(files[0].id)
+await session.delete_attachment(files[0].id)
+```
+
+- Uploads are multipart with the required `X-Atlassian-Token: no-check` header; size limits and server errors surface as `StintError` subclasses (e.g. a 413 arrives as `TransportError` with `status_code=413`).
+- The regenerated-export pattern — delete the old copy, upload the new one — is a helper:
+
+```python
+await session.replace_attachment(bug, "export.csv")  # deletes same-named files, then uploads
+```
+
 ## System fields: duedate and parent
 
 Beyond `summary`, `description`, `priority`, `reporter` and `assignee`, models can declare the typed system fields `duedate` and `parent`:

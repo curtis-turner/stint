@@ -33,6 +33,7 @@ Moving to the current status is a no-op, so sync loops stay idempotent.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, cast
 
 from stint.exceptions import ConfigurationError, NotFoundError, PartialCommitError, TransitionError
@@ -83,6 +84,16 @@ class Comment:
     author: str
     created: str
     body_text: str
+
+
+@dataclass
+class Attachment:
+    """One issue attachment, as Jira reports it."""
+
+    id: str
+    filename: str
+    size: int
+    created: str
 
 
 class AsyncSession:
@@ -444,6 +455,61 @@ class AsyncSession:
         key = self._issue_key_of(issue)
         await self.engine.dialect.delete_comment(key, comment_id)
 
+    # ── Attachments ──────────────────────────────────────────────────
+    async def attach(
+        self,
+        issue: IssueType | str,
+        file: str | Path | bytes,
+        *,
+        filename: str | None = None,
+    ) -> Attachment:
+        """Upload one attachment. Returns the created :class:`Attachment`.
+
+        ``file`` is a filesystem path or raw bytes; bytes require
+        ``filename=`` (there is no name to infer). Server-side size limits
+        and errors surface as StintError subclasses, like every transport
+        failure.
+        """
+        key = self._issue_key_of(issue)
+        data, name = _coerce_attachment(file, filename)
+        raw = await self.engine.dialect.attach(key, data=data, filename=name)
+        if isinstance(raw, list):  # defensive: some tenants return a 1-element array
+            raw = raw[0] if raw else {}
+        return _attachment_from_payload(raw)
+
+    async def attachments(self, issue: IssueType | str) -> list[Attachment]:
+        """List the issue's attachments (one GET, no extra request per file)."""
+        key = self._issue_key_of(issue)
+        return [_attachment_from_payload(a) for a in await self.engine.dialect.get_attachments(key)]
+
+    async def download_attachment(self, attachment_id: str) -> bytes:
+        """Fetch one attachment's content by id, as raw bytes."""
+        return await self.engine.dialect.download_attachment(attachment_id)
+
+    async def delete_attachment(self, attachment_id: str) -> None:
+        """Delete one attachment by id."""
+        await self.engine.dialect.delete_attachment(attachment_id)
+
+    async def replace_attachment(
+        self,
+        issue: IssueType | str,
+        file: str | Path | bytes,
+        *,
+        filename: str | None = None,
+    ) -> Attachment:
+        """Regenerate-in-place helper: delete any existing attachment with
+        the same filename, then upload the new one.
+
+        Mirrors the sync-service pattern of a CSV export re-uploaded each
+        time its upstream records change — without it, every pass would
+        stack another ``export.csv`` on the ticket.
+        """
+        data, name = _coerce_attachment(file, filename)
+        for existing in await self.attachments(issue):
+            if existing.filename == name:
+                await self.delete_attachment(existing.id)
+        return await self.attach(issue, data, filename=name)
+
     # ── Helpers ──────────────────────────────────────────────────────
     def _hydrate_with_identity(
         self,
@@ -486,6 +552,31 @@ def _comment_from_payload(raw: dict[str, Any]) -> Comment:
         created=str(raw.get("created", "")),
         body_text=adf.parse_text(body) if isinstance(body, dict) else str(body or ""),
     )
+
+
+def _attachment_from_payload(raw: dict[str, Any]) -> Attachment:
+    """Project a Jira attachment payload onto :class:`Attachment`."""
+    return Attachment(
+        id=str(raw.get("id", "")),
+        filename=str(raw.get("filename", "")),
+        size=int(raw.get("size") or 0),
+        created=str(raw.get("created", "")),
+    )
+
+
+def _coerce_attachment(file: str | Path | bytes, filename: str | None) -> tuple[bytes, str]:
+    """Normalize attach() input to (bytes, filename). A path contributes its
+    basename when no explicit filename is given; bytes require one."""
+    if isinstance(file, bytes):
+        if not filename:
+            raise ConfigurationError(
+                "attach: pass filename= when uploading raw bytes (there is no path to infer a name from)."
+            )
+        return file, filename
+    path = Path(file)
+    if not path.is_file():
+        raise ConfigurationError(f"attach: no such file: {path}")
+    return path.read_bytes(), filename or path.name
 
 
 def _describe_transitions(transitions: list[dict[str, Any]]) -> str:

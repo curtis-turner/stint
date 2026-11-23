@@ -52,6 +52,8 @@ class JiraCloudDialect:
     field_config_items_segment: ClassVar[str] = "fields"
     user_search_param: ClassVar[str] = "query"
     user_search_id_field: ClassVar[str] = "accountId"
+    # Attachment upload CSRF guard: Jira 403s the multipart POST without it.
+    ATTACHMENT_TOKEN: ClassVar[str] = "no-check"
 
     # Field configuration API generations. Atlassian retired classic field
     # configurations on Jira Cloud in May 2026 and replaced them with the
@@ -2121,6 +2123,49 @@ class JiraCloudDialect:
 
     async def delete_comment(self, key: str, comment_id: str) -> None:
         await self.client.delete(f"{self.api_root}/issue/{key}/comment/{comment_id}")
+
+    # ── Attachments (data plane) ─────────────────────────────────────
+    async def attach(self, key: str, *, data: bytes, filename: str) -> dict[str, Any]:
+        """POST /issue/{key}/attachments, multipart.
+
+        Jira requires the ``X-Atlassian-Token: no-check`` header on this
+        endpoint (a CSRF guard; absent or wrong token answers 403). Some
+        tenants answer with the created attachment object, some with a
+        single-element array — the caller normalizes.
+        """
+        return await self.client.post_files(
+            f"{self.api_root}/issue/{key}/attachments",
+            files={"file": (filename, data)},
+            headers={"X-Atlassian-Token": self.ATTACHMENT_TOKEN},
+        )
+
+    async def get_attachments(self, key: str) -> list[dict[str, Any]]:
+        """One GET /issue/{key} with ``fields=attachment``; no expand needed."""
+        payload = await self.client.get_json(
+            f"{self.api_root}/issue/{key}",
+            params={"fields": "attachment"},
+        )
+        fields = payload.get("fields") if isinstance(payload, dict) else None
+        raw = (fields or {}).get("attachment") or []
+        if not isinstance(raw, list):
+            raise ReflectionError(
+                f"GET {self.api_root}/issue/{key} fields.attachment returned {type(raw).__name__} instead of a list"
+            )
+        return [a for a in raw if isinstance(a, dict)]
+
+    async def download_attachment(self, attachment_id: str) -> bytes:
+        """GET /attachment/content/{id} as raw bytes.
+
+        The endpoint may 302 to a pre-authenticated CDN URL, so redirects
+        are followed for this call only.
+        """
+        return await self.client.get_bytes(
+            f"{self.api_root}/attachment/content/{attachment_id}",
+            follow_redirects=True,
+        )
+
+    async def delete_attachment(self, attachment_id: str) -> None:
+        await self.client.delete(f"{self.api_root}/attachment/{attachment_id}")
 
     # ── Issue security schemes ────────────────────────────────────────────
 
