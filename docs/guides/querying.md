@@ -125,6 +125,23 @@ if bug.status_category == "done":
 
 After a successful transition, a hydrated instance's `status`/`status_category` are refreshed in place and excluded from dirty tracking, so a later `commit()` does not PUT the old status back.
 
+## Comments
+
+```python
+await session.add_comment(bug, "Validation passed, upstream record is in sync.")
+comments = await session.comments(bug)
+await session.delete_comment(bug, comments[0].id)
+```
+
+- Plain-text bodies are wrapped in ADF on Cloud (reusing `stint.query.adf`); a dict body is taken as raw ADF and sent untouched.
+- `comments()` paginates and renders every body to plain text (`Comment(id, author, created, body_text)`), so a sync loop can deduplicate: read first, only post when the message is not already there.
+
+```python
+existing = {c.body_text for c in await session.comments(bug)}
+if "nag text" not in existing:
+    await session.add_comment(bug, "nag text")
+```
+
 ## System fields: duedate and parent
 
 Beyond `summary`, `description`, `priority`, `reporter` and `assignee`, models can declare the typed system fields `duedate` and `parent`:

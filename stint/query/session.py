@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, cast
 
 from stint.exceptions import ConfigurationError, NotFoundError, PartialCommitError, TransitionError
+from stint.query import adf
 from stint.query.hydrate import field_keys_for_model, hydrate
 from stint.query.payload import (
     build_insert_payload,
@@ -71,6 +72,17 @@ class Transition(NamedTuple):
     id: str
     name: str
     to_status: str
+
+
+@dataclass
+class Comment:
+    """One issue comment, with the body rendered to plain text so callers
+    can deduplicate ("don't post the same nag twice")."""
+
+    id: str
+    author: str
+    created: str
+    body_text: str
 
 
 class AsyncSession:
@@ -409,6 +421,29 @@ class AsyncSession:
                 setattr(instance, attr, value)
                 baseline[attr] = value
 
+    # ── Comments ─────────────────────────────────────────────────────
+    async def add_comment(self, issue: IssueType | str, body: str | dict[str, Any]) -> Comment:
+        """Post a comment and return the created :class:`Comment`.
+
+        Plain-text bodies are wrapped in ADF on Jira Cloud (reusing
+        ``stint.query.adf``); a dict body is taken as raw ADF and sent
+        as-is. Accepts a hydrated instance or a bare issue key.
+        """
+        key = self._issue_key_of(issue)
+        payload: dict[str, Any] = body if isinstance(body, dict) else adf.wrap_plain_text(str(body))
+        created = await self.engine.dialect.add_comment(key, payload)
+        return _comment_from_payload(created)
+
+    async def comments(self, issue: IssueType | str) -> list[Comment]:
+        """List the issue's comments, paginated, plain-text rendered."""
+        key = self._issue_key_of(issue)
+        return [_comment_from_payload(c) async for c in self.engine.dialect.get_comments(key)]
+
+    async def delete_comment(self, issue: IssueType | str, comment_id: str) -> None:
+        """Delete one comment by id. Accepts a hydrated instance or a key."""
+        key = self._issue_key_of(issue)
+        await self.engine.dialect.delete_comment(key, comment_id)
+
     # ── Helpers ──────────────────────────────────────────────────────
     def _hydrate_with_identity(
         self,
@@ -439,6 +474,18 @@ class AsyncSession:
 
     def _is_cloud(self) -> bool:
         return self.engine.dialect.name == "jira_cloud"
+
+
+def _comment_from_payload(raw: dict[str, Any]) -> Comment:
+    """Project a Jira comment payload onto the plain-text :class:`Comment`."""
+    body = raw.get("body")
+    author = raw.get("author") or {}
+    return Comment(
+        id=str(raw.get("id", "")),
+        author=str(author.get("displayName") or author.get("accountId") or ""),
+        created=str(raw.get("created", "")),
+        body_text=adf.parse_text(body) if isinstance(body, dict) else str(body or ""),
+    )
 
 
 def _describe_transitions(transitions: list[dict[str, Any]]) -> str:

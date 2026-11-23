@@ -2096,6 +2096,32 @@ class JiraCloudDialect:
         ``{"transition": {"id": ...}, "fields": {...}}``."""
         await self.client.post_json(f"{self.api_root}/issue/{key}/transitions", json=body)
 
+    # ── Comments (data plane) ────────────────────────────────────────
+    def get_comments(self, key: str) -> AsyncIterator[dict[str, Any]]:
+        """Yield comments from ``GET /issue/{key}/comment``, paginated.
+
+        The endpoint answers a ``{"comments": [...], "startAt": ...,
+        "total": ...}`` envelope, hence ``envelope_key="comments"``.
+        """
+        return common.paginate(
+            self.client,
+            f"{self.api_root}/issue/{key}/comment",
+            envelope_key="comments",
+        )
+
+    async def add_comment(self, key: str, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /issue/{key}/comment with ``{"body": <ADF>}``.
+
+        Returns the created comment payload (id, author, created, body).
+        """
+        return await self.client.post_json(
+            f"{self.api_root}/issue/{key}/comment",
+            json={"body": body},
+        )
+
+    async def delete_comment(self, key: str, comment_id: str) -> None:
+        await self.client.delete(f"{self.api_root}/issue/{key}/comment/{comment_id}")
+
     # ── Issue security schemes ────────────────────────────────────────────
 
     async def _reflect_issue_security_schemes(self) -> dict[str, SecuritySchemeSnapshot]:
