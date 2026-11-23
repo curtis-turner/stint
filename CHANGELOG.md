@@ -6,6 +6,20 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-23
+
+### Added
+
+- Data plane: changelog / history reads
+  ([#51](https://github.com/curtis-turner/stint/issues/51), lower priority).
+  `session.changelog(issue)` paginates the changelog endpoint and yields
+  `ChangeItem(created, author, field, from_value, to_value)` per changed
+  field per event. Custom field ids map back to their declared aliases via
+  the state file (`customfield_10044` -> `bug_severity`) where known, so
+  audit and migration exports speak the schema's language;
+  `from_value`/`to_value` prefer the human-readable strings Jira records,
+  and a freshly-set value has `from_value=None`.
+
 ## [0.17.0] - 2026-11-23
 
 ### Added
@@ -907,7 +921,8 @@ end-to-end against Jira Data Center and Jira Cloud.
 - TMP awareness: project style tracked in state, CMP-only ops raise
   `UnsupportedTMPOpError` with a deep link to the Jira UI.
 
-[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/curtis-turner/stint/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/curtis-turner/stint/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/curtis-turner/stint/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/curtis-turner/stint/compare/v0.14.0...v0.15.0
