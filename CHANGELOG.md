@@ -6,6 +6,27 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-23
+
+### Added
+
+- Data plane: email-to-user resolution for user fields
+  ([#49](https://github.com/curtis-turner/stint/issues/49)). On commit,
+  email values in user-typed fields (`assignee`, `reporter`, `creator`,
+  custom `UserField`/`MultiUserField` attributes) resolve to platform user
+  ids through the same user-search resolver the schema plane uses — one
+  lookup per email per engine, cached. An email matching no active user, or
+  several without an exact match, fails that issue's commit with an error
+  naming the field and email (never silently dropped); the instance carries
+  the resolved accountId after the write, so read-modify-write comparisons
+  don't flap.
+
+### Changed
+
+- `resolve_lead` now delegates to the shared `_resolve_user_id` core
+  (same behavior, neutral error wording); the new data-plane
+  `resolve_user` uses the same rules and cache.
+
 ## [0.15.0] - 2026-11-23
 
 ### Added
@@ -872,7 +893,8 @@ end-to-end against Jira Data Center and Jira Cloud.
 - TMP awareness: project style tracked in state, CMP-only ops raise
   `UnsupportedTMPOpError` with a deep link to the Jira UI.
 
-[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/curtis-turner/stint/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/curtis-turner/stint/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/curtis-turner/stint/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/curtis-turner/stint/compare/v0.12.0...v0.13.0
