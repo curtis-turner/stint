@@ -8,7 +8,7 @@ plan/apply layer built on top.
 """
 
 import json
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 from unittest.mock import patch
 
 import httpx
@@ -124,6 +124,45 @@ def test_build_tmp_desired_collects_fields_and_worktypes():
     assert desired.worktypes["bug"].field_aliases == ("severity", "root_cause")
 
 
+# ── module-level fields on no layout (TMP_GLOBAL_FIELDS_ISSUE related #2) ──
+def test_build_tmp_desired_includes_unwired_module_fields():
+    """A module-level CustomField no schema wiring references is still
+    managed: it can be created/adopted (and later deleted) without first
+    being put on a work-type layout -- which would be a real change rather
+    than an import. Its layout membership stays unmanaged."""
+    orphan_cf = CustomField(alias="orphan", name="Orphan", type=TextField)
+    assert orphan_cf is not None  # registration side effect is the point
+    project_cls = _make_project()
+    desired = build_tmp_desired(project_cls)
+    assert desired.fields["orphan"].name == "Orphan"
+    # Not on any work type's layout:
+    assert all("orphan" not in wt.field_aliases for wt in desired.worktypes.values())
+    # And it plans a create (or adoption) without any SetLayout touching it:
+    changes = plan_tmp(desired, TmpSnapshot(snapshot=_empty_snapshot()), TmpState())
+    assert CreateField("orphan") in changes
+
+
+def test_build_tmp_desired_excludes_fields_wired_elsewhere():
+    """A field referenced by another declaration (here: a company-managed
+    project's IssueType declared in the same module) is not claimed for the
+    team-managed project -- only unwired module-level declarations are.
+    Claiming it would create a duplicate field in the TMP project."""
+    cmp_cf = CustomField(alias="cmp_only", name="CMP Only", type=TextField)
+
+    class _CmpThing(IssueType):
+        __alias__ = "cmp_thing"
+        __title__ = "CmpThing"
+        cmp_only: Annotated[str, cmp_cf]
+
+    class _CmpProject(Project):
+        __key__ = "CMPP"
+        __style__ = "company-managed"
+        __issuetypes__ = [_CmpThing]
+
+    desired = build_tmp_desired(_make_project())
+    assert "cmp_only" not in desired.fields
+
+
 # ── plan_tmp (pure) ──────────────────────────────────────────────────
 def test_plan_tmp_creates_everything_when_state_empty():
     desired = build_tmp_desired(_make_project())
@@ -194,6 +233,98 @@ def test_plan_tmp_no_changes_when_everything_matches():
     snapshot = TmpSnapshot(snapshot=snap, layouts={"10007": layout})
     state = TmpState(fields={"severity": "customfield_1", "root_cause": "customfield_2"}, worktypes={"bug": "10007"})
     assert plan_tmp(desired, snapshot, state) == []
+
+
+# ── GLOBAL-scope custom items are unmanaged (TMP_GLOBAL_FIELDS_ISSUE) ──
+def _unmanaged_item(
+    field_id: str,
+    name: str,
+    type_key: str,
+    *,
+    custom: bool,
+    global_: bool,
+    section: str = "primary",
+    position: int = 100,
+) -> TmpLayoutItem:
+    return TmpLayoutItem(
+        field_id=field_id,
+        key=field_id,
+        name=name,
+        type_key=type_key,
+        custom=custom,
+        global_=global_,
+        required=False,
+        section=section,
+        position=position,
+        external_uuid="",
+        description="",
+        operations={},
+        provider={},
+    )
+
+
+def _layout_with_global_item(*extra: TmpLayoutItem, layout_id: str = "layout-1") -> TmpLayout:
+    """The fixture the issue report asked for: a reflected layout carrying a
+    system ``summary`` item, a GLOBAL-scope custom item (Jira's Team field,
+    ``custom=True, global_=True``), plus any project-scope items."""
+    return TmpLayout(
+        layout_id=layout_id,
+        owner=TmpLayoutOwner(id="10007", name="Bug", description="A bug", avatar_id="1", icon_url="x"),
+        items=(
+            _unmanaged_item("summary", "Summary", "summary", custom=False, global_=True, section="content", position=0),
+            _unmanaged_item(
+                "customfield_10001", "Team", "userpicker", custom=True, global_=True, section="secondary", position=250
+            ),
+            *extra,
+        ),
+    )
+
+
+def test_plan_tmp_global_custom_field_does_not_drift_layout():
+    """A work type whose layout carries a GLOBAL custom item plus only
+    declared PROJECT fields plans no SetLayout once state maps the work type
+    and fields. Pre-fix, the GLOBAL ids counted as drift and a
+    full-replacement write stripped them -- on every run, forever."""
+    desired = build_tmp_desired(_make_project())
+    snap = _empty_snapshot()
+    snap.custom_fields["customfield_1"] = CustomFieldSnapshot(
+        id="customfield_1", name="Severity", type_id=SelectField.jira_type_id, options={"S1": "1", "S2": "2"}
+    )
+    snap.custom_fields["customfield_2"] = CustomFieldSnapshot(
+        id="customfield_2", name="Root Cause", type_id=TextField.jira_type_id, options={}
+    )
+    layout = _layout_with_global_item(
+        _unmanaged_item(
+            "customfield_1", "Severity", SelectField.jira_type_id, custom=True, global_=False, position=100
+        ),
+        _unmanaged_item(
+            "customfield_2", "Root Cause", TextField.jira_type_id, custom=True, global_=False, position=200
+        ),
+    )
+    snapshot = TmpSnapshot(snapshot=snap, layouts={"10007": layout})
+    state = TmpState(fields={"severity": "customfield_1", "root_cause": "customfield_2"}, worktypes={"bug": "10007"})
+    assert plan_tmp(desired, snapshot, state) == []
+
+
+def test_plan_tmp_plans_set_layout_when_declared_field_is_unmapped():
+    """The unconditional resync branch (a declared field not yet in state)
+    still fires even though the GLOBAL items are ignored by the drift
+    check: under-planning here would skip the field's layout add."""
+    desired = build_tmp_desired(_make_project())
+    snap = _empty_snapshot()
+    snap.custom_fields["customfield_1"] = CustomFieldSnapshot(
+        id="customfield_1", name="Severity", type_id=SelectField.jira_type_id, options={"S1": "1", "S2": "2"}
+    )
+    layout = _layout_with_global_item(
+        _unmanaged_item(
+            "customfield_1", "Severity", SelectField.jira_type_id, custom=True, global_=False, position=100
+        ),
+    )
+    snapshot = TmpSnapshot(snapshot=snap, layouts={"10007": layout})
+    state = TmpState(fields={"severity": "customfield_1"}, worktypes={"bug": "10007"})  # root_cause unmapped
+    changes = plan_tmp(desired, snapshot, state)
+    assert SetLayout("bug") in changes
+    assert CreateField("root_cause") in changes
 
 
 def test_plan_tmp_deletes_only_when_allow_delete():
@@ -525,6 +656,63 @@ async def test_tmp_set_layout_prunes_undeclared_fields_and_resyncs_owner():
     sent_keys = [item["key"] for item in body["issueLayoutConfig"]["items"]]
     assert sent_keys == ["summary", "customfield_1"]  # customfield_2 (undeclared) pruned
     assert body["owners"][0]["data"]["description"] == "new desc"
+    assert ctx.state.layout_ids["bug"] == "layout-1"
+
+
+class _LayoutCapturingDialect:
+    """Fake TMP dialect for offline ``tmp_set_layout`` tests: capture the
+    layout a full-replacement write would send. No HTTP."""
+
+    def __init__(self) -> None:
+        self.written: TmpLayout | None = None
+
+    async def write_layout(self, *, project_id: str, issuetype_id: int, layout: TmpLayout) -> TmpLayout:
+        self.written = layout
+        return layout
+
+
+@pytest.mark.asyncio
+async def test_tmp_set_layout_preserves_global_items_on_write():
+    """When a SetLayout does run (here: a declared PROJECT field was added
+    to an existing work type), the written layout still contains every
+    GLOBAL item from ``current.items``, with its section and position
+    intact. Pre-fix, the full-replacement write dropped them, breaking the
+    live workflows that write those fields."""
+    current = _layout_with_global_item(
+        _unmanaged_item(
+            "customfield_1", "Severity", SelectField.jira_type_id, custom=True, global_=False, position=100
+        ),
+    )
+    desired_all = TmpDesired(
+        project_key="VM",
+        fields={
+            "severity": TmpDesiredField(alias="severity", name="Severity", type_key=SelectField.jira_type_id),
+            "root_cause": TmpDesiredField(alias="root_cause", name="Root Cause", type_key=TextField.jira_type_id),
+        },
+    )
+    desired = TmpDesiredWorkType(alias="bug", name="Bug", field_aliases=("severity", "root_cause"))
+    dialect = _LayoutCapturingDialect()
+    ctx = TmpApplyContext(
+        dialect=cast("TmpDialect", dialect),
+        project=TmpProjectContext(
+            cloud_id="cloud-1",
+            project_id="10001",
+            project_uuid="proj-uuid-1",
+            key="VM",
+            name="Vulnerability Management",
+        ),
+        state=TmpState(fields={"severity": "customfield_1", "root_cause": "customfield_2"}, worktypes={"bug": "10007"}),
+    )
+    await tmp_set_layout(ctx, "bug", desired, current, desired_all=desired_all)
+
+    assert dialect.written is not None
+    written = [(i.field_id, i.custom, i.global_, i.section, i.position) for i in dialect.written.items]
+    # Every GLOBAL item from current.items survives, unchanged and in place.
+    assert ("summary", False, True, "content", 0) in written
+    assert ("customfield_10001", True, True, "secondary", 250) in written
+    # The newly-declared PROJECT field is appended after the kept items
+    # (synthesized: position = max kept position + 100 = 350).
+    assert written[-1] == ("customfield_2", True, False, "primary", 350)
     assert ctx.state.layout_ids["bug"] == "layout-1"
 
 

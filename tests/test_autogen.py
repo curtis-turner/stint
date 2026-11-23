@@ -1146,6 +1146,32 @@ def test_diff_greenfield_security_scheme_with_binding():
     assert [(c.project_alias, c.scheme_alias) for c in associates] == [("SEC", alias)]
 
 
+def test_diff_greenfield_security_scheme_emits_level_members():
+    """A new scheme's declared level members ride the *first* migration as
+    AddSecurityLevelMember ops (the create endpoint takes no member list).
+    Pre-fix, the create branch stopped at levels: the first upgrade left the
+    project's default level with no members, and every new issue was
+    invisible to everyone -- including the creating token -- until a second
+    revision/upgrade ran."""
+    alias = _declare_security_schema()
+    desired = build_desired_snapshot()
+    state = StateFile(env="dev", jira_url="x")
+    result = diff(desired=desired, snapshot=_empty_snapshot(), state=state, allow_delete=False)
+    members = [c for c in result.changes if isinstance(c, AddSecurityLevelMember)]
+    assert [(m.scheme_alias, m.level_alias, m.member_type, m.member_value) for m in members] == [
+        (alias, "level-internal", "group", "jira-admins")
+    ]
+    # And they phase-order after the scheme create (42), before the project
+    # binding (62), so the upgrade is complete in one pass.
+    ordered = sort_changes(result.changes)
+    kinds = [type(c) for c in ordered]
+    assert (
+        kinds.index(CreateIssueSecurityScheme)
+        < kinds.index(AddSecurityLevelMember)
+        < kinds.index(SetProjectIssueSecurityScheme)
+    )
+
+
 def test_diff_existing_project_gets_associate_for_new_scheme():
     """Brownfield: a security scheme declared for an already-existing project
     — exactly one associate, fired by the project's rebinding path (the
