@@ -6,9 +6,15 @@ the pre-release check that a real tenant agrees with the mocked shapes.
 It only creates and deletes its own issues in one sandbox project — no
 schema-plane writes, nothing else on the tenant is touched.
 
+Issue types are chosen from what the project can actually create
+(/issue/createmeta): the parent role goes to the first creatable
+non-subtask type, the sub-task role to the first creatable type with
+``subtask: true``. Pass --task-type / --subtask-type to pin names. If the
+project has no creatable sub-task type, the parent checks are SKIPPED with
+a notice and only the duedate checks run.
+
 Prerequisites:
-  - A company-managed sandbox project whose issue types include a plain
-    task type (default "Task") and a sub-task type (default "Sub-task").
+  - A company-managed sandbox project.
   - Credentials: STINT_TOKEN (+ STINT_USER for api-token auth).
 
 Run it:
@@ -20,7 +26,7 @@ Run it:
     # keep the created issues in Jira instead of deleting them:
     ... uv run python tools/smoke_dataplane.py --keep
 
-Every step prints PASS/FAIL; the exit code is 0 only if all steps passed.
+Every step prints PASS/FAIL/SKIP; the exit code is 0 only if no step failed.
 Created issues are deleted in a finally block unless --keep.
 """
 
@@ -30,6 +36,7 @@ import argparse
 import asyncio
 import os
 import sys
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
@@ -47,10 +54,8 @@ from stint.query import select  # noqa: E402
 from stint.query.session import AsyncSession, PartialCommitError  # noqa: E402
 from stint.state.file import ProjectMapping, SimpleMapping  # noqa: E402
 
-# ── Smoke models ──────────────────────────────────────────────────────
-# __alias__ matches the live issuetype *display name* (the script keys state
-# by name.lower(), the same match `stint stamp` performs). Adjust --task-type
-# / --subtask-type if the sandbox project's type names differ.
+# Smoke models: __alias__ is bound at run time to the issue-type names the
+# pre-flight chose (payload building reads __alias__ per commit).
 
 
 class SmokeTask(IssueType):
@@ -71,6 +76,11 @@ class SmokeSubtask(IssueType):
 class Checks:
     def __init__(self) -> None:
         self.failures = 0
+        self.skips = 0
+
+    def skip(self, label: str, why: str) -> None:
+        self.skips += 1
+        print(f"  [SKIP] {label} — {why}")
 
     def check(self, label: str, ok: bool, detail: str = "") -> None:
         mark = "PASS" if ok else "FAIL"
@@ -79,7 +89,15 @@ class Checks:
             self.failures += 1
 
 
-async def build_state(engine, base_url: str, project_key: str) -> StateFile:
+@dataclass
+class Plan:
+    """The issue-type names this smoke run will bind each role to."""
+
+    task: str  # non-subtask type; always present (the run aborts otherwise)
+    subtask: str | None  # subtask type; None -> parent checks are skipped
+
+
+async def build_state(engine, base_url: str, project_key: str, args: argparse.Namespace) -> tuple[StateFile, Plan]:
     """Reflect the tenant and build the minimal in-memory state the data
     plane needs: the target project plus global issue-type ids. No schema
     module, no state file — the same name-matching `stint stamp` does.
@@ -105,44 +123,69 @@ async def build_state(engine, base_url: str, project_key: str) -> StateFile:
         )
     state.projects[project_key] = ProjectMapping(id=proj.id, key=proj.key)
 
+    # Global (non-project-scoped) issue types by name: the id source.
     globals_by_name: dict[str, list] = {}
     for it in snapshot.issuetypes.values():
         if it.project_scoped:
             continue
         globals_by_name.setdefault(it.name.lower(), []).append(it)
 
-    # What the project can actually create (createmeta): a global type the
-    # project's issue-type scheme doesn't carry would still 400 mid-smoke.
+    # What the project can actually create (createmeta), with the subtask
+    # flag: the role source. A global type the project's issue-type scheme
+    # doesn't carry would still 400 mid-smoke (observed live).
     meta = await engine.client.get_json(
         f"{engine.dialect.api_root}/issue/createmeta",
         params={"projectKeys": project_key},
     )
-    creatable = {str(t.get("name", "")).lower() for p in meta.get("projects", []) for t in p.get("issuetypes", [])}
+    creatable: list[tuple[str, bool]] = []
+    for p in meta.get("projects", []):
+        for t in p.get("issuetypes", []):
+            creatable.append((str(t.get("name", "")), bool(t.get("subtask", False))))
 
-    for alias in (SmokeTask.__alias__, SmokeSubtask.__alias__):
-        candidates = globals_by_name.get(alias.lower()) or []
+    def resolve(role: str, pinned: str | None, want_subtask: bool) -> str | None:
+        """Pick the type name for a role: the pinned one, or the first
+        creatable match. Returns None when nothing qualifies (parent role
+        only) — a missing task role is a hard abort at the callsite."""
+        if pinned:
+            matches = [name for name, subtask in creatable if name.lower() == pinned.lower()]
+            if not matches:
+                raise SystemExit(
+                    f"--{role}-type {pinned!r} is not creatable on {project_key!r} "
+                    f"(creatable: {sorted(n for n, _ in creatable)})."
+                )
+            return matches[0]
+        matches = [name for name, subtask in creatable if subtask == want_subtask]
+        return matches[0] if matches else None
+
+    task_name = resolve("task", args.task_type, want_subtask=False)
+    if task_name is None:
+        raise SystemExit(
+            f"no creatable non-subtask issue type on {project_key!r} "
+            f"(creatable: {sorted(n for n, _ in creatable)}); nothing to smoke."
+        )
+    subtask_name = resolve("subtask", args.subtask_type, want_subtask=True)
+
+    # Bind ids from the global snapshot. Every creatable CMP type must exist
+    # globally; a mismatch means the tenant's createmeta and /issuetype
+    # disagree, which is itself worth refusing loudly.
+    for role, name in (("task", task_name), ("subtask", subtask_name)):
+        if name is None:
+            continue
+        candidates = globals_by_name.get(name.lower()) or []
         if len(candidates) > 1:
             raise SystemExit(
-                f"issue type name {alias!r} matches multiple global issue types "
+                f"issue type name {name!r} matches multiple global issue types "
                 f"({[c.id for c in candidates]}); refusing to guess. Rename the "
                 f"sandbox type or pass --task-type / --subtask-type."
             )
-        it = candidates[0] if candidates else None
-        if it is None:
+        if not candidates:
             raise SystemExit(
-                f"issue type {alias!r} not found on the tenant (global types: "
-                f"{sorted(globals_by_name)}). Pass --task-type / --subtask-type "
-                f"to match the sandbox project's type names."
+                f"issue type {name!r} is creatable on {project_key!r} but not in "
+                f"the global /issuetype list (global types: {sorted(globals_by_name)})."
             )
-        if alias.lower() not in creatable:
-            raise SystemExit(
-                f"issue type {alias!r} exists globally (id {it.id}) but is not "
-                f"creatable on {project_key!r} (creatable: {sorted(creatable)}). "
-                f"Add it to the project's issue-type scheme or pick another project."
-            )
-        print(f"state:   {alias!r} -> issuetype id {it.id}")
-        state.issuetypes[alias] = SimpleMapping(id=it.id)
-    return state
+        print(f"state:   {role} role -> {name!r} (issuetype id {candidates[0].id})")
+        state.issuetypes[name] = SimpleMapping(id=candidates[0].id)
+    return state, Plan(task=task_name, subtask=subtask_name)
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -174,7 +217,9 @@ async def run(args: argparse.Namespace) -> int:
                 created.append(instance)
 
     try:
-        state = await build_state(engine, args.url, args.project_key)
+        state, plan = await build_state(engine, args.url, args.project_key, args)
+        SmokeTask.__alias__ = plan.task
+        SmokeSubtask.__alias__ = plan.subtask or "sub-task"
         print(f"tenant:  {args.url}")
         print(f"project: {args.project_key} (company-managed)")
 
@@ -182,14 +227,15 @@ async def run(args: argparse.Namespace) -> int:
             async with AsyncSession(engine, state) as session:
                 target = date.today()
 
-                # 1. Insert a task carrying a duedate.
+                # ── duedate group (needs any creatable non-subtask type) ──
+                # 1. Insert carrying a duedate.
                 task = SmokeTask(summary="smoke: duedate/parent parent", duedate=target)
                 session.add(task, project=args.project_key)
                 await commit(session, task)
                 task_key = task.key
                 if not task_key:
-                    return bail("insert task with duedate", "no key assigned")
-                checks.check("insert task with duedate", True, f"key={task_key}")
+                    return bail("insert with duedate", "no key assigned")
+                checks.check(f"insert {plan.task} with duedate", True, f"key={task_key}")
 
                 # 2. Read it back: duedate hydrates to a date.
                 reread = await session.get(SmokeTask, task_key, fresh=True)
@@ -201,7 +247,39 @@ async def run(args: argparse.Namespace) -> int:
                     f"duedate={reread.duedate!r}",
                 )
 
-                # 3. Offline guard: a __subtask__ model without parent must
+                # 3. JQL round-trip on duedate (system-field queryability).
+                hits = await session.scalars(select(SmokeTask).where(SmokeTask.c.duedate == target))
+                checks.check(
+                    "duedate queryable in JQL",
+                    any(h.key == task_key for h in hits),
+                    f"{len(hits)} hit(s) for duedate == {target.isoformat()}",
+                )
+
+                if plan.subtask is None:
+                    checks.skip(
+                        "parent group (guard, insert, hydrate, move)",
+                        f"no sub-task type is creatable on {args.project_key!r} "
+                        f"(creatable: non-subtask only) — run against a project "
+                        f"whose scheme carries a sub-task type to cover #45's "
+                        f"parent half",
+                    )
+                    # 4. duedate clear on update, on the task itself.
+                    reread.duedate = None
+                    await session.commit()
+                    cleared = await session.get(SmokeTask, task_key, fresh=True)
+                    if cleared is None:
+                        return bail("duedate cleared with null on update", f"GET {task_key} returned nothing")
+                    checks.check(
+                        "duedate cleared with null on update",
+                        cleared.duedate is None,
+                        f"duedate={cleared.duedate!r}",
+                    )
+                    print()
+                    print(f"SMOKE PASSED with {checks.skips} skipped group(s) — duedate verified, parent not")
+                    return 0
+
+                # ── parent group (needs a creatable sub-task type) ────────
+                # 5. Offline guard: a __subtask__ model without parent must
                 # fail in the payload builder, before any request.
                 guard_raised = False
                 try:
@@ -218,16 +296,16 @@ async def run(args: argparse.Namespace) -> int:
                 if not guard_raised:
                     return bail("parentless subtask refused client-side", "no ConfigurationError raised")
 
-                # 4. Insert the sub-task under the task.
+                # 6. Insert the sub-task under the task.
                 sub = SmokeSubtask(summary="smoke: duedate/parent subtask", duedate=target, parent=task_key)
                 session.add(sub, project=args.project_key)
                 await commit(session, sub)
                 sub_key = sub.key
                 if not sub_key:
                     return bail("insert subtask with parent + duedate", "no key assigned")
-                checks.check("insert subtask with parent + duedate", True, f"key={sub_key}")
+                checks.check(f"insert {plan.subtask} with parent + duedate", True, f"key={sub_key}")
 
-                # 5. Read it back: parent hydrates as the parent's key.
+                # 7. Read it back: parent hydrates as the parent's key.
                 sub_reread = await session.get(SmokeSubtask, sub_key, fresh=True)
                 if sub_reread is None:
                     return bail("parent hydrates as parent key", f"GET {sub_key} returned nothing")
@@ -237,7 +315,7 @@ async def run(args: argparse.Namespace) -> int:
                     f"parent={sub_reread.parent!r}",
                 )
 
-                # 6. Clear the duedate on update (dirty None -> JSON null).
+                # 8. Clear the duedate on update (dirty None -> JSON null).
                 sub_reread.duedate = None
                 await session.commit()
                 cleared = await session.get(SmokeSubtask, sub_key, fresh=True)
@@ -249,13 +327,13 @@ async def run(args: argparse.Namespace) -> int:
                     f"duedate={cleared.duedate!r}",
                 )
 
-                # 7. Move the sub-task to a second parent.
+                # 9. Move the sub-task to a second parent.
                 task_b = SmokeTask(summary="smoke: second parent")
                 session.add(task_b, project=args.project_key)
                 await commit(session, task_b)
                 task_b_key = task_b.key
                 if not task_b_key:
-                    return bail("parent moved on update", "second task insert failed")
+                    return bail("parent moved on update", "second insert failed")
                 moved = await session.get(SmokeSubtask, sub_key)
                 if moved is None:
                     return bail("parent moved on update", f"GET {sub_key} returned nothing")
@@ -268,14 +346,6 @@ async def run(args: argparse.Namespace) -> int:
                     "parent moved on update",
                     moved_back.parent == task_b_key,
                     f"parent={moved_back.parent!r}",
-                )
-
-                # 8. JQL round-trip on duedate (system-field queryability).
-                hits = await session.scalars(select(SmokeTask).where(SmokeTask.c.duedate == target))
-                checks.check(
-                    "duedate queryable in JQL",
-                    any(h.key == task_key for h in hits),
-                    f"{len(hits)} hit(s) for duedate == {target.isoformat()}",
                 )
         finally:
             # Cleanup even on failure: delete everything this run created.
@@ -316,18 +386,18 @@ def main() -> None:
     parser.add_argument("--url", default=os.environ.get("SMOKE_JIRA_URL"), help="e.g. https://you.atlassian.net")
     parser.add_argument("--project-key", default=os.environ.get("SMOKE_PROJECT"), help="sandbox project key")
     parser.add_argument("--auth", choices=["api-token", "pat", "basic"], default="api-token")
-    parser.add_argument("--task-type", default="task", help="display name of the parent issue type")
-    parser.add_argument("--subtask-type", default="sub-task", help="display name of the sub-task issue type")
+    parser.add_argument(
+        "--task-type", default=None, help="pin the parent-role type name (default: first creatable non-subtask)"
+    )
+    parser.add_argument(
+        "--subtask-type", default=None, help="pin the sub-task role name (default: first creatable subtask)"
+    )
     parser.add_argument("--keep", action="store_true", help="keep created issues (default: delete)")
     parser.add_argument("--no-verify-ssl", action="store_true")
     args = parser.parse_args()
 
     if not args.url or not args.project_key:
         raise SystemExit("--url and --project-key are required (or SMOKE_JIRA_URL / SMOKE_PROJECT)")
-    # Allow non-default type names without editing the module: the state
-    # builder reads __alias__ at run time.
-    SmokeTask.__alias__ = args.task_type
-    SmokeSubtask.__alias__ = args.subtask_type
     raise SystemExit(asyncio.run(run(args)))
 
 
