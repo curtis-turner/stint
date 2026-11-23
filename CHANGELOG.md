@@ -6,6 +6,20 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-23
+
+### Added
+
+- Runtime schema check ([#50](https://github.com/curtis-turner/stint/issues/50)):
+  `engine.check(Project, state)` is the read-only call a running service
+  makes at startup — one reflect plus one createmeta GET, compared against
+  the declared project. Errors (missing field or option, issuetype gone or
+  not on the project, field not on the create screen, alias not in state)
+  are separated from warnings (extra options, renamed names/descriptions);
+  `report.raise_for_errors()` raises a `ConfigurationError` naming every
+  problem. Also exposed as `stint check --schema ... --state ...` with a
+  non-zero exit on errors.
+
 ## [0.16.0] - 2026-11-23
 
 ### Added
@@ -893,7 +907,8 @@ end-to-end against Jira Data Center and Jira Cloud.
 - TMP awareness: project style tracked in state, CMP-only ops raise
   `UnsupportedTMPOpError` with a deep link to the Jira UI.
 
-[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/curtis-turner/stint/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/curtis-turner/stint/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/curtis-turner/stint/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/curtis-turner/stint/compare/v0.13.0...v0.14.0
