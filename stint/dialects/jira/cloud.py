@@ -73,6 +73,7 @@ class JiraCloudDialect:
     def __init__(self, client: JiraHTTPClient) -> None:
         self.client = client
         self._lead_cache: dict[str, str] = {}
+        self._user_cache: dict[str, str] = {}
         self._field_config_api_cache: str | None = None
         self._all_field_ids_cache: frozenset[str] | None = None
         self._work_type_ids_cache: frozenset[str] | None = None
@@ -1885,52 +1886,65 @@ class JiraCloudDialect:
         a ConfigurationError with guidance rather than a raw transport error.
         Results are cached per engine run.
         """
-        if "@" not in lead:
-            return lead
-        cached = self._lead_cache.get(lead)
+        return await self._resolve_user_id(lead)
+
+    async def resolve_user(self, value: str) -> str:
+        """Resolve an email to the platform user id for data-plane fields
+        (assignee, reporter, UserField, MultiUserField).
+
+        Same search and selection rules as the lead resolver and the same
+        per-engine cache — one lookup per email no matter how many issues
+        or fields name the same person. A value without an ``@`` is assumed
+        already-resolved and passed through unchanged.
+        """
+        return await self._resolve_user_id(value)
+
+    async def _resolve_user_id(self, value: str) -> str:
+        """Shared user-search core for lead and field resolution."""
+        if "@" not in value:
+            return value
+        cached = self._user_cache.get(value)
         if cached is not None:
             return cached
         try:
             users = await self.client.get_json(
                 f"{self.api_root}/user/search",
-                params={self.user_search_param: lead},
+                params={self.user_search_param: value},
             )
         except PermissionError as exc:
             raise ConfigurationError(
-                f"Cannot resolve project lead {lead!r}: the API token lacks the "
+                f"Cannot resolve user {value!r}: the API token lacks the "
                 f"'Browse users and groups' permission required for user search. "
-                f"Grant it, or set __lead__ to a resolved "
+                f"Grant it, or set the field to a resolved "
                 f"{self.user_search_id_field} directly."
             ) from exc
-        resolved = self._pick_lead_id(lead, users)
-        self._lead_cache[lead] = resolved
+        resolved = self._pick_user_id(value, users)
+        self._user_cache[value] = resolved
         return resolved
 
-    def _pick_lead_id(self, lead: str, users: Any) -> str:
-        """Select the user id for ``lead`` from a user-search result list.
+    def _pick_user_id(self, value: str, users: Any) -> str:
+        """Select the user id for ``value`` from a user-search result list.
 
         Prefers an exact (case-insensitive) ``emailAddress`` match; falls back
         to the sole result when email is hidden (GDPR strips it on Cloud).
         Raises ConfigurationError when nothing usable is found.
         """
         if not isinstance(users, list) or not users:
-            raise ConfigurationError(f"No Jira user found for project lead email {lead!r}.")
-        matches = [u for u in users if str(u.get("emailAddress", "")).lower() == lead.lower()]
+            raise ConfigurationError(f"No Jira user found for email {value!r}.")
+        matches = [u for u in users if str(u.get("emailAddress", "")).lower() == value.lower()]
         if matches:
             chosen = matches[0]
         elif len(users) == 1:
             chosen = users[0]
         else:
             raise ConfigurationError(
-                f"Project lead email {lead!r} matched {len(users)} users but none "
-                f"by exact email; cannot disambiguate. Set __lead__ to a resolved "
+                f"Email {value!r} matched {len(users)} users but none by exact "
+                f"email; cannot disambiguate. Set the field to a resolved "
                 f"{self.user_search_id_field} directly."
             )
         user_id = chosen.get(self.user_search_id_field)
         if not user_id:
-            raise ConfigurationError(
-                f"Jira user for {lead!r} has no {self.user_search_id_field}; cannot use as project lead."
-            )
+            raise ConfigurationError(f"Jira user for {value!r} has no {self.user_search_id_field}.")
         return str(user_id)
 
     async def create_project(
