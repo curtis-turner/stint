@@ -11,6 +11,7 @@ $ stint --help
 | Command | What it does |
 |---|---|
 | `stint validate` | Run schema-level checks on a Python schema module. **No network calls.** |
+| `stint check` | Runtime schema check: compare a declared project against the live tenant (one reflect + createmeta, read-only). Non-zero exit on errors. |
 | `stint stamp` | Brownfield: populate the state file by matching schema declarations to *existing* Jira objects (read-only, no writes). |
 | `stint reflect` | Reflect the tenant into a snapshot (`ServerInfoSnapshot`-shaped) and print it as YAML (default) or JSON. Useful for the [autogen](migrations.md) diff to work with. |
 | `stint revision` | Create a new migration file: empty skeleton, `--merge` to join heads, or `--autogenerate` to diff the schema against a live environment. |
@@ -59,4 +60,26 @@ $ stint upgrade --env dev
 
 # CI (single writer per tenant)
 $ stint upgrade --env prod
+```
+
+## Runtime check (service startup)
+
+`stint check` answers the question `stint validate` cannot: does the tenant STILL match the code, right now? It reflects the project (one reflect's worth of reads plus the create-metadata endpoint — nothing written) and reports:
+
+- **errors** — a declared field or option is missing, an issuetype is gone or not on the project, a field is not on the create screen;
+- **warnings** — extra options on the tenant, renamed issuetype/field descriptions.
+
+```console
+$ stint check --schema schemas/platform.py --state state/prod.yaml --env prod
+PLAT: error: Bug.severity: option(s) ['S5'] missing from field 'Bug Severity' (customfield_10044); live options: ['S1', 'S2']
+check failed: see errors above.
+$ echo $?
+1
+```
+
+The same call is available to a running service, so it can fail fast at startup instead of 400-ing mid-sync after someone edits the project in the UI:
+
+```python
+report = await engine.check(MyProject, state)
+report.raise_for_errors()  # ConfigurationError naming every problem
 ```
