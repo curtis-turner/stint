@@ -86,6 +86,12 @@ class TmpApiError(StintError):
 
 
 # ── Data plane (M6 writes) ────────────────────────────────────────────
+class TransitionError(StintError):
+    """No workflow transition leads from the issue's current status to the
+    requested one. The message names the statuses that ARE reachable, so a
+    sync loop can log what the workflow actually allows."""
+
+
 class PartialCommitError(StintError):
     """Raised by AsyncSession.commit when some operations succeeded and
     some failed. Jira admin REST has no transactions, so successful work is

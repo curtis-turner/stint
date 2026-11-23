@@ -55,7 +55,10 @@ def field_keys_for_model(model: type[IssueType], state: StateFile) -> list[str]:
             continue
         cf = _custom_field_meta(field_info)
         if cf is None:
-            keys.append(attr_name)
+            # status_category is not a Jira field of its own: it rides on the
+            # status payload (fields.status.statusCategory). Request `status`
+            # once for both attributes.
+            keys.append("status" if attr_name == "status_category" else attr_name)
             continue
         mapping = state.custom_fields.get(cf.alias)
         if mapping is None:
@@ -63,7 +66,8 @@ def field_keys_for_model(model: type[IssueType], state: StateFile) -> list[str]:
             # instance will have the attribute set to its default.
             continue
         keys.append(mapping.id)
-    return keys
+    # Dedupe, preserving order (status + status_category both map to status).
+    return list(dict.fromkeys(keys))
 
 
 def hydrate(
@@ -85,6 +89,15 @@ def hydrate(
             continue
         cf = _custom_field_meta(field_info)
         if cf is None:
+            if attr_name == "status_category":
+                # Derived, read-only: fields.status.statusCategory.key
+                # ("new" / "indeterminate" / "done"). No payload of its own.
+                status_raw = fields_data.get("status")
+                if isinstance(status_raw, dict):
+                    category = status_raw.get("statusCategory")
+                    if isinstance(category, dict) and category.get("key") is not None:
+                        kwargs[attr_name] = str(category["key"])
+                continue
             raw = fields_data.get(attr_name)
             if raw is None and field_info.is_required():
                 continue  # let Pydantic raise if truly required
