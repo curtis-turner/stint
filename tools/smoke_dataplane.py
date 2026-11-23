@@ -566,21 +566,29 @@ async def run(args: argparse.Namespace) -> int:
                 subtask_kwargs = kwargs_for(plan.subtask_required)
 
                 # 5. Offline guard: a __subtask__ model without parent must
-                # fail in the payload builder, before any request.
+                # fail in the payload builder, before any request. Through
+                # session.commit() the ConfigurationError arrives wrapped in
+                # PartialCommitError (the documented per-instance envelope);
+                # a TransportError there would mean Jira saw the request —
+                # i.e. the guard never fired.
                 guard_raised = False
+                guard_detail = "no error raised"
                 try:
                     parentless = plan.subtask_model(summary="smoke: parentless", **subtask_kwargs)
                     session.add(parentless, project=args.project_key)
                     await session.commit()
-                    if parentless.key:  # only if Jira somehow accepted it
-                        created.append(parentless)
                 except ConfigurationError as e:
                     guard_raised = "parent" in str(e)
-                    checks.check("parentless subtask refused client-side", guard_raised, str(e)[:100])
-                except PartialCommitError:
-                    guard_raised = False
-                if not guard_raised:
-                    return bail("parentless subtask refused client-side", "no ConfigurationError raised")
+                    guard_detail = str(e)[:120]
+                except PartialCommitError as exc:
+                    failed = [r for r in exc.results if not r.success]
+                    err = failed[0].error if failed else None
+                    guard_raised = isinstance(err, ConfigurationError) and "parent" in str(err)
+                    guard_detail = f"{type(err).__name__}: {err}"[:120] if err else "no per-instance error"
+                if guard_raised:
+                    checks.check("parentless subtask refused client-side", True, guard_detail)
+                else:
+                    return bail("parentless subtask refused client-side", guard_detail)
 
                 # 6. Insert the sub-task under the task.
                 sub = plan.subtask_model(
