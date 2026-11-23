@@ -6,6 +6,19 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-23
+
+### Added
+
+- Data plane: comments ([#46](https://github.com/curtis-turner/stint/issues/46)).
+  `session.add_comment(issue, body)` wraps plain text in ADF on Cloud
+  (reusing `stint.query.adf`) and sends raw ADF dicts untouched; returns a
+  `Comment(id, author, created, body_text)`. `session.comments(issue)`
+  paginates the comment endpoint and renders every body to plain text, so a
+  sync loop can read first and post only when the message is not already
+  there. `session.delete_comment(issue, comment_id)` deletes by id. All
+  three accept a hydrated instance or a bare issue key.
+
 ## [0.12.0] - 2026-11-23
 
 ### Added
@@ -836,7 +849,8 @@ end-to-end against Jira Data Center and Jira Cloud.
 - TMP awareness: project style tracked in state, CMP-only ops raise
   `UnsupportedTMPOpError` with a deep link to the Jira UI.
 
-[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/curtis-turner/stint/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/curtis-turner/stint/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/curtis-turner/stint/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/curtis-turner/stint/compare/v0.9.0...v0.10.0
