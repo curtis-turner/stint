@@ -4,6 +4,22 @@ All notable changes to stint are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version
 numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.11.0] - 2026-11-23
+
+### Added
+
+- Data plane: `parent` and `duedate` as typed system fields on issue models
+  ([#45](https://github.com/curtis-turner/stint/issues/45)). `duedate:
+  date | None` round-trips via the existing system-field passthrough (sent as
+  `YYYY-MM-DD`, `null` clears it on update). `parent: str | None` is sent as
+  `{"key": ...}` and hydrated back as the parent issue key, on create and on
+  update. Sub-task models declare `__subtask__ = True`, which refuses a
+  parentless insert with a clear error before the request is sent. The
+  generic system-field passthrough is now documented
+  (`docs/guides/querying.md`).
+
 ## [0.10.0] - 2026-11-22
 
 ### Fixed
@@ -813,7 +829,8 @@ end-to-end against Jira Data Center and Jira Cloud.
 - TMP awareness: project style tracked in state, CMP-only ops raise
   `UnsupportedTMPOpError` with a deep link to the Jira UI.
 
-[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/curtis-turner/stint/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/curtis-turner/stint/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/curtis-turner/stint/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/curtis-turner/stint/compare/v0.7.0...v0.8.0

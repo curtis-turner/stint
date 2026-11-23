@@ -15,7 +15,8 @@ Per-field-type rules:
   - Number:        bare number
   - Date:          ``"YYYY-MM-DD"``
   - DateTime:      ``"YYYY-MM-DDTHH:MM:SS+00:00"``
-  - System fields (summary, reporter, assignee, priority, description): per-attr
+  - System fields (summary, reporter, assignee, priority, description,
+    duedate, parent): per-attr
 
 The function emits ``fields`` only for attributes the caller asked for via
 ``only=`` (used on UPDATE for dirty fields). For INSERT, the caller passes
@@ -185,6 +186,17 @@ def build_insert_payload(
     fields = build_fields_payload(instance, state, is_cloud=is_cloud)
     fields.pop("reporter", None)
 
+    # Sub-task guard: fail in-payload, before the request. A parentless
+    # sub-task create reaches Jira and 400s there; the declared flag makes
+    # the failure early and local. A model without __subtask__ (the default)
+    # is not affected — parent is then just another optional field.
+    if getattr(model, "__subtask__", False) and not fields.get("parent"):
+        raise ConfigurationError(
+            f"build_insert_payload: {model.__name__!r} declares "
+            f'__subtask__ = True but has no parent. Set `parent="<KEY>-<n>"` '
+            f"(the parent issue key) on the instance before add()."
+        )
+
     project_mapping = state.projects.get(project_key)
     if project_mapping is None:
         raise ConfigurationError(
@@ -313,6 +325,11 @@ def _emit_system_field(
     """
     if value is None:
         return attr_name, None
+    if attr_name == "parent":
+        # Sub-task parent link: Jira takes an object with a key (Cloud and
+        # DC both), never a bare string. Hydrate() reads fields.parent.key
+        # back (hydrate._coerce_system_field).
+        return attr_name, {"key": str(value)}
     if attr_name == "description" and is_cloud:
         return attr_name, wrap_plain_text(str(value))
     if attr_name in ("reporter", "assignee", "creator"):

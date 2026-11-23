@@ -120,6 +120,10 @@ def _coerce_system_field(attr_name: str, raw: Any) -> Any:
         # Special case: description may be an ADF document
         if attr_name == "description":
             return _parse_adf_to_text(raw)
+        # Sub-task parent: fields.parent is {"id": ..., "key": "PROJ-123",
+        # "fields": {...}} — the attribute stores the parent issue key.
+        if attr_name == "parent":
+            return raw.get("key")
         # Common cases:
         #   reporter/assignee/creator: {"name": "...", "accountId": "..."}
         #   priority/status/resolution: {"name": "..."}

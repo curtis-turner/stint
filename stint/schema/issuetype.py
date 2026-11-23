@@ -161,6 +161,10 @@ class IssueType(BaseModel, metaclass=IssueTypeMeta):
     - ``__description__``: optional Jira description.
     - ``__screen_scheme__``: optional ScreenScheme reference (CMP only).
     - ``__field_configuration__``: optional FieldConfiguration reference (CMP only).
+    - ``__subtask__``: optional boolean. Set True on sub-task issue types; the
+      data plane then refuses an insert without a ``parent`` before sending
+      the request (Jira rejects a parentless sub-task create anyway, but the
+      guard fails early with a clear message).
 
     Pydantic-typed attributes declare the data-plane fields. The same class is
     used both as a schema-plane object (declaring what issuetype to provision
@@ -192,3 +196,7 @@ class IssueType(BaseModel, metaclass=IssueTypeMeta):
     c: typing.ClassVar[Columns]
     # Project keys that include this issuetype; appended by ProjectMeta.
     __projects__: typing.ClassVar[tuple[str, ...]] = ()
+    # Declared True on sub-task issuetypes (stint cannot infer subtask-ness
+    # from the alias). Used by the insert payload builder to refuse a
+    # parentless create before the request is sent.
+    __subtask__: typing.ClassVar[bool] = False
