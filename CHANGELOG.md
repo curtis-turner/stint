@@ -6,6 +6,8 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-22
+
 ### Fixed
 
 - `stint apply` (jira_cloud_tmp) no longer strips GLOBAL-scope custom fields
@@ -763,7 +765,9 @@ end-to-end against Jira Data Center and Jira Cloud.
 - TMP awareness: project style tracked in state, CMP-only ops raise
   `UnsupportedTMPOpError` with a deep link to the Jira UI.
 
-[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/curtis-turner/stint/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/curtis-turner/stint/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/curtis-turner/stint/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/curtis-turner/stint/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/curtis-turner/stint/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/curtis-turner/stint/compare/v0.5.0...v0.6.0
