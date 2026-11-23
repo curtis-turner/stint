@@ -440,13 +440,28 @@ async def run(args: argparse.Namespace) -> int:
                 )
 
                 # 3. JQL round-trip on duedate (system-field queryability).
-                hits = await session.scalars(
-                    select(type(task)).where(type(task).c.duedate == target)  # type: ignore[attr-defined]
-                )
+                # Cloud's search index is eventually consistent: a
+                # just-created issue can be missing from JQL results for a
+                # few seconds, so poll with a deadline instead of one shot.
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + 20.0
+                found = False
+                hits: list = []
+                while True:
+                    hits = await session.scalars(
+                        select(type(task)).where(type(task).c.duedate == target)  # type: ignore[attr-defined]
+                    )
+                    if any(h.key == task_key for h in hits):
+                        found = True
+                        break
+                    if loop.time() > deadline:
+                        break
+                    await asyncio.sleep(2.0)
                 checks.check(
                     "duedate queryable in JQL",
-                    any(h.key == task_key for h in hits),
-                    f"{len(hits)} hit(s) for duedate == {target.isoformat()}",
+                    found,
+                    f"{len(hits)} hit(s) for duedate == {target.isoformat()}"
+                    + ("" if found else " (still absent after 20s — index lag or a real JQL gap)"),
                 )
 
                 if plan.subtask_model is None:
@@ -468,6 +483,9 @@ async def run(args: argparse.Namespace) -> int:
                         f"duedate={cleared.duedate!r}",
                     )
                     print()
+                    if checks.failures:
+                        print(f"SMOKE FAILED: {checks.failures} check(s) failed (parent group not run)")
+                        return 1
                     print(f"SMOKE PASSED with {checks.skips} skipped group(s) — duedate verified, parent not")
                     return 0
 
