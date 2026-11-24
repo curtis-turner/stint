@@ -117,15 +117,25 @@ def main() -> int:
         args.service_token,
         args.value_json if args.apply else None,
     )
-    _probe(
-        "user",
-        args.url,
-        args.issue,
-        args.field,
-        args.user_email,
-        args.user_token,
-        args.value_json if args.apply else None,
-    )
+    if args.user_email and args.user_token:
+        _probe(
+            "user",
+            args.url,
+            args.issue,
+            args.field,
+            args.user_email,
+            args.user_token,
+            args.value_json if args.apply else None,
+        )
+    else:
+        print(
+            "[user] skipped: no USER_EMAIL/USER_TOKEN. A second identity is needed for\n"
+            "         the 'every EDIT_ISSUES holder can write it' direction; with one\n"
+            "         identity this run pins the cosmetic-lock combination for THAT\n"
+            "         holder (editmeta hides the field, REST writes succeed anyway).\n"
+            "         The broad-holder claim stays cited to JRACLOUD-98054 in\n"
+            "         docs/guides/locking.md instead of measured."
+        )
     return rc
 
 
