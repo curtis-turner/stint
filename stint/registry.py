@@ -23,6 +23,8 @@ if TYPE_CHECKING:
     from stint.schema.project import Project
     from stint.schema.screen import Screen, ScreenScheme
     from stint.schema.security import SecurityScheme
+    from stint.schema.workflows import Workflow
+    from stint.schema.workflows import WorkflowScheme as WorkflowSchemeDeclaration
 
 
 def _check_replace_on_reload(
@@ -86,6 +88,8 @@ class Registry:
         self.field_configurations: dict[str, FieldConfiguration] = {}
         self.security_schemes: dict[str, SecurityScheme] = {}
         self.permission_schemes: dict[str, PermissionScheme] = {}
+        self.workflows: dict[str, Workflow] = {}
+        self.workflow_schemes: dict[str, WorkflowSchemeDeclaration] = {}
 
     def register_issuetype(self, cls: type[IssueType]) -> None:
         alias = getattr(cls, "__alias__", None)
@@ -169,6 +173,32 @@ class Registry:
         self.permission_schemes[alias] = scheme
         scheme._declared_module = module  # ty: ignore[unresolved-attribute]
 
+    def register_workflow(self, workflow: Workflow) -> None:
+        """Register a schema-declared ``Workflow`` (from its ``__post_init__``;
+        reflection-built snapshots never touch the registry)."""
+        alias = getattr(workflow, "alias", "")
+        if not alias:
+            raise RegistryError("Workflow declaration requires a non-empty alias")
+        module = _declaring_module()
+        known = self.workflows.get(alias)
+        if known is not None and known is not workflow:
+            _check_replace_on_reload(kind="Workflow", alias=alias, known=known, incoming_module=module)
+        self.workflows[alias] = workflow
+        workflow._declared_module = module  # ty: ignore[unresolved-attribute]
+
+    def register_workflow_scheme(self, scheme: WorkflowSchemeDeclaration) -> None:
+        """Register a schema-declared ``WorkflowScheme`` (from its
+        ``__post_init__``; reflection-built snapshots never touch the registry)."""
+        alias = getattr(scheme, "alias", "")
+        if not alias:
+            raise RegistryError("WorkflowScheme declaration requires a non-empty alias")
+        module = _declaring_module()
+        known = self.workflow_schemes.get(alias)
+        if known is not None and known is not scheme:
+            _check_replace_on_reload(kind="WorkflowScheme", alias=alias, known=known, incoming_module=module)
+        self.workflow_schemes[alias] = scheme
+        scheme._declared_module = module  # ty: ignore[unresolved-attribute]
+
     def reset(self) -> None:
         """Used by tests to isolate state."""
         self.issuetypes.clear()
@@ -179,6 +209,8 @@ class Registry:
         self.field_configurations.clear()
         self.security_schemes.clear()
         self.permission_schemes.clear()
+        self.workflows.clear()
+        self.workflow_schemes.clear()
 
 
 registry = Registry()

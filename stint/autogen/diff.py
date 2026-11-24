@@ -21,6 +21,7 @@ from stint.autogen.desired import (
     DesiredSnapshot,
 )
 from stint.fields import jira_system_field_id
+from stint.lockout import restrict_rule_parameters
 
 if TYPE_CHECKING:
     from stint.state.file import StateFile
@@ -301,6 +302,111 @@ class SetProjectPermissionScheme(Change):
     scheme_alias: str
 
 
+# Workflows / workflow schemes
+@dataclass(frozen=True)
+class WorkflowTransitionSpec:
+    """One declared transition inside a workflow change.
+
+    ``restrict_to`` holders carry the *declared* values (role name, group
+    name, email or accountId, permission key); ops resolve them to Jira's
+    restrict-rule form (comma-separated roleIds/groupIds/permissionKeys)
+    at apply time.
+    """
+
+    name: str
+    from_statuses: tuple[str, ...]  # status names; empty = GLOBAL transition
+    to_status: str  # status name
+    restrict_to: tuple[tuple[str, str], ...] = ()  # (holder_type, declared parameter)
+    description: str = ""
+
+
+@dataclass
+class CreateWorkflow(Change):
+    alias: str
+    name: str
+    description: str
+    statuses: tuple[tuple[str, str, str], ...]  # (name, category, description) declaration order
+    initial: str  # status name
+    transitions: tuple[WorkflowTransitionSpec, ...]  # declared order
+
+
+@dataclass
+class AdoptWorkflow(Change):
+    """Record an existing (reflected) workflow into state without rewriting
+    it. Adoption is non-destructive: undeclared transitions, validators and
+    postfunctions stay; drift is reported by engine.check."""
+
+    alias: str
+    name: str
+
+
+@dataclass
+class UpdateWorkflow(Change):
+    alias: str
+    name: str
+    statuses: tuple[tuple[str, str, str], ...]  # declared statuses (name, category, description)
+    initial: str
+    transitions: tuple[WorkflowTransitionSpec, ...]
+    version_id: str = ""  # optimistic-locking DocumentVersion from reflect
+    version_number: int = 0
+    preserve_statuses: tuple[str, ...] = ()  # live status names kept (undeclared)
+    preserve_transitions: tuple[dict[str, Any], ...] = ()  # raw reflected transitions kept
+
+
+@dataclass
+class DeleteWorkflow(Change):
+    alias: str
+
+
+@dataclass
+class CreateWorkflowScheme(Change):
+    alias: str
+    name: str
+    description: str
+    default_workflow: str  # workflow alias
+    mappings: tuple[tuple[str, str], ...]  # (issuetype alias, workflow alias)
+
+
+@dataclass
+class AdoptWorkflowScheme(Change):
+    alias: str
+    name: str
+
+
+@dataclass
+class UpdateWorkflowScheme(Change):
+    alias: str
+    name: str | None = None
+    description: str | None = None
+    default_workflow: str | None = None
+    mappings: tuple[tuple[str, str], ...] | None = None  # full desired mapping set
+
+
+@dataclass
+class DeleteWorkflowScheme(Change):
+    alias: str
+
+
+@dataclass
+class SetProjectWorkflowScheme(Change):
+    """Bind (or rebind) a project's workflow scheme.
+
+    ``live=False`` — the project is being created in this same migration
+    (no issues yet): the sync associate endpoint runs.
+
+    ``live=True`` — the project already exists: Jira runs an async switch
+    task. ``status_mappings`` maps old status name → new status name for
+    issues that would otherwise be stranded; Jira dictates *which*
+    statuses require mapping (the op reads it and refuses to guess), and
+    the operator fills the values in the migration before applying.
+    """
+
+    project_alias: str
+    scheme_alias: str
+    live: bool = True
+    status_mappings: tuple[tuple[str, str], ...] = ()  # (old status name, new status name)
+
+
 # Project role actors
 @dataclass
 class AddProjectRoleActor(Change):
@@ -469,6 +575,8 @@ def diff(
     _diff_security_schemes(r, desired, snapshot, state, allow_delete, member_params=member_params)
     _diff_permission_schemes(r, desired, snapshot, state, allow_delete, member_params=member_params)
     _diff_project_roles(r, desired, snapshot, state, allow_delete, member_params=member_params)
+    _diff_workflows(r, desired, snapshot, state, allow_delete, member_params=member_params)
+    _diff_workflow_schemes(r, desired, snapshot, state, allow_delete)
     return r
 
 
@@ -1027,6 +1135,14 @@ def _diff_projects(
                         scheme_alias=want.permission_scheme,
                     )
                 )
+            if want.workflow_scheme is not None:
+                r.changes.append(
+                    SetProjectWorkflowScheme(
+                        project_alias=alias,
+                        scheme_alias=want.workflow_scheme,
+                        live=False,
+                    )
+                )
             continue
         # Existing project — name/lead/description diff.
         existing_id = state.projects[alias].id
@@ -1102,6 +1218,14 @@ def _diff_projects(
             state_table=state.permission_schemes,
             actual_id=actual.permission_scheme_id,
             change_cls=SetProjectPermissionScheme,
+        )
+        _maybe_emit_set_workflow_scheme(
+            r,
+            project_alias=alias,
+            desired_scheme=want.workflow_scheme or "",
+            state=state,
+            actual_scheme_id=actual.workflow_scheme_id,
+            project_in_state=True,
         )
 
     if allow_delete:
@@ -1486,6 +1610,310 @@ def _resolve_project_key(
         if proj.id == project_id:
             return proj.key
     return None
+
+
+# ── Workflows / workflow schemes ─────────────────────────────────────
+def _declared_transition_specs(want) -> tuple[WorkflowTransitionSpec, ...]:
+    return tuple(
+        WorkflowTransitionSpec(
+            name=t.name,
+            from_statuses=t.from_statuses,
+            to_status=t.to_status,
+            restrict_to=tuple((h.holder_type, h.holder_parameter) for h in t.restrict_to),
+            description=t.description,
+        )
+        for t in want.transitions
+    )
+
+
+def _restrict_comparable(
+    actual_params: dict[str, str] | None,
+    declared: tuple[tuple[str, str], ...],
+    snapshot: Snapshot,
+) -> bool | None:
+    """Three-way comparison of declared restrict holders against a live
+    transition's restrict parameters.
+
+    True = provably equal, False = provably different, None = unprovable
+    (group-name → group-id resolution needs HTTP; the diff is sync). Only
+    ``permissionKeys`` and ``roleIds`` (resolvable against the reflected
+    global role map) are comparable here; any declared group holder or an
+    unresolvable role name makes the comparison unprovable, which the
+    engine.check layer reports as drift rather than the diff rewriting.
+    """
+    declared_keys = sorted(p for t, p in declared if t == "permission")
+    declared_role_names = [p for t, p in declared if t == "projectrole"]
+    if declared_role_names:
+        declared_roles: list[str] | None = []
+        for name in declared_role_names:
+            role_id = snapshot.project_roles.get(name)
+            if role_id is None:
+                return None  # unresolvable role name
+            declared_roles.append(role_id)
+    else:
+        declared_roles = []
+    if any(t in ("group", "user") for t, _ in declared):
+        return None
+    if actual_params is None:
+        return not declared_keys and not declared_roles
+    actual_keys = sorted({v.strip() for v in str(actual_params.get("permissionKeys", "")).split(",") if v.strip()})
+    actual_roles = sorted({v.strip() for v in str(actual_params.get("roleIds", "")).split(",") if v.strip()})
+    return declared_keys == actual_keys and sorted(declared_roles or []) == actual_roles
+
+
+def _diff_workflows(
+    r: DiffResult,
+    desired: DesiredSnapshot,
+    snapshot: Snapshot,
+    state: StateFile,
+    allow_delete: bool,
+    member_params: dict[str, str] | None = None,
+) -> None:
+    """Diff declared workflows against reflection, keyed by *name* (the
+    handle the classic scheme APIs and operators use; the new-model UUID is
+    bookkeeping recorded in state).
+
+    Adoption (name exists in Jira, alias not in state) is non-destructive:
+    an AdoptWorkflow records the mapping without rewriting — undeclared
+    transitions/validators/postfunctions stay, and drift is reported by
+    engine.check. Once adopted, declared-content drift emits an
+    UpdateWorkflow whose payload preserves every undeclared live status and
+    transition (verbatims ride along so the declarative update does not
+    delete them — Jira's update replace semantics are undocumented).
+    """
+    for alias, want in desired.workflows.items():
+        if alias not in state.workflows:
+            existing = snapshot.workflows.get(want.name)
+            if existing is not None and existing.scope == "GLOBAL":
+                r.changes.append(AdoptWorkflow(alias=alias, name=want.name))
+                continue
+            if existing is not None:
+                r.warnings.append(
+                    f"workflow {alias!r}: a project-scoped (team-managed) workflow named "
+                    f"{want.name!r} exists; company-managed declarations cannot manage it."
+                )
+            r.changes.append(
+                CreateWorkflow(
+                    alias=alias,
+                    name=want.name,
+                    description=want.description,
+                    statuses=tuple((s.name, s.category, s.description) for s in want.statuses),
+                    initial=want.initial,
+                    transitions=_declared_transition_specs(want),
+                )
+            )
+            continue
+        mapping = state.workflows[alias]
+        actual = snapshot.workflows.get(want.name) or next(
+            (w for w in snapshot.workflows.values() if w.id == mapping.id), None
+        )
+        if actual is None:
+            r.warnings.append(
+                f"workflow {alias!r}: state references id {mapping.id!r} but no workflow "
+                f"named {want.name!r} is present in Jira (out-of-band delete?)"
+            )
+            continue
+        needs_update = False
+        actual_status_names = {s.name for s in actual.statuses}
+        declared_status_names = {s.name for s in want.statuses}
+        if not declared_status_names <= actual_status_names:
+            needs_update = True
+        if actual.description != want.description:
+            needs_update = True
+        actual_transitions = {t.name: t for t in actual.transitions}
+        for spec in _declared_transition_specs(want):
+            live = actual_transitions.get(spec.name)
+            if live is None:
+                needs_update = True
+                continue
+            if live.to_status != spec.to_status:
+                needs_update = True
+                continue
+            if set(spec.from_statuses) != set(live.from_statuses):
+                needs_update = True
+                continue
+            comparison = _restrict_comparable(
+                restrict_rule_parameters(live.conditions),
+                spec.restrict_to,
+                snapshot,
+            )
+            if comparison is False:
+                needs_update = True
+            elif comparison is None and spec.restrict_to:
+                r.warnings.append(
+                    f"workflow {alias!r} transition {spec.name!r}: restrict holders cannot be "
+                    f"verified in the diff (group/user resolution needs live lookups); "
+                    f"engine.check reports role drift and the restrict rule is left as-is "
+                    f"unless another declared change updates this workflow."
+                )
+        if needs_update:
+            declared_transition_names = {spec.name for spec in _declared_transition_specs(want)}
+            r.changes.append(
+                UpdateWorkflow(
+                    alias=alias,
+                    name=want.name,
+                    statuses=tuple((s.name, s.category, s.description) for s in want.statuses),
+                    initial=want.initial,
+                    transitions=_declared_transition_specs(want),
+                    version_id=actual.version_id,
+                    version_number=actual.version_number,
+                    preserve_statuses=tuple(sorted(actual_status_names - declared_status_names)),
+                    preserve_transitions=tuple(
+                        t.raw for t in actual.transitions if t.name not in declared_transition_names
+                    ),
+                )
+            )
+        # Undeclared live transitions are preserved by construction (they ride
+        # along in any UpdateWorkflow payload); when no update is needed they
+        # simply stay untouched.
+
+    if allow_delete:
+        for alias in sorted(state.workflows):
+            if alias not in desired.workflows:
+                r.changes.append(DeleteWorkflow(alias=alias))
+    else:
+        _warn_orphans(r, "workflow", state.workflows, desired.workflows)
+
+
+def _diff_workflow_schemes(
+    r: DiffResult,
+    desired: DesiredSnapshot,
+    snapshot: Snapshot,
+    state: StateFile,
+    allow_delete: bool,
+) -> None:
+    """Diff declared workflow schemes against reflection (keyed by name, the
+    classic scheme APIs' handle).
+
+    Adoption mirrors workflows: an existing scheme by name is recorded
+    (AdoptWorkflowScheme), never rewritten; default/mapping drift is
+    reported by engine.check. Once adopted, drift emits UpdateWorkflowScheme
+    with the full desired mapping set.
+    """
+    for alias, want in desired.workflow_schemes.items():
+        if alias not in state.workflow_schemes:
+            existing = next(
+                (s for s in snapshot.workflow_schemes.values() if s.name == want.name and not s.is_draft),
+                None,
+            )
+            if existing is not None:
+                r.changes.append(AdoptWorkflowScheme(alias=alias, name=want.name))
+                continue
+            r.changes.append(
+                CreateWorkflowScheme(
+                    alias=alias,
+                    name=want.name,
+                    description=want.description,
+                    default_workflow=want.default,
+                    mappings=tuple(want.mappings),
+                )
+            )
+            continue
+        actual = next(
+            (s for s in snapshot.workflow_schemes.values() if s.id == state.workflow_schemes[alias].id),
+            None,
+        )
+        if actual is None:
+            r.warnings.append(
+                f"workflow_scheme {alias!r}: state references id "
+                f"{state.workflow_schemes[alias].id!r} but it's not present in Jira "
+                f"(out-of-band delete?)"
+            )
+            continue
+        name_change = want.name if actual.name != want.name else None
+        desc_change = want.description if actual.description != want.description else None
+        default_change = want.default if actual.default_workflow != want.default else None
+        mappings_change: tuple[tuple[str, str], ...] | None = None
+        if actual.mappings or want.mappings:
+            declared_resolved = _resolved_scheme_mappings(want, state)
+            actual_by_alias = _mappings_by_alias(actual, state)
+            if declared_resolved is None:
+                r.warnings.append(
+                    f"workflow_scheme {alias!r}: mapping comparison skipped — a declared "
+                    f"issuetype or workflow alias is not yet in state (created in this same "
+                    f"migration); the next autogenerate run will compare."
+                )
+            elif declared_resolved != actual_by_alias:
+                mappings_change = tuple(want.mappings)
+        if (
+            name_change is not None
+            or desc_change is not None
+            or default_change is not None
+            or mappings_change is not None
+        ):
+            r.changes.append(
+                UpdateWorkflowScheme(
+                    alias=alias,
+                    name=name_change,
+                    description=desc_change,
+                    default_workflow=default_change,
+                    mappings=mappings_change,
+                )
+            )
+
+    if allow_delete:
+        for alias in sorted(state.workflow_schemes):
+            if alias not in desired.workflow_schemes:
+                r.changes.append(DeleteWorkflowScheme(alias=alias))
+    else:
+        _warn_orphans(r, "workflow_scheme", state.workflow_schemes, desired.workflow_schemes)
+
+
+def _mappings_by_alias(actual: Any, state: StateFile) -> dict[str, str]:
+    """Translate a reflected scheme's issueTypeId→workflow-name mappings into
+    declared-alias space (issuetype alias → workflow alias) using the state
+    tables. Unknown ids/names are skipped (they compare as drift elsewhere)."""
+    id_to_it_alias = {m.id: alias for alias, m in state.issuetypes.items()}
+    name_to_wf_alias = {w.name: alias for alias, w in state.workflows.items()}
+    out: dict[str, str] = {}
+    for it_id, wf_name in (actual.mappings or {}).items():
+        it_alias = id_to_it_alias.get(str(it_id))
+        wf_alias = name_to_wf_alias.get(str(wf_name))
+        if it_alias is not None and wf_alias is not None:
+            out[it_alias] = wf_alias
+    return out
+
+
+def _resolved_scheme_mappings(want, state: StateFile) -> dict[str, str] | None:
+    """Declared mappings resolved to id-comparable form, or None when a
+    referenced issuetype/workflow is not yet in state."""
+    out: dict[str, str] = {}
+    for it_alias, wf_alias in want.mappings:
+        it_mapping = state.issuetypes.get(it_alias)
+        wf_mapping = state.workflows.get(wf_alias)
+        if it_mapping is None or wf_mapping is None:
+            return None
+        out[it_alias] = wf_alias
+    return out
+
+
+def _maybe_emit_set_workflow_scheme(
+    r: DiffResult,
+    *,
+    project_alias: str,
+    desired_scheme: str,
+    state: StateFile,
+    actual_scheme_id: str,
+    project_in_state: bool,
+) -> None:
+    """Emit a SetProjectWorkflowScheme when the project's binding differs.
+
+    Existing projects rebind through the async switch endpoint (live=True);
+    projects created in this same migration use the sync associate path.
+    The desired scheme alias may not be in state yet — the create op runs
+    first by phase order, so apply-time alias resolution still works."""
+    if not desired_scheme:
+        return  # nothing declared: leave the project's binding alone
+    state_scheme_id = state.workflow_schemes[desired_scheme].id if desired_scheme in state.workflow_schemes else None
+    if actual_scheme_id and state_scheme_id is not None and actual_scheme_id == state_scheme_id:
+        return  # in-sync
+    r.changes.append(
+        SetProjectWorkflowScheme(
+            project_alias=project_alias,
+            scheme_alias=desired_scheme,
+            live=project_in_state,
+        )
+    )
 
 
 def _maybe_emit_set_scheme(

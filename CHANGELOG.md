@@ -4,6 +4,41 @@ All notable changes to stint are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version
 numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Workflows and workflow schemes** (feature 3 of the permissions-workflow
+  request, all phases). Declare `Status`/`Transition`/`Workflow`/
+  `WorkflowScheme` with `Project.__workflow_scheme__`; stint reflects
+  tenant workflows/statuses/schemes and each project's binding
+  (`GET /workflows/search`, `GET /workflowscheme`,
+  `GET /workflowscheme/project`), diffs greenfield creates, non-destructive
+  adoption, and declarative updates that preserve undeclared statuses and
+  transitions, and applies them via the current bulk APIs
+  (`POST /workflows/create`, `POST /workflows/update`, classic
+  workflow-scheme endpoints). Transition `restrict_to` holders
+  (`ProjectRole`/`Group`/`User`/`Permission`) compile to the aggregate
+  `system:restrict-issue-transition` rule with apply-time
+  role-id/group-id/accountId resolution.
+- **Status mappings for live scheme switches** (phase 3): rebinding an
+  existing project runs `POST /workflowscheme/project/switch` as an async
+  task, polled to completion. stint reads Jira's required-mappings API
+  first and refuses to guess: statuses that would be stranded require an
+  explicit `status_mappings={"Old": "New"}` entry in the migration before
+  anything is written. Empty projects use the synchronous associate path.
+- **Transition lockout guard**: plan time (`engine.check`) and apply time
+  (`op.update_workflow`, `op.set_project_workflow_scheme`) evaluate which
+  transitions the authenticated account provably loses — roles via its
+  project memberships, groups via group-id resolution, permissions via
+  `/mypermissions` — and refuse when a service account's transitions would
+  break. Escape with `--allow-lockout`, like every other guard.
+- `stint validate` cross-checks workflow `ProjectRole` restrict holders
+  against declared `__roles__`; `engine.check` reports workflow
+  status/transition/binding drift.
+- Worked example `examples/company_managed/workflow.py` and a Workflows
+  section in the schema guide.
+
 ## [0.19.0] - 2026-11-24
 
 ### Added

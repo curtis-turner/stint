@@ -26,6 +26,8 @@ from stint.autogen.diff import (
     AddScreenTabField,
     AddSecurityLevel,
     AddSecurityLevelMember,
+    AdoptWorkflow,
+    AdoptWorkflowScheme,
     Change,
     ClearDefaultSecurityLevel,
     CreateCustomField,
@@ -39,6 +41,8 @@ from stint.autogen.diff import (
     CreateProject,
     CreateScreen,
     CreateScreenScheme,
+    CreateWorkflow,
+    CreateWorkflowScheme,
     DeleteCustomField,
     DeleteFieldConfiguration,
     DeleteFieldConfigurationScheme,
@@ -50,6 +54,8 @@ from stint.autogen.diff import (
     DeleteProject,
     DeleteScreen,
     DeleteScreenScheme,
+    DeleteWorkflow,
+    DeleteWorkflowScheme,
     RemoveCustomFieldOption,
     RemovePermissionGrant,
     RemoveProjectRoleActor,
@@ -60,6 +66,7 @@ from stint.autogen.diff import (
     SetProjectIssueTypeScheme,
     SetProjectIssueTypeScreenScheme,
     SetProjectPermissionScheme,
+    SetProjectWorkflowScheme,
     UpdateCustomField,
     UpdateFieldConfiguration,
     UpdateFieldConfigurationScheme,
@@ -71,6 +78,8 @@ from stint.autogen.diff import (
     UpdateProject,
     UpdateScreen,
     UpdateScreenScheme,
+    UpdateWorkflow,
+    UpdateWorkflowScheme,
 )
 from stint.fields import _FieldType
 
@@ -264,9 +273,25 @@ _PHASE: dict[type, int] = {
     # freshly created project can bind in the same migration; grants ride
     # after the create, binding after the other scheme bindings.
     CreatePermissionScheme: 39,
+    # Workflows must exist (create or adopt) before scheme creates reference
+    # them by name at apply time.
+    CreateWorkflow: 38,
+    AdoptWorkflow: 38,
+    UpdateWorkflow: 76,
+    # Scheme creates come after workflow creates/adoption.
+    CreateWorkflowScheme: 39,
+    AdoptWorkflowScheme: 47,
+    UpdateWorkflowScheme: 76,
+    DeleteWorkflowScheme: 88,
+    DeleteWorkflow: 89,
     AddPermissionGrant: 46,
     UpdatePermissionScheme: 76,
     SetProjectPermissionScheme: 63,
+    # Workflow-scheme bindings run late (77): after workflow content updates
+    # (76) so a brownfield rebind applies declared transitions first, and
+    # the async switch task only starts once the target scheme's workflows
+    # carry their final shape.
+    SetProjectWorkflowScheme: 77,
     UpdateCustomField: 70,
     AddCustomFieldOption: 71,
     RemoveCustomFieldOption: 72,
@@ -780,6 +805,97 @@ def _render_one(change: Change, allow_lockout: bool = False) -> str:
             f"    )"
         )
 
+    if isinstance(change, CreateWorkflow):
+        statuses_str = _render_workflow_statuses(change.statuses)
+        transitions_str = _render_workflow_transitions(change.transitions)
+        desc_kv = f",\n        description={change.description!r}" if change.description else ""
+        return (
+            f"    await op.create_workflow(\n"
+            f"        alias={change.alias!r},\n"
+            f"        name={change.name!r}{desc_kv},\n"
+            f"        statuses={statuses_str},\n"
+            f"        initial={change.initial!r},\n"
+            f"        transitions={transitions_str},\n"
+            f"    )"
+        )
+
+    if isinstance(change, AdoptWorkflow):
+        return f"    await op.adopt_workflow(alias={change.alias!r}, name={change.name!r})"
+
+    if isinstance(change, UpdateWorkflow):
+        statuses_str = _render_workflow_statuses(change.statuses)
+        transitions_str = _render_workflow_transitions(change.transitions)
+        kwargs = [
+            f"alias={change.alias!r}",
+            f"name={change.name!r}",
+            f"statuses={statuses_str}",
+            f"initial={change.initial!r}",
+            f"transitions={transitions_str}",
+        ]
+        if change.preserve_statuses:
+            kwargs.append(f"preserve_statuses={list(change.preserve_statuses)!r}")
+        if change.preserve_transitions:
+            kwargs.append(f"preserve_transitions={_render_raw_payloads(change.preserve_transitions)}")
+        if allow_lockout:
+            kwargs.append("allow_lockout=True")
+        return _kwargs_call("op.update_workflow", kwargs)
+
+    if isinstance(change, DeleteWorkflow):
+        return f"    await op.delete_workflow(alias={change.alias!r})"
+
+    if isinstance(change, CreateWorkflowScheme):
+        mappings_str = "[]"
+        if change.mappings:
+            entries = ",\n            ".join(
+                f"dict(issuetype={it_alias!r}, workflow={wf_alias!r})" for it_alias, wf_alias in change.mappings
+            )
+            mappings_str = "[\n            " + entries + ",\n        ]"
+        desc_kv = f",\n        description={change.description!r}" if change.description else ""
+        return (
+            f"    await op.create_workflow_scheme(\n"
+            f"        alias={change.alias!r},\n"
+            f"        name={change.name!r}{desc_kv},\n"
+            f"        default_workflow={change.default_workflow!r},\n"
+            f"        mappings={mappings_str},\n"
+            f"    )"
+        )
+
+    if isinstance(change, AdoptWorkflowScheme):
+        return f"    await op.adopt_workflow_scheme(alias={change.alias!r}, name={change.name!r})"
+
+    if isinstance(change, UpdateWorkflowScheme):
+        kwargs = [f"alias={change.alias!r}"]
+        if change.name is not None:
+            kwargs.append(f"name={change.name!r}")
+        if change.description is not None:
+            kwargs.append(f"description={change.description!r}")
+        if change.default_workflow is not None:
+            kwargs.append(f"default_workflow={change.default_workflow!r}")
+        if change.mappings is not None:
+            entries = ",\n            ".join(
+                f"dict(issuetype={it_alias!r}, workflow={wf_alias!r})" for it_alias, wf_alias in change.mappings
+            )
+            kwargs.append("mappings=[\n            " + entries + ",\n        ]")
+        return _kwargs_call("op.update_workflow_scheme", kwargs)
+
+    if isinstance(change, DeleteWorkflowScheme):
+        return f"    await op.delete_workflow_scheme(alias={change.alias!r})"
+
+    if isinstance(change, SetProjectWorkflowScheme):
+        kwargs = [
+            f"project_alias={change.project_alias!r}",
+            f"scheme_alias={change.scheme_alias!r}",
+            f"live={change.live!r}",
+        ]
+        if change.status_mappings:
+            entries = ", ".join(f"{old!r}: {new!r}" for old, new in change.status_mappings)
+            kwargs.append("status_mappings={\n            " + entries + ",\n        }")
+        else:
+            kwargs.append("status_mappings={}")
+        if allow_lockout:
+            kwargs.append("allow_lockout=True")
+        return _kwargs_call("op.set_project_workflow_scheme", kwargs)
+
     if isinstance(change, CreateProject):
         desc_kv = f",\n        description={change.description!r}" if change.description else ""
         role_kv = f",\n        lead_role={change.lead_role!r}" if change.lead_role else ""
@@ -839,6 +955,54 @@ def _render_update(op_name: str, *, alias: str, name: Any, description: Any, sea
 def _kwargs_call(prefix: str, kwargs: list[str]) -> str:
     body = ",\n        ".join(kwargs)
     return f"    await {prefix}(\n        {body},\n    )"
+
+
+def _render_workflow_statuses(statuses: Any) -> str:
+    """Render a (name, category, description) tuple list as op-call dicts."""
+    if not statuses:
+        return "[]"
+    entries = ",\n            ".join(
+        (
+            f"dict(name={name!r}, category={category!r})"
+            if not description
+            else f"dict(name={name!r}, category={category!r}, description={description!r})"
+        )
+        for name, category, description in statuses
+    )
+    return "[\n            " + entries + ",\n        ]"
+
+
+def _render_workflow_transitions(transitions: Any) -> str:
+    """Render WorkflowTransitionSpec tuples as op-call dicts.
+
+    ``restrict_to`` carries the *declared* holder values; the op resolves
+    them (role names → ids, group names → ids, emails → accountIds) into
+    the aggregate restrict rule at apply time."""
+    if not transitions:
+        return "[]"
+    lines: list[str] = []
+    for t in transitions:
+        fields = [
+            f"name={t.name!r}",
+            f"from_={list(t.from_statuses)!r}",
+            f"to={t.to_status!r}",
+        ]
+        if t.restrict_to:
+            holder_entries = ", ".join(f"dict(holder_type={ht!r}, holder_parameter={hp!r})" for ht, hp in t.restrict_to)
+            fields.append(f"restrict_to=[{holder_entries}]")
+        if t.description:
+            fields.append(f"description={t.description!r}")
+        lines.append("            dict(" + ", ".join(fields) + "),")
+    return "[\n" + "\n".join(lines) + "\n        ]"
+
+
+def _render_raw_payloads(payloads: Any) -> str:
+    """Render raw reflected payloads (undeclared transitions preserved
+    verbatim through an update) as a JSON blob the op passes through."""
+    import json as _json
+
+    blob = _json.dumps(list(payloads), sort_keys=True, separators=(",", ":"))
+    return f"__import__('json').loads({blob!r})"
 
 
 def _render_dict(d: dict[str, str]) -> str:

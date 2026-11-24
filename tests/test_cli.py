@@ -51,9 +51,10 @@ def _stub_empty(mock: respx.MockRouter) -> None:
     mock.get(f"{CLOUD_ROOT}/issuesecurityschemes").mock(
         return_value=httpx.Response(200, json={"issueSecuritySchemes": []})
     )
-    from tests._stubs import stub_project_roles_and_permission_schemes
+    from tests._stubs import stub_project_roles_and_permission_schemes, stub_workflows
 
     stub_project_roles_and_permission_schemes(mock, CLOUD_ROOT)
+    stub_workflows(mock, CLOUD_ROOT)
 
 
 @respx.mock

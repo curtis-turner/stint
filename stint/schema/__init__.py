@@ -17,6 +17,7 @@ from stint.schema.permissions import (
 from stint.schema.project import Project
 from stint.schema.roles import Group, User
 from stint.schema.screen import Screen, ScreenScheme
+from stint.schema.workflows import Permission, Status, Transition, Workflow, WorkflowScheme
 
 __all__ = [
     "ApplicationRole",
@@ -24,6 +25,7 @@ __all__ = [
     "FieldConfiguration",
     "Group",
     "IssueType",
+    "Permission",
     "PermissionScheme",
     "Project",
     "ProjectLead",
@@ -31,5 +33,9 @@ __all__ = [
     "Reporter",
     "Screen",
     "ScreenScheme",
+    "Status",
+    "Transition",
     "User",
+    "Workflow",
+    "WorkflowScheme",
 ]

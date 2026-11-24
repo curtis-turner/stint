@@ -434,9 +434,10 @@ async def test_reflect_uses_v2_schemes_and_project_bindings():
             json=_paginated([{"id": 10000, "name": "Platform Field Scheme", "description": ""}]),
         ),
     )
-    from tests._stubs import stub_project_roles_and_permission_schemes
+    from tests._stubs import stub_project_roles_and_permission_schemes, stub_workflows
 
     stub_project_roles_and_permission_schemes(respx.mock, ROOT)
+    stub_workflows(respx.mock, ROOT)
     respx.get(f"{SCHEMES}/projects").mock(
         return_value=httpx.Response(
             200,

@@ -14,9 +14,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from stint.exceptions import RegistryError
 from stint.fields import CustomField
 from stint.registry import registry as default_registry
 from stint.schema.permissions import holder_jira_type, holder_parameter
+from stint.schema.roles import Group, User
+from stint.schema.workflows import Permission, ProjectRole, Status
 
 if TYPE_CHECKING:
     from stint.registry import Registry
@@ -175,6 +178,61 @@ class DesiredPermissionScheme:
 
 
 @dataclass(frozen=True)
+class DesiredWorkflowStatus:
+    """One declared status on a workflow (tenant-global by name)."""
+
+    name: str
+    category: str  # new | indeterminate | done
+    description: str = ""
+
+
+@dataclass(frozen=True)
+class DesiredTransitionRestrict:
+    """One declared transition restrict holder.
+
+    ``holder_type`` uses the permission-scheme vocabulary (``projectRole``,
+    ``group``, ``user``, ``permission``); ``holder_parameter`` is the
+    declared value (role name / group name / email or accountId /
+    permission key). Ops resolve role names to role ids and emails to
+    accountIds at apply time.
+    """
+
+    holder_type: str
+    holder_parameter: str
+
+
+@dataclass(frozen=True)
+class DesiredTransition:
+    """One declared workflow transition."""
+
+    name: str
+    from_statuses: tuple[str, ...]  # status names, declaration order
+    to_status: str  # status name
+    restrict_to: tuple[DesiredTransitionRestrict, ...] = ()
+    description: str = ""
+
+
+@dataclass(frozen=True)
+class DesiredWorkflow:
+    alias: str
+    name: str
+    description: str
+    statuses: tuple[DesiredWorkflowStatus, ...]  # declaration order
+    initial: str  # status name
+    transitions: tuple[DesiredTransition, ...]  # declaration order
+
+
+@dataclass(frozen=True)
+class DesiredWorkflowScheme:
+    alias: str
+    name: str
+    description: str
+    default: str  # workflow alias
+    mappings: tuple[tuple[str, str], ...]  # (issuetype alias, workflow alias), declaration order
+    project: str | None  # project key (alias) hint from Project.__workflow_scheme__
+
+
+@dataclass(frozen=True)
 class DesiredProject:
     alias: str  # uses project key
     key: str
@@ -188,6 +246,7 @@ class DesiredProject:
     field_configuration_scheme: str | None  # alias
     security_scheme: str | None  # alias
     permission_scheme: str | None = None  # alias
+    workflow_scheme: str | None = None  # alias
     lead_role: str | None = None  # project role name the lead is added to (CMP only)
     roles: tuple[DesiredRoleActors, ...] = ()  # declared __roles__, declaration order
 
@@ -210,6 +269,8 @@ class DesiredSnapshot:
     )
     security_schemes: dict[str, DesiredSecurityScheme] = field(default_factory=dict)
     permission_schemes: dict[str, DesiredPermissionScheme] = field(default_factory=dict)
+    workflows: dict[str, DesiredWorkflow] = field(default_factory=dict)
+    workflow_schemes: dict[str, DesiredWorkflowScheme] = field(default_factory=dict)
     projects: dict[str, DesiredProject] = field(default_factory=dict)
 
 
@@ -245,6 +306,8 @@ class _Scope:
     field_configurations: frozenset[str]  # aliases
     security_schemes: frozenset[str]  # aliases
     permission_schemes: frozenset[str]  # aliases
+    workflows: frozenset[str]  # aliases
+    workflow_schemes: frozenset[str]  # aliases
 
 
 def _scope_registry(reg: Registry, project_module: str | None) -> _Scope:
@@ -274,6 +337,8 @@ def _scope_registry(reg: Registry, project_module: str | None) -> _Scope:
             field_configurations=frozenset(reg.field_configurations),
             security_schemes=frozenset(reg.security_schemes),
             permission_schemes=frozenset(reg.permission_schemes),
+            workflows=frozenset(reg.workflows),
+            workflow_schemes=frozenset(reg.workflow_schemes),
         )
     projects = {k: cls for k, cls in reg.projects.items() if cls.__module__ == project_module}
     it_classes = [it for cls in projects.values() for it in getattr(cls, "__issuetypes__", [])]
@@ -333,6 +398,22 @@ def _scope_registry(reg: Registry, project_module: str | None) -> _Scope:
         if (scheme := getattr(proj_cls, "__permission_scheme__", None)) is not None
     }
     permission_schemes |= {alias for alias, scheme in reg.permission_schemes.items() if _declared_in_module(scheme)}
+    # Workflows reach the scope like permission schemes: referenced by a
+    # scoped Project's __workflow_scheme__ (via the scheme's default and
+    # mappings), and declared-but-not-yet-wired in the schema module.
+    workflow_schemes = {
+        scheme.alias
+        for proj_cls in projects.values()
+        if (scheme := getattr(proj_cls, "__workflow_scheme__", None)) is not None
+    }
+    workflow_schemes |= {alias for alias, scheme in reg.workflow_schemes.items() if _declared_in_module(scheme)}
+    workflows: set[str] = set()
+    for alias in workflow_schemes:
+        scheme = reg.workflow_schemes[alias]
+        if scheme.default is not None:
+            workflows.add(scheme.default.alias)
+        workflows.update(w.alias for w in (scheme.mappings or {}).values())
+    workflows |= {alias for alias, workflow in reg.workflows.items() if _declared_in_module(workflow)}
     return _Scope(
         projects=projects,
         issuetypes=frozenset(getattr(it, "__alias__", "") for it in it_classes),
@@ -342,6 +423,8 @@ def _scope_registry(reg: Registry, project_module: str | None) -> _Scope:
         field_configurations=frozenset(fc.alias for fc in fcs),
         security_schemes=frozenset(security_schemes),
         permission_schemes=frozenset(permission_schemes),
+        workflows=frozenset(workflows),
+        workflow_schemes=frozenset(workflow_schemes),
     )
 
 
@@ -454,11 +537,14 @@ def build_desired_snapshot(
     # ── Projects + derived IssueTypeScheme / ITSS / FCS / security ───
     security_scheme_of_project: dict[str, str] = {}
     permission_scheme_of_project: dict[str, str] = {}
+    workflow_scheme_of_project: dict[str, str] = {}
     for project_key, proj_cls in scope.projects.items():
         if (linked := getattr(proj_cls, "__security_scheme__", None)) is not None:
             security_scheme_of_project[project_key] = linked.alias
         if (linked_perm := getattr(proj_cls, "__permission_scheme__", None)) is not None:
             permission_scheme_of_project[project_key] = linked_perm.alias
+        if (linked_flow := getattr(proj_cls, "__workflow_scheme__", None)) is not None:
+            workflow_scheme_of_project[project_key] = linked_flow.alias
     for project_key, proj_cls in scope.projects.items():
         issuetypes = list(getattr(proj_cls, "__issuetypes__", []))
         its_alias = _derive_its(desired, project_key, issuetypes)
@@ -477,6 +563,7 @@ def build_desired_snapshot(
             field_configuration_scheme=fcs_alias,
             security_scheme=security_scheme_of_project.get(project_key),
             permission_scheme=permission_scheme_of_project.get(project_key),
+            workflow_scheme=workflow_scheme_of_project.get(project_key),
             lead_role=getattr(proj_cls, "__lead_role__", None),
             roles=_desired_roles(getattr(proj_cls, "__roles__", None)),
         )
@@ -535,6 +622,61 @@ def build_desired_snapshot(
                 for holder in holders
             ),
             project=bound_project or scheme.project,
+        )
+
+    # ── Workflows + workflow schemes ─────────────────────────────────
+    def _restrict_holder(holder: Any) -> DesiredTransitionRestrict:
+        if isinstance(holder, ProjectRole):
+            return DesiredTransitionRestrict(holder_type="projectRole", holder_parameter=holder.name)
+        if isinstance(holder, Group):
+            return DesiredTransitionRestrict(holder_type="group", holder_parameter=holder.name)
+        if isinstance(holder, User):
+            return DesiredTransitionRestrict(holder_type="user", holder_parameter=holder.value)
+        if isinstance(holder, Permission):
+            return DesiredTransitionRestrict(holder_type="permission", holder_parameter=holder.key)
+        raise RegistryError(f"Unsupported transition restrict holder {holder!r}")
+
+    for alias, scheme in reg.workflow_schemes.items():
+        if alias not in scope.workflow_schemes:
+            continue
+        if scheme.default is None:
+            continue  # validated non-None at declaration; narrow for the checker
+        bound_project = next(
+            (pk for pk, scheme_alias in workflow_scheme_of_project.items() if scheme_alias == alias),
+            None,
+        )
+        desired.workflow_schemes[alias] = DesiredWorkflowScheme(
+            alias=alias,
+            name=scheme.name or alias,
+            description=scheme.description or "",
+            default=scheme.default.alias,
+            mappings=tuple((it_alias, workflow.alias) for it_alias, workflow in (scheme.mappings or {}).items()),
+            project=bound_project or scheme.project,
+        )
+    for alias, workflow in reg.workflows.items():
+        if alias not in scope.workflows:
+            continue
+        if workflow.initial is None:
+            continue  # validated non-None at declaration; narrow for the checker
+        desired.workflows[alias] = DesiredWorkflow(
+            alias=alias,
+            name=workflow.name or alias,
+            description=workflow.description or "",
+            statuses=tuple(
+                DesiredWorkflowStatus(name=s.name, category=s.category, description=s.description or "")
+                for s in workflow.statuses
+            ),
+            initial=workflow.initial.name,
+            transitions=tuple(
+                DesiredTransition(
+                    name=t.name,
+                    from_statuses=tuple(s.name if isinstance(s, Status) else s for s in t.from_),
+                    to_status=t.to.name if isinstance(t.to, Status) else t.to,
+                    restrict_to=tuple(_restrict_holder(holder) for holder in t.restrict_to),
+                    description=t.description or "",
+                )
+                for t in workflow.transitions
+            ),
         )
 
     return desired

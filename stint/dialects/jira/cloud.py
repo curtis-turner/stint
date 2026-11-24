@@ -39,6 +39,10 @@ from stint.state.snapshot import (
     SecuritySchemeSnapshot,
     ServerInfoSnapshot,
     Snapshot,
+    StatusSnapshot,
+    WorkflowSchemeSnapshot,
+    WorkflowSnapshot,
+    WorkflowStatusSnapshot,
 )
 
 
@@ -189,6 +193,8 @@ class JiraCloudDialect:
         security_schemes = await self._reflect_issue_security_schemes()
         permission_schemes = await self._reflect_permission_schemes()
         project_roles = await self._reflect_global_project_roles()
+        statuses, workflows = await self._reflect_workflows()
+        workflow_schemes = await self._reflect_workflow_schemes()
         return Snapshot(
             server_info=info,
             custom_fields=custom_fields,
@@ -203,6 +209,9 @@ class JiraCloudDialect:
             security_schemes=security_schemes,
             permission_schemes=permission_schemes,
             project_roles=project_roles,
+            statuses=statuses,
+            workflows=workflows,
+            workflow_schemes=workflow_schemes,
         )
 
     # ── Custom fields ────────────────────────────────────────────────
@@ -305,6 +314,11 @@ class JiraCloudDialect:
         fcs_map = await self._reflect_project_field_configuration_bindings(project_ids)
         iss_map = await self._reflect_project_issue_security_bindings(project_ids)
         perm_map = await self._reflect_project_permission_scheme_bindings(project_ids)
+        wf_scheme_map = await self._reflect_project_scheme_bindings(
+            f"{self.api_root}/workflowscheme/project",
+            project_ids=project_ids,
+            scheme_key="workflowScheme",
+        )
         roles_map: dict[str, dict[str, tuple[RoleActorSnapshot, ...]]] = {}
         for proj in list(result.values()):
             roles_map[proj.id] = await self._reflect_project_roles(proj.id)
@@ -316,6 +330,7 @@ class JiraCloudDialect:
                 field_configuration_scheme_id=fcs_map.get(proj.id),
                 issue_security_scheme_id=iss_map.get(proj.id),
                 permission_scheme_id=perm_map.get(proj.id),
+                workflow_scheme_id=wf_scheme_map.get(proj.id, ""),
                 roles=roles_map.get(proj.id, {}),
             )
         return result
@@ -502,6 +517,78 @@ class JiraCloudDialect:
         except NotFoundError:
             return {}
         return out
+
+    async def _reflect_workflows(
+        self,
+    ) -> tuple[dict[str, StatusSnapshot], dict[str, WorkflowSnapshot]]:
+        """Reflect tenant statuses and workflows (``GET /workflows/search``).
+
+        The response carries two top-level arrays: ``values`` (the
+        workflows, each referencing statuses by ``statusReference``) and
+        ``statuses`` (the flattened tenant-level status objects). Both are
+        needed: statuses get keyed by id here, workflows resolve their
+        status references against them, and the tenant status map is keyed
+        by name for the declared-status diff. Reflects all scopes; the
+        declared/diff layers filter to GLOBAL (company-managed) workflows.
+
+        Uses its own startAt page loop because ``common.paginate`` yields
+        envelope items while this endpoint's page envelope carries the
+        ``statuses`` array too — dropping pages would drop statuses used
+        only by later-page workflows.
+        """
+        statuses_by_id: dict[str, WorkflowStatusSnapshot] = {}
+        workflows: dict[str, WorkflowSnapshot] = {}
+        start = 0
+        page_size = 50
+        for _ in range(common._MAX_PAGES):
+            page = await self.client.get_json(
+                f"{self.api_root}/workflows/search",
+                params={"startAt": start, "maxResults": page_size},
+            )
+            if not isinstance(page, dict) or "values" not in page:
+                raise ReflectionError(
+                    f"GET {self.api_root}/workflows/search returned an unrecognized "
+                    f"pagination envelope: {str(page)[:200]!r}"
+                )
+            statuses_by_id.update(common.parse_workflow_status_map(page.get("statuses") or []))
+            for entry in page.get("values") or []:
+                if isinstance(entry, dict):
+                    workflow = common.parse_workflow(entry, statuses_by_id)
+                    workflows[workflow.name] = workflow
+            if page.get("isLast") is not False:
+                break
+            start += len(page.get("values") or []) or page_size
+        else:
+            raise ReflectionError(f"GET {self.api_root}/workflows/search exceeded {common._MAX_PAGES} pages")
+
+        statuses: dict[str, StatusSnapshot] = {}
+        for status in statuses_by_id.values():
+            statuses.setdefault(
+                status.name,
+                StatusSnapshot(
+                    id=status.id,
+                    name=status.name,
+                    category=status.category,
+                    description=status.description,
+                    scope=status.scope,
+                ),
+            )
+        return statuses, workflows
+
+    async def _reflect_workflow_schemes(self) -> dict[str, WorkflowSchemeSnapshot]:
+        """Reflect all workflow schemes (``GET /workflowscheme``).
+
+        Returns a paginated ``PageBeanWorkflowScheme`` of the classic
+        shape (workflows referenced by name). Draft schemes are excluded
+        by Jira; active-scheme edits go through the new APIs which have no
+        draft concept.
+        """
+        schemes: dict[str, WorkflowSchemeSnapshot] = {}
+        async for entry in common.paginate(self.client, f"{self.api_root}/workflowscheme"):
+            if isinstance(entry, dict):
+                scheme = common.parse_workflow_scheme(entry)
+                schemes[scheme.id] = scheme
+        return schemes
 
     async def _reflect_screens(self) -> dict[str, ScreenSnapshot]:
         screens: dict[str, ScreenSnapshot] = {}
@@ -3025,6 +3112,267 @@ class JiraCloudDialect:
         if isinstance(payload, dict) and payload.get("id") is not None:
             return str(payload["id"])
         return None
+
+    # ── Workflows (new-model bulk APIs) ──────────────────────────────
+
+    async def create_workflows(
+        self,
+        *,
+        statuses: list[dict[str, Any]],
+        workflows: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Bulk-create workflows + their statuses (``POST /workflows/create``).
+
+        ``statuses`` entries: ``WorkflowStatusUpdate`` dicts (name,
+        statusCategory, statusReference, optional id/description).
+        ``workflows`` entries: ``WorkflowCreate`` dicts (name, statuses by
+        statusReference, transitions). Synchronous 200; 409 means another
+        workflow-config task is running — surfaced as TransportError.
+        Returns the response body (workflows with real ids + versions,
+        statuses with real numeric ids).
+        """
+        return await self.client.post_json(
+            f"{self.api_root}/workflows/create",
+            json={"scope": {"type": "GLOBAL"}, "statuses": statuses, "workflows": workflows},
+        )
+
+    async def update_workflows(
+        self,
+        *,
+        statuses: list[dict[str, Any]],
+        workflows: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Bulk-update workflows (``POST /workflows/update``).
+
+        Each workflow entry must carry its ``id`` (UUID) and current
+        ``version`` (optimistic locking). The payload is the full
+        declarative state of each workflow. Returns the response body;
+        its optional ``taskId`` must be polled to completion by the caller
+        (a side migration may still be running after the synchronous 200).
+        """
+        return await self.client.post_json(
+            f"{self.api_root}/workflows/update",
+            json={"statuses": statuses, "workflows": workflows},
+        )
+
+    async def get_task(self, task_id: str) -> dict[str, Any]:
+        """One task-progress bean (``GET /task/{taskId}``)."""
+        payload = await self.client.get_json(f"{self.api_root}/task/{task_id}")
+        return payload if isinstance(payload, dict) else {}
+
+    async def read_workflow_by_name(self, name: str) -> WorkflowSnapshot | None:
+        """The workflow matching a name, parsed into a snapshot
+        (``GET /workflows/search?queryString=``).
+
+        Used by adoption and by ops that need the live id/version/status
+        set. Returns None when no workflow with that (case-insensitive)
+        name exists. Note the matched statuses may not cover every status
+        referenced by *other* workflows on the same page — parse resolves
+        what it has; unreferenced ones are simply absent.
+        """
+        payload = await self.client.get_json(
+            f"{self.api_root}/workflows/search",
+            params={"queryString": name, "maxResults": 1},
+        )
+        if not isinstance(payload, dict):
+            return None
+        statuses_by_id = common.parse_workflow_status_map(payload.get("statuses") or [])
+        for entry in payload.get("values") or []:
+            if isinstance(entry, dict) and str(entry.get("name", "")).lower() == name.lower():
+                return common.parse_workflow(entry, statuses_by_id)
+        return None
+
+    async def resolve_status_ids(self, names: list[str]) -> dict[str, str | None]:
+        """Global status name → numeric id (``GET /statuses/byNames``).
+
+        Status names are NOT tenant-unique (different scopes can share a
+        name and the API resolves "the first found"), so unresolved names
+        are returned as None and callers must treat creating a duplicate
+        as a Jira-side decision instead of guessing a lookup.
+        """
+        if not names:
+            return {}
+        params: list[tuple[str, str]] = [("name", n) for n in names]
+        payload = await self.client.get_json(f"{self.api_root}/statuses/byNames", params=params)
+        found: dict[str, str] = {}
+        for entry in payload or []:
+            if isinstance(entry, dict) and entry.get("name") and entry.get("id"):
+                found.setdefault(str(entry["name"]), str(entry["id"]))
+        return {name: found.get(name) for name in names}
+
+    async def global_project_role_ids(self) -> dict[str, str]:
+        """Global project-role name → id (``GET /rest/api/3/role``).
+
+        The restrict-issue-transition rule's ``roleIds`` parameter carries
+        role *ids* while declarations name roles."""
+        try:
+            out: dict[str, str] = {}
+            async for entry in common.paginate(self.client, f"{self.api_root}/role"):
+                name, role_id = common.parse_global_role(entry)
+                if name and role_id:
+                    out[name] = role_id
+            return out
+        except NotFoundError:
+            return {}
+
+    async def resolve_group_ids(self, names: list[str]) -> dict[str, str]:
+        """Group name → groupId (``GET /group/bulk?groupName=``).
+
+        The restrict-issue-transition rule's ``groupIds`` parameter carries
+        group *ids* while declarations name groups. Names that match no
+        group are omitted; the caller raises with the unmatched names."""
+        out: dict[str, str] = {}
+        for name in names:
+            payload = await self.client.get_json(
+                f"{self.api_root}/group/bulk",
+                params={"groupName": name, "maxResults": 50},
+            )
+            for entry in (payload or {}).get("values") or []:
+                if (
+                    isinstance(entry, dict)
+                    and str(entry.get("name", "")).lower() == name.lower()
+                    and entry.get("groupId")
+                ):
+                    out[name] = str(entry["groupId"])
+                    break
+        return out
+
+    # ── Workflow schemes ─────────────────────────────────────────────
+
+    async def create_workflow_scheme(
+        self,
+        *,
+        name: str,
+        description: str = "",
+        default_workflow: str = "",
+        issue_type_mappings: dict[str, str] | None = None,
+    ) -> str:
+        """Create a workflow scheme (``POST /workflowscheme``) → its id.
+
+        The classic shape: ``defaultWorkflow`` and ``issueTypeMappings``
+        values are workflow *names*. Requires *Administer Jira*.
+        """
+        body: dict[str, Any] = {"name": name, "description": description}
+        if default_workflow:
+            body["defaultWorkflow"] = default_workflow
+        if issue_type_mappings:
+            body["issueTypeMappings"] = issue_type_mappings
+        result = await self.client.post_json(f"{self.api_root}/workflowscheme", json=body)
+        return _expect_id(result, f"POST {self.api_root}/workflowscheme")
+
+    async def update_workflow_scheme(
+        self,
+        scheme_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        default_workflow: str | None = None,
+        issue_type_mappings: dict[str, str] | None = None,
+    ) -> None:
+        """Update a workflow scheme (``PUT /workflowscheme/{id}``).
+
+        Only the fields passed are sent. Note Jira's contract: an active
+        scheme is edited through a draft when ``updateDraftIfNeeded`` is
+        true — stint omits the flag so direct updates on inactive schemes
+        apply immediately, and scheme *rebinds* on live projects go through
+        ``switch_project_workflow_scheme`` instead.
+        """
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        if default_workflow is not None:
+            body["defaultWorkflow"] = default_workflow
+        if issue_type_mappings is not None:
+            body["issueTypeMappings"] = issue_type_mappings
+        if not body:
+            return
+        await self.client.put_json(f"{self.api_root}/workflowscheme/{scheme_id}", json=body)
+
+    async def delete_workflow_scheme(self, scheme_id: str) -> None:
+        """Delete a workflow scheme. Jira refuses while a project uses it;
+        the emitted order unbinds projects first."""
+        await self.client.delete(f"{self.api_root}/workflowscheme/{scheme_id}")
+
+    async def find_workflow_scheme_id_by_name(self, name: str) -> str | None:
+        """Match an existing workflow scheme by name (adoption fallback)."""
+        async for entry in common.paginate(self.client, f"{self.api_root}/workflowscheme"):
+            if isinstance(entry, dict) and str(entry.get("name", "")).lower() == name.lower():
+                return str(entry["id"])
+        return None
+
+    async def get_workflow_scheme(self, scheme_id: str) -> WorkflowSchemeSnapshot:
+        """One workflow scheme (``GET /workflowscheme/{id}``) — the classic
+        shape (workflows referenced by name), used to evaluate the
+        transition guard against the scheme a project currently binds."""
+        payload = await self.client.get_json(f"{self.api_root}/workflowscheme/{scheme_id}")
+        if not isinstance(payload, dict):
+            raise ReflectionError(
+                f"GET {self.api_root}/workflowscheme/{scheme_id} returned "
+                f"{type(payload).__name__} instead of a scheme payload"
+            )
+        return common.parse_workflow_scheme(payload)
+
+    async def delete_workflow(self, workflow_id: str) -> None:
+        """Delete an inactive workflow (``DELETE /workflow/{entityId}``).
+
+        Jira refuses for active/system/scheme-associated workflows; the
+        emitted order deletes schemes (and unbinds projects) first."""
+        await self.client.delete(f"{self.api_root}/workflow/{workflow_id}")
+
+    async def associate_workflow_scheme(self, *, project_id: str, scheme_id: str | None) -> None:
+        """Bind a workflow scheme to an *empty* project
+        (``PUT /workflowscheme/project``). Jira documents this as working
+        only when the project has no issues; rebinding a live project must
+        go through ``switch_project_workflow_scheme``. ``scheme_id=None``
+        assigns the default scheme (unbinding a custom one)."""
+        await self.client.put_json(
+            f"{self.api_root}/workflowscheme/project",
+            json={"projectId": project_id, "workflowSchemeId": scheme_id},
+        )
+
+    async def switch_project_workflow_scheme(
+        self,
+        *,
+        project_id: str,
+        target_scheme_id: str,
+        mappings_by_issue_type_override: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Rebind a live project's workflow scheme
+        (``POST /workflowscheme/project/switch``).
+
+        Mappings are required for statuses that would disappear under the
+        target scheme (discovered via ``get_required_scheme_mappings``).
+        Returns the task bean (the endpoint answers 303 See Other; the
+        client follows the Location header and unwraps the task). The
+        caller polls it to a terminal state.
+        """
+        body: dict[str, Any] = {"projectId": project_id, "targetSchemeId": target_scheme_id}
+        if mappings_by_issue_type_override:
+            body["mappingsByIssueTypeOverride"] = mappings_by_issue_type_override
+        return await self.client.post_for_task(f"{self.api_root}/workflowscheme/project/switch", json=body)
+
+    async def get_required_scheme_mappings(
+        self,
+        *,
+        scheme_id: str,
+        workflows_for_issue_types: list[dict[str, Any]],
+        default_workflow_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Which statuses require migration mappings for a scheme change
+        (``POST /workflowscheme/update/mappings``).
+
+        ``workflows_for_issue_types`` entries: ``{workflowId, issueTypeIds}``
+        with new-model workflow UUIDs. Response carries the statuses
+        requiring mapping per issue type and per workflow pair. This is a
+        *fact read* — the old→new target mapping itself is never guessed.
+        """
+        body: dict[str, Any] = {"id": scheme_id, "workflowsForIssueTypes": workflows_for_issue_types}
+        if default_workflow_id:
+            body["defaultWorkflowId"] = default_workflow_id
+        payload = await self.client.post_json(f"{self.api_root}/workflowscheme/update/mappings", json=body)
+        return payload if isinstance(payload, dict) else {}
 
 
 def _expect_id(result: Any, where: str) -> str:

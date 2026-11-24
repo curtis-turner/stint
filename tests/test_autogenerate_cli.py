@@ -64,9 +64,14 @@ def _stub_empty_jira(mock, *, roles: bool = True):
         return_value=httpx.Response(200, json={"issueSecuritySchemes": []})
     )
     if roles:
-        from tests._stubs import stub_project_roles_and_permission_schemes
+        from tests._stubs import stub_project_roles_and_permission_schemes, stub_workflows
 
         stub_project_roles_and_permission_schemes(mock, CLOUD_ROOT)
+        stub_workflows(mock, CLOUD_ROOT)
+    else:
+        from tests._stubs import stub_workflows
+
+        stub_workflows(mock, CLOUD_ROOT)
 
 
 @respx.mock

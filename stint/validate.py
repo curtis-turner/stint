@@ -123,6 +123,28 @@ def validate() -> list[str]:
             if permission not in KNOWN_PERMISSION_KEYS:
                 problems.append(f"PermissionScheme {alias!r} grants unknown permission key {permission!r}.")
 
+    # 11. Workflow restrict holders: a declared ProjectRole restrict must be
+    # a role the schema declares in some project's __roles__ (same
+    # case-insensitive cross-check as permission-scheme grants; project
+    # roles are tenant-global), so a typo'd restrict does not silently
+    # hand the transition to a different role.
+    declared_role_names = {
+        name.lower()
+        for project_cls in registry.projects.values()
+        for name in (getattr(project_cls, "__roles__", None) or {})
+    }
+    if declared_role_names:
+        for wf_alias, workflow in registry.workflows.items():
+            for transition in getattr(workflow, "transitions", ()) or ():
+                for holder in getattr(transition, "restrict_to", ()) or ():
+                    if type(holder).__name__ == "ProjectRole" and holder.name.lower() not in declared_role_names:
+                        problems.append(
+                            f"Workflow {wf_alias!r} transition {transition.name!r} restricts to "
+                            f"ProjectRole {holder.name!r}, which the schema does not declare "
+                            f"in any project's __roles__; the role must exist in Jira (or be "
+                            f"declared here) for the restrict to hold anyone."
+                        )
+
     return problems
 
 

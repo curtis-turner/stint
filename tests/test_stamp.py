@@ -358,9 +358,10 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
         return_value=httpx.Response(200, json={"issueSecuritySchemes": []})
     )
     respx.get(f"{CLOUD_ROOT}/issuesecurityschemes/project").mock(return_value=httpx.Response(200, json=_paginated([])))
-    from tests._stubs import stub_project_roles_and_permission_schemes
+    from tests._stubs import stub_project_roles_and_permission_schemes, stub_workflows
 
     stub_project_roles_and_permission_schemes(respx.mock, CLOUD_ROOT)
+    stub_workflows(respx.mock, CLOUD_ROOT)
 
     state_path = tmp_path / "state.yaml"
     monkeypatch.setenv("STINT_TOKEN", "tok")

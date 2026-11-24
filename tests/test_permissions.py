@@ -967,6 +967,9 @@ async def test_reflect_captures_roles_and_permission_schemes():
     mock.get(f"{CLOUD_ROOT}/project/10010/permissionscheme").mock(
         return_value=httpx.Response(200, json={"id": 20000, "name": "Perm"})
     )
+    from tests._stubs import stub_workflows
+
+    stub_workflows(mock, CLOUD_ROOT)
     mock.get(f"{CLOUD_ROOT}/role").mock(
         return_value=httpx.Response(200, json=paginated([{"id": "10360", "name": "Administrators"}]))
     )
