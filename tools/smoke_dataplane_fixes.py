@@ -86,6 +86,7 @@ from stint.query.session import AsyncSession  # noqa: E402
 from stint.schema.issuetype import IssueType, IssueTypeMeta  # noqa: E402
 from stint.schema.project import Project, ProjectMeta  # noqa: E402
 from stint.state.file import CustomFieldMapping, ProjectMapping, SimpleMapping  # noqa: E402
+from stint.state.snapshot import CustomFieldSnapshot  # noqa: E402
 
 TEXTAREA_ALIAS = "smoke_notes"  # distinct from the field id, so fix 4's mapping is observable
 
@@ -219,15 +220,16 @@ def build_check_project(model: Any, project_key: str) -> Any:
 
 async def provision_textarea(
     engine: Any, proj: Any, snapshot: Any, issuetype_id: str, args: argparse.Namespace
-) -> tuple[str, str]:
+) -> tuple[str, str, CustomFieldSnapshot]:
     """Create (or reuse) a paragraph custom field and wire it onto the
     project's create/edit screens and field configuration through stint's
     own dialect ops — the schema plane the data plane assumes.
 
     Reuses an existing textarea-typed field by name. Everything persists
     after the run (harmless on a sandbox, reusable by later runs); remove
-    in the Jira UI if unwanted. Returns (field_id, display name).
-    """
+    in the Jira UI if unwanted. Returns (field_id, display name, snapshot)
+    — the snapshot is synthesized for a freshly created field, which a
+    pre-creation reflect cannot contain."""
     name = args.textarea_name
     existing = next(
         (
@@ -239,6 +241,7 @@ async def provision_textarea(
     )
     if existing is not None:
         fid = existing.id
+        snap = existing
         print(f"provision: reusing textarea custom field {name!r} ({fid})")
     else:
         fid = await engine.dialect.create_custom_field(
@@ -247,6 +250,9 @@ async def provision_textarea(
             type_id=TextAreaField.jira_type_id,
             searcher_key=TextAreaField.searcher_key,
         )
+        # A fresh field cannot be in the pre-creation reflect snapshot; the
+        # annotation builder only reads type_id and options, so synthesize it.
+        snap = CustomFieldSnapshot(id=fid, name=name, type_id=TextAreaField.jira_type_id)
         print(f"provision: created paragraph custom field {name!r} ({fid})")
 
     # Project -> issue-type screen scheme -> screen scheme -> create/edit screens.
@@ -284,13 +290,25 @@ async def provision_textarea(
         await engine.dialect.add_screen_tab_field(screen_id, tab.id, field_id=fid)
         print(f"provision: added {name!r} to the {label} screen {screen.name!r} (tab {tab.name!r})")
 
-    # Field configuration (v1) or field scheme (v2) — set_field_configuration_item
-    # routes by what the tenant answers; hidden=False associates on v2.
+    # Field configuration (v1) / field scheme (v2). On v2 the scheme IS the
+    # project binding and its mapping table is always empty (reflect keeps it
+    # so) — and absence of the field means hidden — so the association write
+    # is mandatory and targets the scheme id itself. On v1 resolve the
+    # issuetype -> 'default' mapping to a classic field configuration.
     if not proj.field_configuration_scheme_id:
         print(
             "provision:   note: project uses the global default field configuration "
             "(Jira includes new fields there) — skipping the field-configuration write"
         )
+    elif await engine.dialect._field_config_api_is_v2():
+        await engine.dialect.set_field_configuration_item(
+            proj.field_configuration_scheme_id,
+            field_id=fid,
+            required=False,
+            hidden=False,
+            description="Smoke notes (provisioned)",
+        )
+        print(f"provision: associated {name!r} with field scheme {proj.field_configuration_scheme_id!r} (v2)")
     else:
         fcs = snapshot.field_configuration_schemes.get(proj.field_configuration_scheme_id)
         if fcs is None:
@@ -315,7 +333,7 @@ async def provision_textarea(
                 description="Smoke notes (provisioned)",
             )
             print(f"provision: added {name!r} to field configuration {fc_of_type.field_configuration_id!r}")
-    return fid, name
+    return fid, name, snap
 
 
 @dataclass
@@ -432,8 +450,9 @@ async def build_state(engine: Any, args: argparse.Namespace) -> tuple[StateFile,
     # or stand one up through stint's own dialect ops (--provision-textarea,
     # mirrors --provision-subtask in tools/smoke_dataplane.py).
     textarea_binding = find_textarea(entry, args.textarea_field)
+    provisioned_snap: Any | None = None
     if textarea_binding is None and args.provision_textarea:
-        textarea_binding = await provision_textarea(engine, proj, snapshot, candidates[0].id, args)
+        textarea_binding, _, provisioned_snap = await provision_textarea(engine, proj, snapshot, candidates[0].id, args)
 
     # Required-on-create fields (except the textarea, which binds separately
     # below and is satisfied by the smoke's own notes value).
@@ -467,7 +486,9 @@ async def build_state(engine: Any, args: argparse.Namespace) -> tuple[StateFile,
     if textarea_binding is not None:
         fid, display = textarea_binding
         textarea_fid = fid
-        snap = snapshot.custom_fields.get(fid)
+        snap = provisioned_snap
+        if snap is None:
+            snap = snapshot.custom_fields.get(fid)
         if snap is None:
             raise SystemExit(f"textarea field {display!r} ({fid}) is not in the reflect snapshot; cannot declare it.")
         textarea = RequiredField(field_id=TEXTAREA_ALIAS, name=display, raw="", snapshot=snap)
