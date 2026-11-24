@@ -15,6 +15,7 @@ from stint import (
     PermissionError,
     create_engine,
 )
+from tests._stubs import stub_project_roles_and_permission_schemes as _stub_project_roles_and_permission_schemes
 
 BASE = "https://jira.example.com"
 CLOUD_ROOT = f"{BASE}/rest/api/3"
@@ -73,6 +74,8 @@ def _stub_empty_admin(mock: respx.MockRouter, root: str = CLOUD_ROOT) -> None:
     )
     # Project→scheme binding lookup (part of project reflection).
     mock.get(f"{root}/issuesecurityschemes/project").mock(return_value=httpx.Response(200, json=_paginated([])))
+    # Project roles + permission schemes (part of project reflection).
+    _stub_project_roles_and_permission_schemes(mock, root)
 
 
 # ── reflect(): custom fields ──────────────────────────────────────────

@@ -79,6 +79,50 @@ def validate() -> list[str]:
                 f"project hint is {ss.project!r}; expected None or {key!r}."
             )
 
+        # 8. Every Project's __permission_scheme__ is a registered
+        # declaration; a scheme-side ``project=`` hint must name this
+        # project (or be unset) — same rules as the security scheme.
+        ps = getattr(project_cls, "__permission_scheme__", None)
+        if ps is not None and getattr(ps, "alias", "") not in registry.permission_schemes:
+            problems.append(
+                f"Project {key!r} references PermissionScheme {getattr(ps, 'alias', None)!r} which is not registered."
+            )
+        if ps is not None and getattr(ps, "project", None) not in (None, key):
+            problems.append(
+                f"Project {key!r} references PermissionScheme {ps.alias!r} whose "
+                f"project hint is {ps.project!r}; expected None or {key!r}."
+            )
+
+        # 9. A Project's __permission_scheme__ may reference ProjectRole
+        # holders by name; when the schema also declares those roles via
+        # __roles__, the names must match exactly (case-insensitive), so a
+        # typo'd holder does not silently grant to a different role.
+        roles = getattr(project_cls, "__roles__", None) or {}
+        if ps is not None and roles:
+            declared_role_names = {name.lower() for name in roles}
+            for permission, holders in (getattr(ps, "grants", {}) or {}).items():
+                for holder in holders:
+                    if type(holder).__name__ == "ProjectRole" and holder.name.lower() not in declared_role_names:
+                        problems.append(
+                            f"Project {key!r}: permission scheme {ps.alias!r} grants "
+                            f"{permission} to ProjectRole {holder.name!r}, which the "
+                            f"schema does not declare in __roles__; the role must exist "
+                            f"in Jira (or be declared here) for the grant to hold anyone."
+                        )
+
+    # 10. Unknown permission keys in declared PermissionSchemes are already
+    # rejected at declaration time (PermissionScheme.__post_init__ re-raises
+    # RegistryError, which `stint validate` surfaces via the module import);
+    # this loop catches schemes constructed with a mutated registry for
+    # tests, and doubles as the documented "stint validate rejects unknown
+    # permission keys" rule.
+    from stint.schema.permissions import KNOWN_PERMISSION_KEYS
+
+    for alias, scheme in registry.permission_schemes.items():
+        for permission in getattr(scheme, "grants", {}) or {}:
+            if permission not in KNOWN_PERMISSION_KEYS:
+                problems.append(f"PermissionScheme {alias!r} grants unknown permission key {permission!r}.")
+
     return problems
 
 

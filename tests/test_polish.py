@@ -1228,6 +1228,9 @@ def test_cli_reflect_reads_connection_from_env_config(tmp_path, monkeypatch, cap
         mock.get(f"{dc_root}/issuesecurityschemes").mock(
             return_value=httpx.Response(200, json={"issueSecuritySchemes": []})
         )
+        from tests._stubs import stub_project_roles_and_permission_schemes
+
+        stub_project_roles_and_permission_schemes(mock, dc_root)
 
         rc = main(["reflect", "--env", "dev"])
 
@@ -1295,6 +1298,9 @@ def test_cli_stamp_reads_connection_from_env_config(tmp_path, monkeypatch):
         mock.get(f"{dc_root}/issuesecurityschemes").mock(
             return_value=httpx.Response(200, json={"issueSecuritySchemes": []})
         )
+        from tests._stubs import stub_project_roles_and_permission_schemes
+
+        stub_project_roles_and_permission_schemes(mock, dc_root)
 
         rc = main(
             [
@@ -1360,6 +1366,9 @@ def test_cli_revision_autogenerate_reads_connection_from_env_config(tmp_path, mo
         mock.get(f"{dc_root}/issuesecurityschemes").mock(
             return_value=httpx.Response(200, json={"issueSecuritySchemes": []})
         )
+        from tests._stubs import stub_project_roles_and_permission_schemes
+
+        stub_project_roles_and_permission_schemes(mock, dc_root)
 
         rc = main(
             [

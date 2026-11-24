@@ -18,12 +18,18 @@ import asyncio
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from stint.exceptions import ConfigurationError
+from stint.exceptions import ConfigurationError, StintError
 from stint.fields import _FieldType, jira_system_field_id
+from stint.lockout import (
+    DEFAULT_ROLE_GUARD_PERMISSIONS,
+    DEFAULT_SCHEME_GUARD_PERMISSIONS,
+    missing_permissions,
+)
 from stint.migrations.context import get_context
 from stint.migrations.exceptions import UnsupportedDowngradeError
 from stint.state.file import (
     CustomFieldMapping,
+    PermissionSchemeMapping,
     ProjectMapping,
     ScreenMapping,
     SecuritySchemeMapping,
@@ -747,6 +753,141 @@ async def _add_lead_to_role(ctx: Any, project_id: str, role_name: str, account_i
     )
 
 
+# ── Project role actors (__roles__) ──────────────────────────────────
+async def add_project_role_actor(
+    *,
+    project_alias: str,
+    role_name: str,
+    actor_type: str,
+    actor_value: str,
+) -> None:
+    """Add one actor (user or group) to a project role.
+
+    ``actor_value`` is a declared user email/accountId or group name; user
+    emails resolve through the user-search API. Records the resolved actor
+    in state so re-runs stay idempotent after resolution. Idempotent on the
+    wire too: Jira's "already in role" 400 is treated as done.
+    """
+    ctx = get_context()
+    project = _require_existing("add_project_role_actor", project_alias, ctx.state.projects)
+    _refuse_tmp(project, project_alias, "add_project_role_actor", ctx.state.jira_url)
+    if actor_type not in ("user", "group"):
+        raise ConfigurationError(
+            f"add_project_role_actor: unknown actor_type {actor_type!r}; expected 'user' or 'group'"
+        )
+    parameter = await ctx.engine.dialect.resolve_user(actor_value) if actor_type == "user" else actor_value
+    recorded = project.role_actors.setdefault(role_name, [])
+    if any(m.get("type") == actor_type and m.get("parameter") == parameter for m in recorded):
+        return  # idempotent re-run
+    role_id = await ctx.engine.dialect.resolve_project_role_id(project.id, role_name)
+    if actor_type == "user":
+        await ctx.engine.dialect.add_project_role_actors(project.id, role_id=role_id, users=[parameter])
+    else:
+        await ctx.engine.dialect.add_project_role_actors(project.id, role_id=role_id, groups=[parameter])
+    recorded.append({"type": actor_type, "parameter": parameter})
+    ctx.persist()
+
+
+async def remove_project_role_actor(
+    *,
+    project_alias: str,
+    role_name: str,
+    actor_type: str,
+    actor_parameter: str,
+    allow_lockout: bool = False,
+    required_permissions: list[str] | None = None,
+) -> None:
+    """Remove one actor (by resolved accountId/group name) from a role.
+
+    Lockout guard: when the actor is the authenticated account itself (or a
+    group it belongs to), refuse to plan the removal if it would leave the
+    account without a role granting the required permissions under the
+    project's bound permission scheme — unless ``allow_lockout`` is passed.
+    """
+    ctx = get_context()
+    project = _require_existing("remove_project_role_actor", project_alias, ctx.state.projects)
+    _refuse_tmp(project, project_alias, "remove_project_role_actor", ctx.state.jira_url)
+    if actor_type not in ("user", "group"):
+        raise ConfigurationError(
+            f"remove_project_role_actor: unknown actor_type {actor_type!r}; expected 'user' or 'group'"
+        )
+    dialect = ctx.engine.dialect
+    if not allow_lockout:
+        await _guard_role_removal(
+            dialect,
+            project_id=project.id,
+            role_name=role_name,
+            actor_type=actor_type,
+            actor_parameter=actor_parameter,
+            required=required_permissions or list(DEFAULT_ROLE_GUARD_PERMISSIONS),
+        )
+    role_id = await dialect.resolve_project_role_id(project.id, role_name)
+    if actor_type == "user":
+        await dialect.remove_project_role_actor(project.id, role_id=role_id, user=actor_parameter)
+    else:
+        await dialect.remove_project_role_actor(project.id, role_id=role_id, group=actor_parameter)
+    recorded = project.role_actors.get(role_name, [])
+    project.role_actors[role_name] = [
+        m for m in recorded if not (m.get("type") == actor_type and m.get("parameter") == actor_parameter)
+    ]
+    # The account's cached role memberships are now stale (this run's later
+    # guards must see the removal).
+    dialect._role_membership_cache.pop((project.id, await dialect.my_account_id()), None)  # ty: ignore[unresolved-attribute]
+    ctx.persist()
+
+
+async def _guard_role_removal(
+    dialect: Any,
+    *,
+    project_id: str,
+    role_name: str,
+    actor_type: str,
+    actor_parameter: str,
+    required: list[str],
+) -> None:
+    """Op-time lockout guard for role-actor removals (see ``stint.lockout``).
+
+    Simulates the removal against the project's live permission-scheme
+    grants and raises before any write when a required permission would be
+    lost.
+    """
+    account_id = await dialect.my_account_id()
+    groups = await dialect.user_groups(account_id)
+    memberships = await dialect.project_role_memberships(project_id, account_id)
+    touches_account = (actor_type == "user" and actor_parameter == account_id) or (
+        actor_type == "group" and actor_parameter in groups
+    )
+    if not touches_account:
+        return  # removing someone else's membership cannot lock us out
+    surviving_roles = memberships - {role_name}
+    scheme_id = await dialect.get_project_permission_scheme_id(project_id)
+    if scheme_id is None:
+        return
+    scheme = await dialect.get_permission_scheme(scheme_id)
+    grants = {(g.permission, g.holder_type, g.holder_parameter) for g in scheme.grants}
+    roles_map = await dialect.get_project_roles(project_id)
+    lead_id = await dialect.get_project_lead_account_id(project_id)
+    missing = missing_permissions(
+        required,
+        {
+            permission: [(t, p) for (perm, t, p) in grants if perm == permission]
+            for permission in {g[0] for g in grants}
+        },
+        account_id=account_id,
+        account_role_names=surviving_roles,
+        account_groups=groups,
+        project_lead_id=lead_id,
+        role_name_to_id=roles_map,
+    )
+    if missing:
+        raise StintError(
+            f"remove_project_role_actor: removing {actor_type} {actor_parameter!r} from role "
+            f"{role_name!r} of project {project_id} would leave the authenticated account "
+            f"without: {', '.join(missing)} (per the project's permission scheme). "
+            f"Pass allow_lockout=True to force it."
+        )
+
+
 async def update_project(
     *,
     alias: str,
@@ -1279,6 +1420,324 @@ async def _create_level_and_record(
             scheme_alias,
             mapping,
             {level_alias: {"name": name, "description": description, "isDefault": is_default}},
+        )
+
+
+# ── Permission schemes ───────────────────────────────────────────────
+async def create_permission_scheme(
+    *,
+    alias: str,
+    name: str,
+    description: str = "",
+    copy_from: str | None = None,
+    grants: Iterable[Mapping[str, Any]] | None = None,
+) -> str:
+    """Create a Jira permission scheme and register its alias→id mapping.
+
+    ``grants`` entries carry the declared shape:
+    ``dict(permission=..., holder_type=..., holder_parameter=...)`` where
+    ``holder_parameter`` is the *declared* value (role name, user email or
+    accountId, group name, or "" for parameterless holders). Role names
+    resolve to role ids and emails to accountIds at apply time.
+
+    ``copy_from`` names an existing scheme (by Jira name) whose grants seed
+    the new scheme before the declared grants are added; inherited grants
+    are NOT managed afterwards.
+
+    Returns the new Jira scheme id. Idempotent: re-run returns the existing
+    id and adds any missing declared grants (mirroring
+    ``create_issue_security_scheme``)."""
+    ctx = get_context()
+    _require_alias(alias, "create_permission_scheme")
+    existing = _existing_id_or_none(ctx.state.permission_schemes, alias)
+    if existing is not None:
+        await _fill_missing_grants(ctx, alias, grants or [])
+        return existing
+    resolved: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    if copy_from:
+        source_id = await ctx.engine.dialect.find_permission_scheme_id_by_name(copy_from)
+        if source_id is None:
+            raise ConfigurationError(
+                f"create_permission_scheme: copy_from scheme {copy_from!r} not found in Jira (matched by exact name)."
+            )
+        source = await ctx.engine.dialect.get_permission_scheme(source_id)
+        for g in source.grants:
+            key = (g.permission, g.holder_type, g.holder_parameter)
+            if key not in seen:
+                seen.add(key)
+                resolved.append({"permission": g.permission, "holder": _holder_body(g.holder_type, g.holder_parameter)})
+    for entry in grants or []:
+        holder_type = str(entry.get("holder_type", ""))
+        holder_parameter = str(entry.get("holder_parameter", ""))
+        parameter = await _resolve_permission_holder(ctx.engine.dialect, holder_type, holder_parameter, project_id=None)
+        key = (str(entry.get("permission", "")), holder_type, parameter)
+        if key not in seen:
+            seen.add(key)
+            resolved.append({"permission": key[0], "holder": _holder_body(holder_type, parameter)})
+    scheme_id = await ctx.engine.dialect.create_permission_scheme(
+        name=name,
+        description=description,
+        permissions=resolved or None,
+    )
+    mapping = PermissionSchemeMapping(id=scheme_id)
+    ctx.state.permission_schemes[alias] = mapping
+    ctx.persist()
+    await _capture_grant_state(ctx, alias, mapping, resolved)
+    return scheme_id
+
+
+def _holder_body(holder_type: str, parameter: str) -> dict[str, str]:
+    body: dict[str, str] = {"type": holder_type}
+    if parameter:
+        body["parameter"] = parameter
+    return body
+
+
+async def _resolve_permission_holder(
+    dialect: Any,
+    holder_type: str,
+    holder_parameter: str,
+    *,
+    project_id: str | None = None,
+) -> str:
+    """Resolve a declared holder value to Jira's ``holder.parameter`` form.
+
+    Users resolve emails via user search. projectRole holders resolve the
+    role *name* to a role id — Jira's projectRole holder parameter is the
+    id, and role ids are tenant-global (resolved via the global role
+    listing, no project needed).
+    """
+    return await dialect.resolve_permission_holder(holder_type, holder_parameter)
+
+
+async def _capture_grant_state(
+    ctx: Any,
+    alias: str,
+    mapping: PermissionSchemeMapping,
+    resolved: list[dict[str, Any]],
+) -> None:
+    """Record resolved grants and their Jira grant ids in state."""
+    scheme = await ctx.engine.dialect.get_permission_scheme(mapping.id)
+    live: dict[tuple[str, str, str], str] = {
+        (g.permission, g.holder_type, g.holder_parameter): g.id for g in scheme.grants
+    }
+    for entry in resolved:
+        permission = entry["permission"]
+        holder = entry["holder"]
+        parameter = holder.get("parameter", "")
+        key = (permission, holder["type"], parameter)
+        if key in live:
+            mapping.grant_ids[PermissionSchemeMapping.grant_key(*key)] = live[key]
+        mapping.grants.append({"permission": permission, "type": holder["type"], "parameter": parameter})
+    ctx.persist()
+
+
+async def _fill_missing_grants(ctx: Any, alias: str, grants: Iterable[Mapping[str, Any]]) -> None:
+    """Resume path: add declared grants that state has no record of."""
+    mapping = ctx.state.permission_schemes[alias]
+    recorded = {(g["permission"], g["type"], g["parameter"]) for g in mapping.grants}
+    for entry in grants or []:
+        holder_type = str(entry.get("holder_type", ""))
+        holder_parameter = str(entry.get("holder_parameter", ""))
+        parameter = await _resolve_permission_holder(ctx.engine.dialect, holder_type, holder_parameter, project_id=None)
+        permission = str(entry.get("permission", ""))
+        if (permission, holder_type, parameter) in recorded:
+            continue
+        await add_permission_grant(
+            scheme_alias=alias,
+            permission=permission,
+            holder_type=holder_type,
+            holder_parameter=holder_parameter,
+        )
+
+
+async def update_permission_scheme(
+    *,
+    alias: str,
+    name: str | None = None,
+    description: str | None = None,
+) -> None:
+    """Update a permission scheme's name/description. Grant changes go
+    through ``add_permission_grant``/``remove_permission_grant`` (a bare PUT
+    with a permissions list would replace every grant)."""
+    ctx = get_context()
+    mapping = _require_existing("update_permission_scheme", alias, ctx.state.permission_schemes)
+    await ctx.engine.dialect.update_permission_scheme(
+        mapping.id,
+        name=name,
+        description=description,
+    )
+
+
+async def add_permission_grant(
+    *,
+    scheme_alias: str,
+    permission: str,
+    holder_type: str,
+    holder_parameter: str = "",
+) -> str:
+    """Add one grant to an existing permission scheme.
+
+    ``holder_parameter`` is the declared value (role name / user email or
+    accountId / group name); it resolves at apply time. Records the
+    resolved grant in state. Idempotent on the wire: Jira's "already
+    exists" 400 is treated as done. Adding a grant can only widen access,
+    so no lockout guard runs here.
+    """
+    ctx = get_context()
+    mapping = _require_existing("add_permission_grant", scheme_alias, ctx.state.permission_schemes)
+    parameter = await _resolve_permission_holder(ctx.engine.dialect, holder_type, holder_parameter, project_id=None)
+    recorded = {(g["permission"], g["type"], g["parameter"]) for g in mapping.grants}
+    if (permission, holder_type, parameter) in recorded:
+        return parameter  # idempotent re-run
+    # No lockout guard on adds: adding a grant can only widen access.
+    grant_id = await ctx.engine.dialect.add_permission_grant(
+        mapping.id,
+        permission=permission,
+        holder_type=holder_type,
+        holder_parameter=parameter,
+    )
+    if grant_id:
+        mapping.grant_ids[PermissionSchemeMapping.grant_key(permission, holder_type, parameter)] = grant_id
+    mapping.grants.append({"permission": permission, "type": holder_type, "parameter": parameter})
+    ctx.persist()
+    return parameter
+
+
+async def remove_permission_grant(
+    *,
+    scheme_alias: str,
+    permission: str,
+    holder_type: str,
+    holder_parameter: str,
+    allow_lockout: bool = False,
+    required_permissions: list[str] | None = None,
+) -> None:
+    """Remove one grant (matched by permission + holder) from a scheme.
+
+    ``holder_parameter`` is the resolved value (accountId / role id / group
+    name) from reflection. The grant id is resolved against the live scheme
+    (state's id may predate an out-of-band edit). Lockout guard: refuses
+    when the authenticated account would lose a required permission,
+    unless ``allow_lockout`` is passed.
+    """
+    ctx = get_context()
+    mapping = _require_existing("remove_permission_grant", scheme_alias, ctx.state.permission_schemes)
+    if not allow_lockout:
+        await _guard_grant_change(
+            ctx,
+            mapping,
+            required=required_permissions or list(DEFAULT_SCHEME_GUARD_PERMISSIONS),
+            removed=(permission, holder_type, holder_parameter),
+        )
+    live = await ctx.engine.dialect.get_permission_scheme(mapping.id)
+    grant_id = ""
+    for g in live.grants:
+        if (g.permission, g.holder_type, g.holder_parameter) == (permission, holder_type, holder_parameter):
+            grant_id = g.id
+            break
+    if not grant_id:
+        stored = mapping.grant_ids.get(PermissionSchemeMapping.grant_key(permission, holder_type, holder_parameter))
+        grant_id = stored or ""
+    if not grant_id:
+        # Already gone (idempotent re-run or out-of-band removal).
+        mapping.grants = [
+            g
+            for g in mapping.grants
+            if (g["permission"], g["type"], g["parameter"]) != (permission, holder_type, holder_parameter)
+        ]
+        ctx.persist()
+        return
+    await ctx.engine.dialect.remove_permission_grant(mapping.id, grant_id)
+    mapping.grants = [
+        g
+        for g in mapping.grants
+        if (g["permission"], g["type"], g["parameter"]) != (permission, holder_type, holder_parameter)
+    ]
+    ctx.persist()
+
+
+async def delete_permission_scheme(*, alias: str) -> None:
+    """Delete the scheme by id. Idempotent: no-op when absent from state.
+
+    Jira refuses to delete a scheme still associated with a project — the
+    emitted delete order handles that; a hand-written migration must unbind
+    first (its 400 surfaces here)."""
+    ctx = get_context()
+    mapping = ctx.state.permission_schemes.get(alias)
+    if mapping is None:
+        return
+    await ctx.engine.dialect.delete_permission_scheme(mapping.id)
+    del ctx.state.permission_schemes[alias]
+    ctx.persist()
+
+
+async def set_project_permission_scheme(*, project_alias: str, scheme_alias: str) -> None:
+    """Bind a permission scheme to a project (synchronous PUT)."""
+    ctx = get_context()
+    project = _require_existing("set_project_permission_scheme", project_alias, ctx.state.projects)
+    _refuse_tmp(project, project_alias, "set_project_permission_scheme", ctx.state.jira_url)
+    scheme = _require_existing("set_project_permission_scheme", scheme_alias, ctx.state.permission_schemes)
+    await ctx.engine.dialect.assign_permission_scheme(project_id=project.id, scheme_id=scheme.id)
+
+
+async def _guard_grant_change(
+    ctx: Any,
+    mapping: PermissionSchemeMapping,
+    *,
+    required: list[str],
+    removed: tuple[str, str, str],
+) -> None:
+    """Op-time lockout guard for permission-scheme grant removals.
+
+    Evaluates, for every project stint manages that could be bound to this
+    scheme, whether the account would still hold the required permissions
+    after the removal. A scheme may serve projects stint does not manage;
+    those are not evaluated (documented limitation).
+    """
+    dialect = ctx.engine.dialect
+    scheme = await dialect.get_permission_scheme(mapping.id)
+    surviving = [
+        (g.permission, g.holder_type, g.holder_parameter)
+        for g in scheme.grants
+        if (g.permission, g.holder_type, g.holder_parameter) != removed
+    ]
+    grant_map: dict[str, list[tuple[str, str]]] = {}
+    for perm, htype, hparam in surviving:
+        grant_map.setdefault(perm, []).append((htype, hparam))
+    account_id = await dialect.my_account_id()
+    groups = await dialect.user_groups(account_id)
+    roles_map: dict[str, str] = {}
+    lead_cache: dict[str, str | None] = {}
+    problems: list[str] = []
+    for alias, project in ctx.state.projects.items():
+        if getattr(project, "style", "company-managed") == "team-managed":
+            continue
+        bound = await dialect.get_project_permission_scheme_id(project.id)
+        if bound != mapping.id:
+            continue
+        memberships = await dialect.project_role_memberships(project.id, account_id)
+        if project.id not in roles_map:
+            roles_map.update(await dialect.get_project_roles(project.id))
+        if project.id not in lead_cache:
+            lead_cache[project.id] = await dialect.get_project_lead_account_id(project.id)
+        missing = missing_permissions(
+            required,
+            grant_map,
+            account_id=account_id,
+            account_role_names=memberships,
+            account_groups=groups,
+            project_lead_id=lead_cache[project.id],
+            role_name_to_id=roles_map,
+        )
+        if missing:
+            problems.append(f"project {alias!r}: {', '.join(missing)}")
+    if problems:
+        raise StintError(
+            "this permission-scheme change would leave the authenticated account without "
+            + "; ".join(problems)
+            + ". Pass allow_lockout=True to force it."
         )
 
 

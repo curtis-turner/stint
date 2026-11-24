@@ -27,8 +27,12 @@ def _paginated(values):
     return {"values": values, "isLast": True, "startAt": 0, "maxResults": len(values)}
 
 
-def _stub_empty_jira(mock):
-    """All admin endpoints return empty — Jira has nothing."""
+def _stub_empty_jira(mock, *, roles: bool = True):
+    """All admin endpoints return empty — Jira has nothing.
+
+    ``roles=False`` skips the role-actor / permission-scheme stubs so a test
+    can register real payloads for them (respx matches the first-registered
+    route, so the shared empty regexes would otherwise shadow overrides)."""
     mock.get(f"{CLOUD_ROOT}/serverInfo").mock(
         return_value=httpx.Response(
             200,
@@ -59,6 +63,10 @@ def _stub_empty_jira(mock):
     mock.get(f"{CLOUD_ROOT}/issuesecurityschemes").mock(
         return_value=httpx.Response(200, json={"issueSecuritySchemes": []})
     )
+    if roles:
+        from tests._stubs import stub_project_roles_and_permission_schemes
+
+        stub_project_roles_and_permission_schemes(mock, CLOUD_ROOT)
 
 
 @respx.mock
@@ -413,3 +421,131 @@ def test_autogenerate_allow_delete_emits_delete(tmp_path, monkeypatch, capsys):
     assert len(files) == 1
     src = files[0].read_text(encoding="utf-8")
     assert "op.delete_custom_field(alias='orphan')" in src
+
+
+@respx.mock
+def test_autogenerate_lockout_guard_refuses_role_removal(tmp_path, monkeypatch, capsys):
+    """Plan-time lockout guard: a __roles__ declaration that would remove the
+    authenticated account's last role granting BROWSE/ADMINISTER refuses to
+    write a migration unless --allow-lockout is passed."""
+    _stub_empty_jira(respx.mock, roles=False)
+    mock = respx.mock
+    from tests._stubs import paginated
+
+    mock.get(f"{CLOUD_ROOT}/myself").mock(return_value=httpx.Response(200, json={"accountId": "acct-svc"}))
+    mock.get(f"{CLOUD_ROOT}/user").mock(return_value=httpx.Response(200, json={"groups": {"size": 0, "items": []}}))
+    mock.get(f"{CLOUD_ROOT}/project/search").mock(
+        return_value=httpx.Response(
+            200,
+            json=paginated(
+                [
+                    {
+                        "id": "10010",
+                        "key": "PLAT",
+                        "name": "Platform",
+                        "projectTypeKey": "software",
+                        "style": "classic",
+                        "description": "",
+                    }
+                ]
+            ),
+        )
+    )
+    mock.get(f"{CLOUD_ROOT}/project/10010/role").mock(
+        return_value=httpx.Response(
+            200,
+            json={"Administrators": f"{CLOUD_ROOT}/project/10010/role/10360"},
+        )
+    )
+    mock.get(f"{CLOUD_ROOT}/project/10010/role/10360").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "10360",
+                "name": "Administrators",
+                "actors": [{"id": "a1", "type": "atlassian-user-role-actor", "actorUser": {"accountId": "acct-svc"}}],
+            },
+        )
+    )
+    mock.get(f"{CLOUD_ROOT}/project/10010/permissionscheme").mock(
+        return_value=httpx.Response(200, json={"id": "20000", "name": "Default"})
+    )
+    mock.get(f"{CLOUD_ROOT}/permissionscheme").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "permissionSchemes": [
+                    {
+                        "id": 20000,
+                        "name": "Default",
+                        "permissions": [
+                            {
+                                "id": "g1",
+                                "permission": "BROWSE_PROJECTS",
+                                "holder": {"type": "projectRole", "parameter": "10360"},
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+    )
+    mock.get(f"{CLOUD_ROOT}/role").mock(
+        return_value=httpx.Response(200, json=paginated([{"id": "10360", "name": "Administrators"}]))
+    )
+    mock.get(f"{CLOUD_ROOT}/issuesecurityschemes/project").mock(return_value=httpx.Response(200, json=paginated([])))
+
+    # A pre-existing state so the project takes the "existing project" diff
+    # path (where removals are planned).
+    state_path = tmp_path / "state.yaml"
+    state = StateFile(env="dev", jira_url=BASE)
+    from stint.state.file import ProjectMapping
+
+    state.projects["PLAT"] = ProjectMapping(id="10010", style="company-managed", key="PLAT")
+    state.save(state_path)
+
+    schema_path = tmp_path / "roles_schema.py"
+    schema_path.write_text(
+        "from stint import IssueType, Project, Group\n\n"
+        "class Bug(IssueType):\n    __alias__ = 'bug'\n\n"
+        "class Tracker(Project):\n"
+        "    __key__ = 'PLAT'\n"
+        "    __issuetypes__ = [Bug]\n"
+        "    __roles__ = {'Administrators': [Group('contractors')]}\n",
+        encoding="utf-8",
+    )
+
+    mig_dir = tmp_path / "migrations"
+    monkeypatch.setenv("STINT_TOKEN", "tok")
+    common = [
+        "revision",
+        "--migrations-dir",
+        str(mig_dir),
+        "-m",
+        "lock roles",
+        "--autogenerate",
+        "--schema",
+        str(schema_path),
+        "--state",
+        str(state_path),
+        "--env",
+        "dev",
+        "--url",
+        f"jira_cloud+{BASE}",
+        "--auth",
+        "pat",
+        "--allow-delete",
+    ]
+    rc = main(common)
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "lock the authenticated account" in out
+    assert "--allow-lockout" in out
+    assert not list(mig_dir.glob("*.py"))
+
+    # The escape hatch writes the migration with allow_lockout=True baked in.
+    rc = main(common + ["--allow-lockout"])
+    assert rc == 0
+    src = list(mig_dir.glob("*.py"))[0].read_text(encoding="utf-8")
+    assert "op.remove_project_role_actor(" in src
+    assert "allow_lockout=True" in src

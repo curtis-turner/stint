@@ -15,6 +15,45 @@ ProjectStyle = Literal["company-managed", "team-managed"]
 _ALLOWED_STYLES: tuple[str, ...] = ("company-managed", "team-managed")
 
 
+def _validate_roles(project_name: str, style: str, roles: Any, lead_role: str | None) -> None:
+    """Validate a ``Project.__roles__`` declaration at class-definition time."""
+    from stint.schema.roles import Group, User
+
+    if not isinstance(roles, dict) or not roles:
+        raise ConfigurationError(
+            f"Project {project_name!r} has an invalid __roles__ {roles!r}; "
+            f"use a non-empty mapping of role name -> list of User/Group actors."
+        )
+    for role_name, actors in roles.items():
+        if not isinstance(role_name, str) or not role_name.strip():
+            raise ConfigurationError(
+                f"Project {project_name!r} has an invalid role name {role_name!r} in __roles__; "
+                f"use the name of an existing Jira project role."
+            )
+        if not isinstance(actors, (list, tuple)) or not actors:
+            raise ConfigurationError(
+                f"Project {project_name!r}: role {role_name!r} in __roles__ must carry a "
+                f"non-empty list of User/Group actors."
+            )
+        for actor in actors:
+            if not isinstance(actor, (User, Group)):
+                raise ConfigurationError(
+                    f"Project {project_name!r}: role {role_name!r} in __roles__ has an "
+                    f"invalid actor {actor!r}; use User('email') or Group('name')."
+                )
+    if lead_role is not None and lead_role in roles:
+        raise ConfigurationError(
+            f"Project {project_name!r} declares __lead_role__ {lead_role!r} which is also "
+            f"declared in __roles__; declare the lead as a User actor in __roles__ "
+            f"instead (the two spellings of the same role conflict)."
+        )
+    if style == "team-managed":
+        raise ConfigurationError(
+            f"Project {project_name!r} is team-managed but declares __roles__; "
+            f"project-role actors are a company-managed scheme surface."
+        )
+
+
 class ProjectMeta(StintMeta):
     """Validates and registers Project subclasses after dunders are reattached."""
 
@@ -88,6 +127,24 @@ class ProjectMeta(StintMeta):
                     f"project-role actors are a company-managed scheme surface."
                 )
 
+        roles = getattr(cls, "__roles__", None)
+        if roles is not None:
+            _validate_roles(name, style, roles, lead_role)
+
+        permission_scheme = getattr(cls, "__permission_scheme__", None)
+        if permission_scheme is not None:
+            if style == "team-managed":
+                raise ConfigurationError(
+                    f"Project {name!r} is team-managed but references a PermissionScheme. "
+                    f"Team-managed projects have no project-level permission "
+                    f"scheme association."
+                )
+            if getattr(permission_scheme, "alias", "") == "":
+                raise ConfigurationError(
+                    f"Project {name!r} references a PermissionScheme with no alias; "
+                    f"give the declaration an explicit alias."
+                )
+
         # Track inverse linkage: each issuetype learns which project(s) include
         # it. Used by AsyncSession.add() to infer project when unambiguous.
         for it in issuetypes:
@@ -114,6 +171,15 @@ class Project(BaseModel, metaclass=ProjectMeta):
       permission scheme grants ``BROWSE_PROJECTS`` only through project
       roles leave the lead unable to see the project they own (adding the
       lead to a role is what Jira's own UI flow does). CMP only.
+    - ``__roles__``: optional mapping of project role name -> list of
+      ``User``/``Group`` actors. stint reflects each declared role's live
+      actors and diffs membership into add/remove actor ops; roles that
+      are not declared are left unmanaged. Declaring the lead's role here
+      (with the lead as a ``User`` actor) is the general form of
+      ``__lead_role__``. CMP only.
+    - ``__permission_scheme__``: optional PermissionScheme declaration to
+      create/keep in sync and associate with this project at apply time.
+      CMP only.
     - ``__style__``: ``"company-managed"`` (default) or ``"team-managed"`` (Cloud only).
     - ``__issuetypes__``: list of IssueType subclasses included in this project.
     - ``__security_scheme__``: optional SecurityScheme declaration to
@@ -127,6 +193,8 @@ class Project(BaseModel, metaclass=ProjectMeta):
     # Set by ProjectMeta after class creation; declared for the type checker.
     __title__: ClassVar[str]
     __lead_role__: ClassVar[str | None] = None
+    __roles__: ClassVar[dict[str, list[Any]] | None] = None
+    __permission_scheme__: ClassVar[Any] = None
     # Declared so type-checkers see the key subclasses carry (validated by
     # ProjectMeta). __issuetypes__ is read via getattr() like validate.py,
     # since schemas declare it as a list and ProjectMeta normalizes it.

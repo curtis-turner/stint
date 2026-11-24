@@ -145,6 +145,107 @@ bug_security = SecurityScheme(
 
 Wire it to a project through `op.set_project_issue_security_scheme` in a migration.
 
+## Project roles (`__roles__`)
+
+Permission schemes and workflow conditions grant access to *roles*, so role
+membership is the lever that ties the security model together. Declare who is
+in which role on the project:
+
+```python
+from stint import Project, Group, User
+
+
+class Tracker(Project):
+    __key__ = "TRK"
+    __issuetypes__ = [Bug]
+    __roles__ = {
+        "Administrators": [User("svc-automation@example.com")],
+        "Viewers": [Group("all-staff")],
+    }
+```
+
+Behavior:
+
+- Emails resolve to accountIds at apply time (same user-search API as the
+  project lead); a raw accountId passes through. Group names pass through.
+- stint reflects each declared role's live actors and diffs membership into
+  add/remove actor ops. Actor **removals are destructive**: they are emitted
+  only with `--allow-delete`.
+- Roles that are **not declared are left alone** (unmanaged), so adopting
+  stint on an existing project never wipes its memberships.
+- Declaring the lead's role here (with the lead as a `User` actor) is the
+  general form of `__lead_role__` — don't set both for the same role.
+- Company-managed projects only.
+
+## Permission schemes
+
+"Regular users can read and comment but not edit or transition" is a
+permission-scheme statement: `EDIT_ISSUES` and `TRANSITION_ISSUES` granted to
+a narrow role, `BROWSE_PROJECTS` and `ADD_COMMENTS` to a wide one.
+
+```python
+from stint import PermissionScheme, ProjectRole, Group, User
+
+tracker_permissions = PermissionScheme(
+    alias="tracker_permissions",
+    name="Tracker Permission Scheme",
+    copy_from="Default software scheme",  # optional: seed from an existing scheme
+    grants={
+        "BROWSE_PROJECTS": [ProjectRole("Viewers"), ProjectRole("Administrators")],
+        "ADD_COMMENTS": [ProjectRole("Viewers"), ProjectRole("Administrators")],
+        "CREATE_ISSUES": [ProjectRole("Administrators")],
+        "EDIT_ISSUES": [ProjectRole("Administrators")],
+        "TRANSITION_ISSUES": [ProjectRole("Administrators")],
+        "ADMINISTER_PROJECTS": [ProjectRole("Administrators")],
+    },
+)
+
+
+class Tracker(Project):
+    __permission_scheme__ = tracker_permissions
+    __roles__ = {
+        "Administrators": [User("svc-automation@example.com")],
+        "Viewers": [Group("all-staff")],
+    }
+```
+
+Holder types: `ProjectRole(name)`, `Group(name)`, `User(email-or-accountId)`,
+`ApplicationRole(name)` (any logged-in user when unnamed), `Reporter`,
+`Assignee`, `ProjectLead`. Grant keys must be built-in Jira permission keys;
+`stint validate` rejects unknown ones.
+
+Grant policy (explicit, no silent default):
+
+- Declared grants are always managed: added when missing.
+- With `copy_from`, grants inherited from the source scheme are **unmanaged**
+  — they stay even when undeclared, and `engine.check` reports them.
+- Without `copy_from`, the scheme is exactly what is declared: undeclared
+  live grants are drift, and removing them needs `--allow-delete`.
+- The project binding (`PUT /project/{key}/permissionscheme`) is diffed like
+  every other scheme binding.
+
+`stint validate` cross-checks `ProjectRole` holders against the project's
+declared `__roles__` so a typo'd role name doesn't grant to nobody.
+
+## Lockout guard: never lock out the owning account
+
+Every role-actor removal and permission-grant change can remove the account
+stint authenticates as from the project it manages. stint refuses to plan
+(and ops refuse to apply) a change that would leave that account without:
+
+- `BROWSE_PROJECTS` and `ADMINISTER_PROJECTS` (role-actor removals), or
+- `BROWSE_PROJECTS`, `ADMINISTER_PROJECTS`, `EDIT_ISSUES`,
+  `TRANSITION_ISSUES`, `CREATE_ISSUES` (permission-scheme changes).
+
+The evaluation is conservative: group holders count only when the account's
+membership is verifiable (its groups are fetched via the user API), and
+per-issue holders (`reporter`, `assignee`) never count as evidence of
+retention. Escape hatch when you really mean it: `--allow-lockout` on
+`stint revision --autogenerate` (baked into the migration's remove ops), or
+`allow_lockout=True` on `op.remove_project_role_actor` /
+`op.remove_permission_grant` in hand-written migrations. Override the
+required set with `--required-permissions`.
+
 ## Validation and the registry
 
 - [`stint.validate()`](../api/validate.md) collects human-readable problems (project → issue type, screen → custom field, scheme → screen, ...) without raising.

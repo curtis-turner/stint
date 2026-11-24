@@ -78,6 +78,22 @@ def revision(
             help="Permit autogenerate to emit destructive ops (delete_*, remove_custom_field_option).",
         ),
     ] = False,
+    allow_lockout: Annotated[
+        bool,
+        Parameter(
+            negative=(),
+            help="Permit changes that would leave the authenticated account without "
+            "its required permissions (lockout guard escape).",
+        ),
+    ] = False,
+    required_permissions: Annotated[
+        str | None,
+        Parameter(
+            help="Comma-separated permission keys the authenticated account must retain "
+            "(lockout guard). Defaults to BROWSE_PROJECTS,ADMINISTER_PROJECTS for role "
+            "removals, plus EDIT_ISSUES,TRANSITION_ISSUES,CREATE_ISSUES for grant changes.",
+        ),
+    ] = None,
     force: Annotated[
         bool,
         Parameter(
@@ -104,6 +120,8 @@ def revision(
             no_verify_ssl=no_verify_ssl,
             env=env,
             allow_delete=allow_delete,
+            allow_lockout=allow_lockout,
+            required_permissions=required_permissions,
             force=force,
         )
     if merge:
@@ -153,6 +171,8 @@ def _run_autogenerate(
     no_verify_ssl: bool,
     env: str | None,
     allow_delete: bool,
+    allow_lockout: bool = False,
+    required_permissions: str | None = None,
     force: bool = False,
 ) -> int:
     from stint.autogen.desired import build_desired_snapshot
@@ -228,6 +248,8 @@ def _run_autogenerate(
             # cache is warm — lets the diff compare like with like instead
             # of re-emitting every email member as a phantom add each
             # revision (which Jira then rejects as "already exists").
+            # Security-level members, project role actors, and permission
+            # grant holders all share the same convention and resolution.
             resolved: dict[str, str] = {}
             for scheme in desired.security_schemes.values():
                 for level in scheme.levels:
@@ -239,6 +261,19 @@ def _run_autogenerate(
                                 member_type="user",
                                 member_value=member.value,
                             )
+            for project in desired.projects.values():
+                for role in project.roles:
+                    for actor_type, actor_value in role.actors:
+                        if actor_type != "user" or "@" not in actor_value:
+                            continue
+                        if actor_value not in resolved:
+                            resolved[actor_value] = await engine.dialect.resolve_user(actor_value)
+            for scheme in desired.permission_schemes.values():
+                for grant in scheme.grants:
+                    if grant.holder_type != "user" or "@" not in grant.holder_parameter:
+                        continue
+                    if grant.holder_parameter not in resolved:
+                        resolved[grant.holder_parameter] = await engine.dialect.resolve_user(grant.holder_parameter)
             return snapshot, resolved
         finally:
             await engine.close()
@@ -257,6 +292,25 @@ def _run_autogenerate(
         print("no changes detected; schema and Jira are in sync")
         return 0
 
+    if not allow_lockout:
+        rc = asyncio.run(
+            _enforce_lockout_guard(
+                url=url,
+                auth=auth,
+                dialect=dialect,
+                token_env=token_env,
+                user_env=user_env,
+                no_verify_ssl=no_verify_ssl,
+                desired=desired,
+                snapshot=snapshot,
+                state_file=state_file,
+                changes=result.changes,
+                required_override=required_permissions,
+            )
+        )
+        if rc != 0:
+            return rc
+
     # L19: `parents` was captured *before* the slow network reflect above.
     # A concurrent autogenerate that finished in the meantime could have
     # added a new head; re-check the graph state now, immediately before
@@ -273,11 +327,134 @@ def _run_autogenerate(
         parents=parents,
         revision=revision_id,
         changes=result.changes,
+        allow_lockout=allow_lockout,
     )
     rc = _write_migration(mig_dir, message, source, revision_id)
     if rc == 0:
         print(f"  {len(result.changes)} operation(s) emitted")
     return rc
+
+
+async def _enforce_lockout_guard(
+    *,
+    url: str,
+    auth: Any,
+    dialect: str | None,
+    token_env: Any,
+    user_env: Any,
+    no_verify_ssl: bool,
+    desired: Any,
+    snapshot: Any,
+    state_file: Any,
+    changes: list[Any],
+    required_override: str | None,
+) -> int:
+    """Plan-time lockout guard: simulate every role-actor and permission-grant
+    removal and refuse when the authenticated account would lose a required
+    permission (escape: --allow-lockout).
+
+    Read-only: two cheap HTTP calls (myself, user groups) — everything else
+    comes from the snapshot the diff already reflected.
+    """
+    from stint.autogen.diff import RemovePermissionGrant, RemoveProjectRoleActor
+    from stint.cli.cmd_reflect import _build_auth
+    from stint.engine import create_engine
+    from stint.lockout import (
+        DEFAULT_ROLE_GUARD_PERMISSIONS,
+        DEFAULT_SCHEME_GUARD_PERMISSIONS,
+        missing_permissions,
+    )
+
+    removal_role_changes = [c for c in changes if isinstance(c, RemoveProjectRoleActor)]
+    removal_grant_changes = [c for c in changes if isinstance(c, RemovePermissionGrant)]
+    if not removal_role_changes and not removal_grant_changes:
+        return 0
+    if required_override:
+        required = [p.strip() for p in required_override.split(",") if p.strip()]
+    elif removal_grant_changes:
+        required = list(DEFAULT_SCHEME_GUARD_PERMISSIONS)
+    else:
+        required = list(DEFAULT_ROLE_GUARD_PERMISSIONS)
+
+    auth_obj = _build_auth(auth, token_env, user_env)
+    engine = create_engine(url, auth=auth_obj, dialect=dialect, verify_ssl=not no_verify_ssl)
+    try:
+        account_id = await engine.dialect.my_account_id()
+        account_groups = await engine.dialect.user_groups(account_id)
+    finally:
+        await engine.close()
+
+    # state alias -> Jira id, to map a project's bound scheme id back to the
+    # managed scheme alias a RemovePermissionGrant names.
+    scheme_alias_by_id = {m.id: alias for alias, m in state_file.permission_schemes.items()}
+    problems: list[str] = []
+    project_aliases = sorted(set(state_file.projects) | {c.project_alias for c in removal_role_changes})
+    for alias in project_aliases:
+        project_key = state_file.projects[alias].key if alias in state_file.projects else alias
+        proj_snap = snapshot.projects.get(project_key or alias)
+        if proj_snap is None:
+            continue
+        # Account's current role memberships in the project (names).
+        account_roles = {
+            role_name
+            for role_name, actors in (proj_snap.roles or {}).items()
+            if any(a.type == "user" and a.parameter == account_id for a in actors)
+        }
+        # Simulate planned role removals that touch the account (directly,
+        # or through a group it belongs to).
+        for change in removal_role_changes:
+            if change.project_alias != alias:
+                continue
+            removes_account = change.actor_type == "user" and change.actor_parameter == account_id
+            removes_account = removes_account or (
+                change.actor_type == "group" and change.actor_parameter in account_groups
+            )
+            if removes_account:
+                account_roles.discard(change.role_name)
+        # Grant removals for this project: the scheme(s) it is bound to (live
+        # id → managed alias) plus the scheme the schema rebinds it to.
+        applicable_scheme_aliases: set[str] = set()
+        if proj_snap.permission_scheme_id:
+            bound_alias = scheme_alias_by_id.get(proj_snap.permission_scheme_id)
+            if bound_alias:
+                applicable_scheme_aliases.add(bound_alias)
+        desired_project = desired.projects.get(alias)
+        if desired_project is not None and desired_project.permission_scheme:
+            applicable_scheme_aliases.add(desired_project.permission_scheme)
+        grant_map: dict[str, list[tuple[str, str]]] = {}
+        for scheme_alias in applicable_scheme_aliases:
+            scheme_snap = snapshot.permission_schemes.get(
+                state_file.permission_schemes[scheme_alias].id if scheme_alias in state_file.permission_schemes else ""
+            )
+            if scheme_snap is None:
+                continue
+            for g in scheme_snap.grants:
+                grant_map.setdefault(g.permission, []).append((g.holder_type, g.holder_parameter))
+        for change in removal_grant_changes:
+            if change.scheme_alias not in applicable_scheme_aliases:
+                continue
+            holders = grant_map.get(change.permission, [])
+            grant_map[change.permission] = [
+                (t, p) for (t, p) in holders if (t, p) != (change.holder_type, change.holder_parameter)
+            ]
+        missing = missing_permissions(
+            required,
+            grant_map,
+            account_id=account_id,
+            account_role_names=account_roles,
+            account_groups=account_groups,
+            project_lead_id=None,
+            role_name_to_id=snapshot.project_roles or {},
+        )
+        if missing:
+            problems.append(f"{alias!r}: would lose {', '.join(missing)}")
+    if problems:
+        print("ERROR: this plan would lock the authenticated account out of a project it manages:")
+        for problem in problems:
+            print(f"  - project {problem}")
+        print("Re-run with --allow-lockout to force it.")
+        return 1
+    return 0
 
 
 def _pending_migrations(mig_dir: Path, applied_revision: str | None) -> list:
