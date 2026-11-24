@@ -24,7 +24,10 @@ Groups (one per fix):
 
 Groups 3 and 4 need a multi-line text custom field on the chosen issue
 type's create screen; the first one discovered is used (or pin one with
---textarea-field NAME) and the group is SKIPPED when the project has none.
+--textarea-field NAME). When the project has none, --provision-textarea
+creates (or reuses by --textarea-name) a paragraph field and wires it onto
+the project's screens and field configuration through stint's dialect ops;
+without it the group is SKIPPED when the project has none.
 
 Prerequisites:
   - A company-managed sandbox project on Jira Cloud.
@@ -214,6 +217,107 @@ def build_check_project(model: Any, project_key: str) -> Any:
     return ProjectMeta("SmokeFixesProject", (Project,), ns)
 
 
+async def provision_textarea(
+    engine: Any, proj: Any, snapshot: Any, issuetype_id: str, args: argparse.Namespace
+) -> tuple[str, str]:
+    """Create (or reuse) a paragraph custom field and wire it onto the
+    project's create/edit screens and field configuration through stint's
+    own dialect ops — the schema plane the data plane assumes.
+
+    Reuses an existing textarea-typed field by name. Everything persists
+    after the run (harmless on a sandbox, reusable by later runs); remove
+    in the Jira UI if unwanted. Returns (field_id, display name).
+    """
+    name = args.textarea_name
+    existing = next(
+        (
+            cf
+            for cf in snapshot.custom_fields.values()
+            if cf.name.lower() == name.lower() and cf.type_id.rsplit(":", 1)[-1] == "textarea"
+        ),
+        None,
+    )
+    if existing is not None:
+        fid = existing.id
+        print(f"provision: reusing textarea custom field {name!r} ({fid})")
+    else:
+        fid = await engine.dialect.create_custom_field(
+            name=name,
+            description="Provisioned by tools/smoke_dataplane_fixes.py (--provision-textarea)",
+            type_id=TextAreaField.jira_type_id,
+            searcher_key=TextAreaField.searcher_key,
+        )
+        print(f"provision: created paragraph custom field {name!r} ({fid})")
+
+    # Project -> issue-type screen scheme -> screen scheme -> create/edit screens.
+    itss = snapshot.issuetype_screen_schemes.get(proj.issuetype_screen_scheme_id or "")
+    if itss is None:
+        raise SystemExit(
+            f"project {proj.key!r} uses the global default issue-type screen scheme; adding the "
+            f"field would affect every project sharing it. Assign a project-level issue-type "
+            f"screen scheme first, or add {name!r} to the screen in the UI."
+        )
+    screen_of_type = next((m for m in itss.mappings if m.issuetype_id == issuetype_id), None) or next(
+        (m for m in itss.mappings if m.issuetype_id == "default"), None
+    )
+    if screen_of_type is None:
+        raise SystemExit(f"issue-type screen scheme {itss.id!r} maps neither {issuetype_id} nor 'default'.")
+    scheme = snapshot.screen_schemes.get(screen_of_type.screen_scheme_id)
+    if scheme is None:
+        raise SystemExit(f"screen scheme {screen_of_type.screen_scheme_id!r} is not in the reflect snapshot.")
+    create_screen = scheme.mappings.get("create") or scheme.mappings.get("default")
+    edit_screen = scheme.mappings.get("edit") or scheme.mappings.get("default")
+    if not create_screen:
+        raise SystemExit(f"screen scheme {scheme.id!r} maps no create/default screen; cannot place the field.")
+
+    for label, screen_id in (("create", create_screen), ("edit", edit_screen)):
+        if not screen_id or (label == "edit" and screen_id == create_screen):
+            continue
+        screen = snapshot.screens.get(screen_id)
+        if screen is None or not screen.tabs:
+            print(
+                f"provision:   warn: {label} screen {screen_id!r} has no reflected tabs; add {name!r} to it in the UI",
+                file=sys.stderr,
+            )
+            continue
+        tab = next((t for t in screen.tabs if t.name == "Field Tab"), screen.tabs[0])
+        await engine.dialect.add_screen_tab_field(screen_id, tab.id, field_id=fid)
+        print(f"provision: added {name!r} to the {label} screen {screen.name!r} (tab {tab.name!r})")
+
+    # Field configuration (v1) or field scheme (v2) — set_field_configuration_item
+    # routes by what the tenant answers; hidden=False associates on v2.
+    if not proj.field_configuration_scheme_id:
+        print(
+            "provision:   note: project uses the global default field configuration "
+            "(Jira includes new fields there) — skipping the field-configuration write"
+        )
+    else:
+        fcs = snapshot.field_configuration_schemes.get(proj.field_configuration_scheme_id)
+        if fcs is None:
+            raise SystemExit(
+                f"field configuration scheme {proj.field_configuration_scheme_id!r} is not in the reflect snapshot."
+            )
+        fc_of_type = next((m for m in fcs.mappings if m.issuetype_id == issuetype_id), None) or next(
+            (m for m in fcs.mappings if m.issuetype_id == "default"), None
+        )
+        if fc_of_type is None:
+            print(
+                f"provision:   note: field configuration scheme {fcs.id!r} maps neither "
+                f"{issuetype_id} nor 'default'; skipping the field-configuration write",
+                file=sys.stderr,
+            )
+        else:
+            await engine.dialect.set_field_configuration_item(
+                fc_of_type.field_configuration_id,
+                field_id=fid,
+                required=False,
+                hidden=False,
+                description="Smoke notes (provisioned)",
+            )
+            print(f"provision: added {name!r} to field configuration {fc_of_type.field_configuration_id!r}")
+    return fid, name
+
+
 @dataclass
 class Plan:
     """What this run will use: the issue type, its model, the bound required
@@ -324,10 +428,16 @@ async def build_state(engine: Any, args: argparse.Namespace) -> tuple[StateFile,
     state.issuetypes[entry["name"]] = SimpleMapping(id=candidates[0].id)
     print(f"state:   {entry['name']!r} -> issuetype id {candidates[0].id}")
 
+    # Discover a multi-line text custom field on this type's create screen,
+    # or stand one up through stint's own dialect ops (--provision-textarea,
+    # mirrors --provision-subtask in tools/smoke_dataplane.py).
+    textarea_binding = find_textarea(entry, args.textarea_field)
+    if textarea_binding is None and args.provision_textarea:
+        textarea_binding = await provision_textarea(engine, proj, snapshot, candidates[0].id, args)
+
     # Required-on-create fields (except the textarea, which binds separately
     # below and is satisfied by the smoke's own notes value).
     provided = {k.lower(): v for k, v in (a.split("=", 1) for a in args.required_field)}
-    textarea_binding = find_textarea(entry, args.textarea_field)
     required: list[RequiredField] = []
     consumed: set[str] = set()
     for fid, field_name in entry["required"]:
@@ -632,6 +742,18 @@ def main() -> None:
         "--textarea-field",
         default=None,
         help="pin the multi-line text custom field by display name (default: first discovered)",
+    )
+    parser.add_argument(
+        "--provision-textarea",
+        action="store_true",
+        help="no textarea field on the create screen? create (or reuse by name) a paragraph "
+        "custom field and add it to the project's create/edit screens and field configuration "
+        "through stint's dialect ops. Persists after the run.",
+    )
+    parser.add_argument(
+        "--textarea-name",
+        default="Smoke Notes",
+        help="display name for --provision-textarea (default: Smoke Notes; reuses a same-named field)",
     )
     parser.add_argument(
         "--required-field",
