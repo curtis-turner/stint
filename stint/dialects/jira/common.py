@@ -22,7 +22,10 @@ from stint.state.snapshot import (
     IssueTypeScreenSchemeMappingSnapshot,
     IssueTypeScreenSchemeSnapshot,
     IssueTypeSnapshot,
+    PermissionGrantSnapshot,
+    PermissionSchemeSnapshot,
     ProjectSnapshot,
+    RoleActorSnapshot,
     ScreenSchemeSnapshot,
     ScreenSnapshot,
     ScreenTabSnapshot,
@@ -432,6 +435,88 @@ def parse_fcs_mapping(payload: dict[str, Any]) -> FieldConfigurationSchemeMappin
     return FieldConfigurationSchemeMappingSnapshot(
         issuetype_id=str(payload.get("issueTypeId", "default")),
         field_configuration_id=str(payload.get("fieldConfigurationId", "")),
+    )
+
+
+# ── Project role actors ───────────────────────────────────────────────
+_ACTOR_USER_TYPES = frozenset({"atlassian-user-role-actor", "user"})
+_ACTOR_GROUP_TYPES = frozenset({"atlassian-group-role-actor", "group"})
+
+
+def parse_role_actors(actors: list[dict[str, Any]]) -> tuple[RoleActorSnapshot, ...]:
+    """Parse the ``actors`` array of a project-role payload.
+
+    User actors carry ``actorUser.accountId``; group actors carry
+    ``actorGroup.name`` (and ``groupId``). The normalized ``type`` and the
+    ``parameter`` (accountId / group name) are what actor add/remove and the
+    diff compare against.
+    """
+    out: list[RoleActorSnapshot] = []
+    for actor in actors:
+        if not isinstance(actor, dict):
+            continue
+        raw_type = str(actor.get("type", ""))
+        actor_user = actor.get("actorUser") or {}
+        actor_group = actor.get("actorGroup") or {}
+        if raw_type in _ACTOR_USER_TYPES or actor_user:
+            # accountId lives in actorUser; some payloads repeat it in the
+            # bare "user" field (historically a username key — only trust
+            # actorUser.accountId).
+            parameter = str(actor_user.get("accountId", ""))
+            out.append(
+                RoleActorSnapshot(
+                    id=str(actor.get("id", "")),
+                    type="user",
+                    name=str(actor.get("displayName", "")),
+                    parameter=parameter,
+                )
+            )
+        elif raw_type in _ACTOR_GROUP_TYPES or actor_group:
+            parameter = str(actor_group.get("name", ""))
+            out.append(
+                RoleActorSnapshot(
+                    id=str(actor.get("id", "")),
+                    type="group",
+                    name=str(actor.get("displayName", "") or parameter),
+                    parameter=parameter,
+                )
+            )
+        # Other actor types (e.g. SD customer portal placeholders) are
+        # ignored: stint never declares them, and a diff that saw them would
+        # try to remove what it cannot represent.
+    return tuple(out)
+
+
+def parse_global_role(payload: dict[str, Any]) -> tuple[str, str]:
+    """One row of GET /rest/api/3/role. Returns (name, id)."""
+    return str(payload.get("name", "")), str(payload.get("id", ""))
+
+
+def parse_permission_grant(payload: dict[str, Any]) -> PermissionGrantSnapshot:
+    """One grant of ``GET /permissionscheme/{id}?expand=permissions``."""
+    holder = payload.get("holder") or {}
+    return PermissionGrantSnapshot(
+        id=str(payload.get("id", "")),
+        permission=str(payload.get("permission", "")),
+        holder_type=str(holder.get("type", "")),
+        holder_parameter=str(holder.get("parameter", "") or holder.get("value", "")),
+    )
+
+
+def parse_permission_scheme(payload: dict[str, Any]) -> PermissionSchemeSnapshot:
+    """Parse a permission scheme payload that embeds its ``permissions``."""
+    scheme_id = payload.get("id")
+    if scheme_id is None:
+        raise ReflectionError(f"permission scheme payload has no 'id': {str(payload)[:200]!r}")
+    grants: list[PermissionGrantSnapshot] = []
+    for entry in payload.get("permissions") or []:
+        if isinstance(entry, dict):
+            grants.append(parse_permission_grant(entry))
+    return PermissionSchemeSnapshot(
+        id=str(scheme_id),
+        name=str(payload.get("name", "")),
+        description=str(payload.get("description", "") or ""),
+        grants=tuple(grants),
     )
 
 

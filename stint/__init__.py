@@ -14,6 +14,7 @@ YAML state file load/save.
 """
 
 from stint import migrations
+from stint.audit import ControlFieldAuditReport, ControlFieldWrite
 from stint.client.auth import APITokenAuth, BasicAuth, PATAuth
 from stint.engine import Engine, create_engine
 from stint.exceptions import (
@@ -57,6 +58,15 @@ from stint.migrations import Migration, MigrationContext, get_context, load_migr
 from stint.query import AsyncSession, CommitResult, Session, and_, not_, or_, select
 from stint.registry import registry
 from stint.schema import FieldConfiguration, IssueType, Project, Screen, ScreenScheme
+from stint.schema.permissions import (
+    ApplicationRole,
+    Assignee,
+    PermissionScheme,
+    ProjectLead,
+    ProjectRole,
+    Reporter,
+)
+from stint.schema.roles import Group, User
 from stint.schema.security import SecurityLevel, SecurityLevelMember, SecurityScheme
 from stint.state import (
     CustomFieldSnapshot,
@@ -69,22 +79,27 @@ from stint.state import (
 )
 from stint.validate import validate, validate_or_raise
 
-__version__ = "0.18.1"
+__version__ = "0.19.0"
 
 __all__ = [
     "APITokenAuth",
+    "ApplicationRole",
+    "Assignee",
     "AsyncSession",
     "AuthenticationError",
     "BasicAuth",
     "CheckboxesField",
     "CommitResult",
     "ConfigurationError",
+    "ControlFieldAuditReport",
+    "ControlFieldWrite",
     "CustomField",
     "CustomFieldSnapshot",
     "DateField",
     "DateTimeField",
     "Engine",
     "FieldConfiguration",
+    "Group",
     "GroupField",
     "IssueType",
     "LabelsField",
@@ -98,6 +113,10 @@ __all__ = [
     "NumberField",
     "PATAuth",
     "PartialCommitError",
+    "PermissionScheme",
+    "ProjectLead",
+    "ProjectRole",
+    "Reporter",
     "StintError",
     "PermissionError",
     "Project",
@@ -127,6 +146,7 @@ __all__ = [
     "TransportError",
     "URLField",
     "UnsupportedTMPOpError",
+    "User",
     "UserField",
     "VersionField",
     "and_",

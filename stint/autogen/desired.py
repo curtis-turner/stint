@@ -12,10 +12,11 @@ with `default` mapped to the first issuetype's screen scheme / field config.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from stint.fields import CustomField
 from stint.registry import registry as default_registry
+from stint.schema.permissions import holder_jira_type, holder_parameter
 
 if TYPE_CHECKING:
     from stint.registry import Registry
@@ -137,6 +138,43 @@ class DesiredSecurityScheme:
 
 
 @dataclass(frozen=True)
+class DesiredRoleActors:
+    """A declared ``Project.__roles__`` entry: role name -> declared actors.
+
+    ``actors`` entries are ``(type, value)`` pairs where ``type`` is
+    ``"user"`` or ``"group"`` and ``value`` is the declared email/accountId
+    or group name (emails resolve at apply time).
+    """
+
+    role_name: str
+    actors: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class DesiredPermissionGrant:
+    """One declared permission-scheme grant.
+
+    ``holder_parameter`` is the *declared* value: project role name, user
+    email/accountId, group name, or "" for parameterless holders. Ops
+    resolve role names to role ids and emails to accountIds at apply time.
+    """
+
+    permission: str
+    holder_type: str
+    holder_parameter: str
+
+
+@dataclass(frozen=True)
+class DesiredPermissionScheme:
+    alias: str
+    name: str
+    description: str
+    copy_from: str | None
+    grants: tuple[DesiredPermissionGrant, ...]  # declaration order
+    project: str | None  # project key (alias) hint from Project.__permission_scheme__
+
+
+@dataclass(frozen=True)
 class DesiredProject:
     alias: str  # uses project key
     key: str
@@ -149,7 +187,9 @@ class DesiredProject:
     issuetype_screen_scheme: str | None  # alias
     field_configuration_scheme: str | None  # alias
     security_scheme: str | None  # alias
-    lead_role: str | None  # project role name the lead is added to (CMP only)
+    permission_scheme: str | None = None  # alias
+    lead_role: str | None = None  # project role name the lead is added to (CMP only)
+    roles: tuple[DesiredRoleActors, ...] = ()  # declared __roles__, declaration order
 
 
 @dataclass
@@ -169,6 +209,7 @@ class DesiredSnapshot:
         default_factory=dict,
     )
     security_schemes: dict[str, DesiredSecurityScheme] = field(default_factory=dict)
+    permission_schemes: dict[str, DesiredPermissionScheme] = field(default_factory=dict)
     projects: dict[str, DesiredProject] = field(default_factory=dict)
 
 
@@ -203,6 +244,7 @@ class _Scope:
     screen_schemes: frozenset[str]  # aliases
     field_configurations: frozenset[str]  # aliases
     security_schemes: frozenset[str]  # aliases
+    permission_schemes: frozenset[str]  # aliases
 
 
 def _scope_registry(reg: Registry, project_module: str | None) -> _Scope:
@@ -231,6 +273,7 @@ def _scope_registry(reg: Registry, project_module: str | None) -> _Scope:
             screen_schemes=frozenset(reg.screen_schemes),
             field_configurations=frozenset(reg.field_configurations),
             security_schemes=frozenset(reg.security_schemes),
+            permission_schemes=frozenset(reg.permission_schemes),
         )
     projects = {k: cls for k, cls in reg.projects.items() if cls.__module__ == project_module}
     it_classes = [it for cls in projects.values() for it in getattr(cls, "__issuetypes__", [])]
@@ -281,6 +324,15 @@ def _scope_registry(reg: Registry, project_module: str | None) -> _Scope:
         if (scheme := getattr(proj_cls, "__security_scheme__", None)) is not None
     }
     security_schemes |= {alias for alias, scheme in reg.security_schemes.items() if _declared_in_module(scheme)}
+    # Permission schemes reach the scope the same two ways as security
+    # schemes: referenced by a scoped Project's __permission_scheme__, and
+    # declared-but-not-yet-wired in the schema module itself (M5 rule).
+    permission_schemes = {
+        scheme.alias
+        for proj_cls in projects.values()
+        if (scheme := getattr(proj_cls, "__permission_scheme__", None)) is not None
+    }
+    permission_schemes |= {alias for alias, scheme in reg.permission_schemes.items() if _declared_in_module(scheme)}
     return _Scope(
         projects=projects,
         issuetypes=frozenset(getattr(it, "__alias__", "") for it in it_classes),
@@ -289,6 +341,7 @@ def _scope_registry(reg: Registry, project_module: str | None) -> _Scope:
         screen_schemes=frozenset(scheme.alias for scheme in schemes),
         field_configurations=frozenset(fc.alias for fc in fcs),
         security_schemes=frozenset(security_schemes),
+        permission_schemes=frozenset(permission_schemes),
     )
 
 
@@ -400,10 +453,12 @@ def build_desired_snapshot(
 
     # ── Projects + derived IssueTypeScheme / ITSS / FCS / security ───
     security_scheme_of_project: dict[str, str] = {}
+    permission_scheme_of_project: dict[str, str] = {}
     for project_key, proj_cls in scope.projects.items():
-        linked = getattr(proj_cls, "__security_scheme__", None)
-        if linked is not None:
+        if (linked := getattr(proj_cls, "__security_scheme__", None)) is not None:
             security_scheme_of_project[project_key] = linked.alias
+        if (linked_perm := getattr(proj_cls, "__permission_scheme__", None)) is not None:
+            permission_scheme_of_project[project_key] = linked_perm.alias
     for project_key, proj_cls in scope.projects.items():
         issuetypes = list(getattr(proj_cls, "__issuetypes__", []))
         its_alias = _derive_its(desired, project_key, issuetypes)
@@ -421,7 +476,9 @@ def build_desired_snapshot(
             issuetype_screen_scheme=itss_alias,
             field_configuration_scheme=fcs_alias,
             security_scheme=security_scheme_of_project.get(project_key),
+            permission_scheme=permission_scheme_of_project.get(project_key),
             lead_role=getattr(proj_cls, "__lead_role__", None),
+            roles=_desired_roles(getattr(proj_cls, "__roles__", None)),
         )
     # ── Security schemes ─────────────────────────────────────────────
     for alias, scheme in reg.security_schemes.items():
@@ -452,7 +509,53 @@ def build_desired_snapshot(
             project=bound_project or scheme.project,
         )
 
+    # ── Permission schemes ───────────────────────────────────────────
+    for alias, scheme in reg.permission_schemes.items():
+        if alias not in scope.permission_schemes:
+            continue
+        # Authoritative linkage is Project.__permission_scheme__; the
+        # scheme's own ``project`` hint is the fallback (same as security
+        # schemes).
+        bound_project = next(
+            (pk for pk, scheme_alias in permission_scheme_of_project.items() if scheme_alias == alias),
+            None,
+        )
+        desired.permission_schemes[alias] = DesiredPermissionScheme(
+            alias=alias,
+            name=scheme.name or alias,
+            description=scheme.description or "",
+            copy_from=scheme.copy_from,
+            grants=tuple(
+                DesiredPermissionGrant(
+                    permission=permission,
+                    holder_type=holder_jira_type(holder),
+                    holder_parameter=holder_parameter(holder),
+                )
+                for permission, holders in scheme.grants.items()
+                for holder in holders
+            ),
+            project=bound_project or scheme.project,
+        )
+
     return desired
+
+
+def _desired_roles(roles: Any) -> tuple[DesiredRoleActors, ...]:
+    """Normalize a declared ``__roles__`` mapping to DesiredRoleActors."""
+    from stint.schema.roles import Group, User
+
+    if not roles:
+        return ()
+    out: list[DesiredRoleActors] = []
+    for role_name, actors in roles.items():
+        pairs: list[tuple[str, str]] = []
+        for actor in actors:
+            if isinstance(actor, User):
+                pairs.append(("user", actor.value))
+            elif isinstance(actor, Group):
+                pairs.append(("group", actor.name))
+        out.append(DesiredRoleActors(role_name=role_name, actors=tuple(pairs)))
+    return tuple(out)
 
 
 def _derive_its(

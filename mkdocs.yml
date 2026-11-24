@@ -87,6 +87,7 @@ nav:
       - guides/index.md
       - Quick start: guides/quick-start.md
       - Schema as code: guides/schema.md
+      - Lock it for users, not for the service: guides/locking.md
       - Migrations: guides/migrations.md
       - Querying and writing (ORM): guides/querying.md
       - CLI reference: guides/cli.md
@@ -100,6 +101,7 @@ nav:
       - Autogeneration: api/autogen.md
       - State: api/state.md
       - Registry: api/registry.md
+      - Control-field audit: api/audit.md
       - Validation: api/validate.md
       - Client: api/client.md
       - Dialects: api/dialects.md

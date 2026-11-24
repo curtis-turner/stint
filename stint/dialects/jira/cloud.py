@@ -28,7 +28,9 @@ from stint.state.snapshot import (
     IssueTypeSchemeSnapshot,
     IssueTypeScreenSchemeSnapshot,
     IssueTypeSnapshot,
+    PermissionSchemeSnapshot,
     ProjectSnapshot,
+    RoleActorSnapshot,
     ScreenSchemeSnapshot,
     ScreenSnapshot,
     ScreenTabSnapshot,
@@ -77,6 +79,11 @@ class JiraCloudDialect:
         self._field_config_api_cache: str | None = None
         self._all_field_ids_cache: frozenset[str] | None = None
         self._work_type_ids_cache: frozenset[str] | None = None
+        # Lockout-guard facts, cached for the life of the dialect instance.
+        self._my_account_id_cache: str | None = None
+        self._user_groups_cache: dict[str, frozenset[str]] = {}
+        self._role_membership_cache: dict[tuple[str, str], set[str]] = {}
+        self._global_roles_cache: dict[str, str] | None = None
 
     # ── Detection ────────────────────────────────────────────────────
     async def detect(self) -> bool:
@@ -180,6 +187,8 @@ class JiraCloudDialect:
         field_configurations = await self._reflect_field_configurations()
         fcs = await self._reflect_field_configuration_schemes()
         security_schemes = await self._reflect_issue_security_schemes()
+        permission_schemes = await self._reflect_permission_schemes()
+        project_roles = await self._reflect_global_project_roles()
         return Snapshot(
             server_info=info,
             custom_fields=custom_fields,
@@ -192,6 +201,8 @@ class JiraCloudDialect:
             field_configurations=field_configurations,
             field_configuration_schemes=fcs,
             security_schemes=security_schemes,
+            permission_schemes=permission_schemes,
+            project_roles=project_roles,
         )
 
     # ── Custom fields ────────────────────────────────────────────────
@@ -293,6 +304,10 @@ class JiraCloudDialect:
         )
         fcs_map = await self._reflect_project_field_configuration_bindings(project_ids)
         iss_map = await self._reflect_project_issue_security_bindings(project_ids)
+        perm_map = await self._reflect_project_permission_scheme_bindings(project_ids)
+        roles_map: dict[str, dict[str, tuple[RoleActorSnapshot, ...]]] = {}
+        for proj in list(result.values()):
+            roles_map[proj.id] = await self._reflect_project_roles(proj.id)
         for key, proj in list(result.items()):
             result[key] = dataclasses.replace(
                 proj,
@@ -300,6 +315,8 @@ class JiraCloudDialect:
                 issuetype_screen_scheme_id=itss_map.get(proj.id),
                 field_configuration_scheme_id=fcs_map.get(proj.id),
                 issue_security_scheme_id=iss_map.get(proj.id),
+                permission_scheme_id=perm_map.get(proj.id),
+                roles=roles_map.get(proj.id, {}),
             )
         return result
 
@@ -394,6 +411,96 @@ class JiraCloudDialect:
                 project_id = entry.get("projectId")
                 if scheme_id is not None and project_id is not None:
                     out[str(project_id)] = str(scheme_id)
+        return out
+
+    async def _reflect_project_permission_scheme_bindings(
+        self,
+        project_ids: list[str],
+    ) -> dict[str, str]:
+        """project_id → permission-scheme id map.
+
+        There is no bulk endpoint: one GET per project of
+        ``/project/{id}/permissionscheme`` (which always answers — every
+        project carries a scheme, Jira's default included). IDs come back as
+        ints; stringify for snapshot parity.
+        """
+        out: dict[str, str] = {}
+        for project_id in project_ids:
+            payload = await self.client.get_json(f"{self.api_root}/project/{project_id}/permissionscheme")
+            if isinstance(payload, dict) and payload.get("id") is not None:
+                out[project_id] = str(payload["id"])
+        return out
+
+    async def _reflect_project_roles(self, project_id: str) -> dict[str, tuple[RoleActorSnapshot, ...]]:
+        """role name → actors for one project.
+
+        ``GET /project/{id}/role`` answers a role-name → URL map; each role's
+        actors come from ``GET /project/{id}/role/{roleId}``. Note the two
+        meanings of "role" here: this maps the *tenant's* project roles into
+        one project, so role sets can differ per project.
+        """
+        roles = await self.client.get_json(f"{self.api_root}/project/{project_id}/role")
+        if not isinstance(roles, dict):
+            raise ReflectionError(
+                f"GET {self.api_root}/project/{project_id}/role did not return "
+                f"a role-name → URL mapping (got {type(roles).__name__})."
+            )
+        result: dict[str, tuple[RoleActorSnapshot, ...]] = {}
+        for role_name, role_url in roles.items():
+            role_id = str(role_url).rstrip("/").rsplit("/", 1)[-1]
+            payload = await self.client.get_json(f"{self.api_root}/project/{project_id}/role/{role_id}")
+            if not isinstance(payload, dict):
+                continue
+            result[str(role_name)] = common.parse_role_actors(payload.get("actors") or [])
+        return result
+
+    async def _reflect_permission_schemes(self) -> dict[str, PermissionSchemeSnapshot]:
+        """Reflect all permission schemes with their grants.
+
+        ``GET /permissionscheme`` answers a bare
+        ``{"permissionSchemes": [...]}`` envelope with no pagination keys, so
+        like ``/issuesecurityschemes`` it must not go through
+        ``common.paginate``. Grants are only included with
+        ``expand=permissions``; without it every scheme would reflect
+        grant-less and all declared grants would diff as phantom drift.
+        """
+        payload = await self.client.get_json(
+            f"{self.api_root}/permissionscheme",
+            params={"expand": "permissions"},
+        )
+        if not isinstance(payload, dict):
+            raise ReflectionError(
+                f"GET {self.api_root}/permissionscheme returned "
+                f"{type(payload).__name__} instead of a permissionSchemes envelope"
+            )
+        result: dict[str, PermissionSchemeSnapshot] = {}
+        for entry in payload.get("permissionSchemes") or []:
+            if not isinstance(entry, dict):
+                raise ReflectionError(
+                    f"GET {self.api_root}/permissionscheme included a non-object scheme entry: {str(entry)[:200]!r}"
+                )
+            scheme = common.parse_permission_scheme(entry)
+            result[scheme.id] = scheme
+        return result
+
+    async def _reflect_global_project_roles(self) -> dict[str, str]:
+        """Global project-role name → id map (``GET /rest/api/3/role``).
+
+        Used to compare permission-scheme grants whose holder is a
+        projectRole: Jira's holder parameter is the role id while
+        declarations name the role. Returns an empty map when the endpoint
+        is unavailable (older/oddball tenants), which degrades grant-holder
+        comparison to "cannot verify role holders" instead of inventing
+        drift.
+        """
+        out: dict[str, str] = {}
+        try:
+            async for entry in common.paginate(self.client, f"{self.api_root}/role"):
+                name, role_id = common.parse_global_role(entry)
+                if name and role_id:
+                    out[name] = role_id
+        except NotFoundError:
+            return {}
         return out
 
     async def _reflect_screens(self) -> dict[str, ScreenSnapshot]:
@@ -1994,22 +2101,7 @@ class JiraCloudDialect:
         Re-adding an actor that is already in the role 400s ("already in");
         that is the idempotent re-run case and is treated as done.
         """
-        roles = await self.client.get_json(f"{self.api_root}/project/{project_id}/role")
-        if not isinstance(roles, dict):
-            raise ConfigurationError(
-                f"add_project_role_actor: GET /project/{project_id}/role did not "
-                f"return a role-name → URL mapping (got {type(roles).__name__})."
-            )
-        role_id: str | None = None
-        for name, url in roles.items():
-            if str(name).lower() == role_name.lower():
-                role_id = str(url).rstrip("/").rsplit("/", 1)[-1]
-                break
-        if role_id is None:
-            raise ConfigurationError(
-                f"Project {project_id} has no project role named {role_name!r}. "
-                f"Existing roles: {sorted(map(str, roles))}. Check __lead_role__."
-            )
+        role_id = await self.resolve_project_role_id(project_id, role_name)
         try:
             await self.client.post_json(
                 f"{self.api_root}/project/{project_id}/role/{role_id}",
@@ -2019,6 +2111,198 @@ class JiraCloudDialect:
             if exc.status_code == 400 and "already" in _transport_body(exc).lower():
                 return
             raise
+
+    async def resolve_project_role_id(self, project_id: str, role_name: str) -> str:
+        """Resolve a project role by name to its id within a project."""
+        roles = await self.client.get_json(f"{self.api_root}/project/{project_id}/role")
+        if not isinstance(roles, dict):
+            raise ConfigurationError(
+                f"GET /project/{project_id}/role did not return a role-name → URL mapping (got {type(roles).__name__})."
+            )
+        for name, url in roles.items():
+            if str(name).lower() == role_name.lower():
+                return str(url).rstrip("/").rsplit("/", 1)[-1]
+        raise ConfigurationError(
+            f"Project {project_id} has no project role named {role_name!r}. Existing roles: {sorted(map(str, roles))}."
+        )
+
+    async def add_project_role_actors(
+        self,
+        project_id: str,
+        *,
+        role_id: str,
+        users: list[str] | None = None,
+        groups: list[str] | None = None,
+    ) -> None:
+        """Add users (accountIds) and/or groups (names) to a project role.
+
+        Jira takes them as separate body keys on the same POST. Re-adding an
+        actor that is already in the role 400s ("already in"); that is the
+        idempotent re-run case and is treated as done.
+        """
+        body: dict[str, list[str]] = {}
+        if users:
+            body["user"] = list(users)
+        if groups:
+            body["group"] = list(groups)
+        if not body:
+            return
+        try:
+            await self.client.post_json(
+                f"{self.api_root}/project/{project_id}/role/{role_id}",
+                json=body,
+            )
+        except TransportError as exc:
+            if exc.status_code == 400 and "already" in _transport_body(exc).lower():
+                return
+            raise
+
+    async def remove_project_role_actor(
+        self,
+        project_id: str,
+        *,
+        role_id: str,
+        user: str | None = None,
+        group: str | None = None,
+    ) -> None:
+        """Remove one user (accountId) or group (name) from a project role.
+
+        Jira takes the actor as a query parameter; one actor per request.
+        A 404 (role gone, actor gone) is treated as already-removed so
+        re-runs stay idempotent.
+        """
+        params: dict[str, str] = {}
+        if user:
+            params["user"] = user
+        elif group:
+            params["group"] = group
+        else:
+            return
+        try:
+            await self.client.delete(
+                f"{self.api_root}/project/{project_id}/role/{role_id}",
+                params=params,
+            )
+        except NotFoundError:
+            return
+
+    async def resolve_permission_holder(self, holder_type: str, holder_parameter: str) -> str:
+        """Resolve a declared grant holder value to Jira's ``holder.parameter``
+        form: user emails via user search; project role names via the global
+        role listing. Groups and parameterless holders pass through."""
+        if holder_type.lower() == "user":
+            return await self.resolve_user(holder_parameter) if holder_parameter else ""
+        if holder_type.lower() == "projectrole":
+            if not holder_parameter:
+                raise ConfigurationError("projectRole grant holder requires a role name")
+            return await self.get_global_role_id(holder_parameter)
+        return holder_parameter
+
+    async def get_project_roles(self, project_id: str) -> dict[str, str]:
+        """Role name → role id for one project (the /role URL map, resolved)."""
+        roles = await self.client.get_json(f"{self.api_root}/project/{project_id}/role")
+        if not isinstance(roles, dict):
+            raise ReflectionError(
+                f"GET {self.api_root}/project/{project_id}/role did not "
+                f"return a role-name → URL mapping (got {type(roles).__name__})."
+            )
+        return {str(name): str(url).rstrip("/").rsplit("/", 1)[-1] for name, url in roles.items()}
+
+    async def get_global_role_id(self, name: str) -> str:
+        """Resolve a project role name to its id via the global ``GET /role``
+        listing (cached). Role ids are tenant-global, so a permission-scheme
+        grant can resolve its holder before any project exists."""
+        if self._global_roles_cache is None:
+            roles: dict[str, str] = {}
+            async for entry in common.paginate(self.client, f"{self.api_root}/role"):
+                role_name, role_id = common.parse_global_role(entry)
+                if role_name and role_id:
+                    roles[role_name] = role_id
+            self._global_roles_cache = roles
+        lowered = name.lower()
+        for role_name, role_id in self._global_roles_cache.items():
+            if role_name.lower() == lowered:
+                return role_id
+        raise ConfigurationError(
+            f"No project role named {name!r} exists in Jira. Known roles: {sorted(self._global_roles_cache)}."
+        )
+
+    async def get_project_lead_account_id(self, project_id: str) -> str | None:
+        """The project lead's accountId (``GET /project/{id}``), or None when
+        the payload omits it. Used by the lockout guard."""
+        payload = await self.client.get_json(f"{self.api_root}/project/{project_id}")
+        lead = (payload or {}).get("lead") or {} if isinstance(payload, dict) else {}
+        return str(lead.get("accountId", "")) or None
+
+    async def get_project_role_actors(self, project_id: str, role_id: str) -> tuple[RoleActorSnapshot, ...]:
+        """Read one project role's actors (used by the lockout guard)."""
+        payload = await self.client.get_json(f"{self.api_root}/project/{project_id}/role/{role_id}")
+        if not isinstance(payload, dict):
+            raise ReflectionError(
+                f"GET {self.api_root}/project/{project_id}/role/{role_id} returned "
+                f"{type(payload).__name__} instead of a role payload"
+            )
+        return common.parse_role_actors(payload.get("actors") or [])
+
+    async def project_role_memberships(self, project_id: str, account_id: str) -> set[str]:
+        """Names of the project roles ``account_id`` is an actor of.
+
+        Used by the lockout guard (plan time and op time). Cached per
+        (project, account) for the life of the dialect instance.
+        """
+        cache_key = (project_id, account_id)
+        cached = self._role_membership_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        memberships: set[str] = set()
+        for role_name, role_id in (await self.get_project_roles(project_id)).items():
+            actors = await self.get_project_role_actors(project_id, role_id)
+            if any(a.type == "user" and a.parameter == account_id for a in actors):
+                memberships.add(role_name)
+        self._role_membership_cache[cache_key] = memberships
+        return memberships
+
+    async def my_account_id(self) -> str:
+        """The accountId stint authenticates as (``GET /myself``). Cached."""
+        if self._my_account_id_cache is None:
+            payload = await self.client.get_json(f"{self.api_root}/myself")
+            account_id = (payload or {}).get("accountId") if isinstance(payload, dict) else None
+            if not account_id:
+                raise ReflectionError("GET /myself returned no accountId")
+            self._my_account_id_cache = str(account_id)
+        return self._my_account_id_cache
+
+    async def user_groups(self, account_id: str) -> frozenset[str]:
+        """Group names the user belongs to (``GET /user?expand=groups``). Cached."""
+        cached = self._user_groups_cache.get(account_id)
+        if cached is not None:
+            return cached
+        payload = await self.client.get_json(
+            f"{self.api_root}/user",
+            params={"accountId": account_id, "expand": "groups"},
+        )
+        groups = (payload or {}).get("groups") or {}
+        names = frozenset(
+            str(item.get("name", ""))
+            for item in (groups.get("items") or [])
+            if isinstance(item, dict) and item.get("name")
+        )
+        self._user_groups_cache[account_id] = names
+        return names
+
+    async def my_project_permissions(self, project_id: str, permissions: list[str]) -> dict[str, bool]:
+        """``GET /mypermissions?permissions=...&projectId=...`` as
+        permission-key → havePermission. Used by the lockout guard."""
+        payload = await self.client.get_json(
+            f"{self.api_root}/mypermissions",
+            params={"permissions": ",".join(permissions), "projectId": project_id},
+        )
+        out: dict[str, bool] = {}
+        entries = (payload or {}).get("permissions") or {}
+        for key, entry in entries.items():
+            if isinstance(entry, dict):
+                out[str(key)] = bool(entry.get("havePermission", False))
+        return out
 
     async def update_project(
         self,
@@ -2613,6 +2897,134 @@ class JiraCloudDialect:
         if member_type == "user":
             return await self.resolve_lead(member_value)
         return member_value
+
+    # ── Permission schemes ───────────────────────────────────────────
+
+    async def create_permission_scheme(
+        self,
+        *,
+        name: str,
+        description: str = "",
+        permissions: list[dict[str, Any]] | None = None,
+    ) -> str:
+        """Create a permission scheme, optionally with inline grants.
+
+        ``permissions`` entries: ``{"permission": <key>, "holder":
+        {"type": <type>, "parameter": <param?>}}``. User holders must carry
+        resolved accountIds; projectRole holders must carry resolved role
+        ids (resolve both before calling).
+
+        **Permissions required:** *Administer Jira* global permission.
+        """
+        body: dict[str, Any] = {"name": name, "description": description}
+        if permissions:
+            body["permissions"] = permissions
+        result = await self.client.post_json(f"{self.api_root}/permissionscheme", json=body)
+        return _expect_id(result, f"POST {self.api_root}/permissionscheme")
+
+    async def update_permission_scheme(
+        self,
+        scheme_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> None:
+        """Update a permission scheme's name/description only.
+
+        The PUT endpoint *replaces all grants* when a permissions list is
+        present, so this method never sends one — grant changes go through
+        ``add_permission_grant`` / ``remove_permission_grant``.
+        """
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        if not body:
+            return
+        await self.client.put_json(f"{self.api_root}/permissionscheme/{scheme_id}", json=body)
+
+    async def delete_permission_scheme(self, scheme_id: str) -> None:
+        """Delete a permission scheme. Jira refuses while a project uses it;
+        the emitted delete order unbinds projects first."""
+        await self.client.delete(f"{self.api_root}/permissionscheme/{scheme_id}")
+
+    async def get_permission_scheme(self, scheme_id: str) -> PermissionSchemeSnapshot:
+        """One permission scheme with its grants (``expand=permissions``).
+
+        Read for op bookkeeping: grant ids are needed for removals and are
+        not returned by the grant POST.
+        """
+        payload = await self.client.get_json(
+            f"{self.api_root}/permissionscheme/{scheme_id}",
+            params={"expand": "permissions"},
+        )
+        if not isinstance(payload, dict):
+            raise ReflectionError(
+                f"GET {self.api_root}/permissionscheme/{scheme_id} returned "
+                f"{type(payload).__name__} instead of a scheme payload"
+            )
+        return common.parse_permission_scheme(payload)
+
+    async def find_permission_scheme_id_by_name(self, name: str) -> str | None:
+        """Match an existing scheme by name (``copy_from`` resolution)."""
+        payload = await self.client.get_json(f"{self.api_root}/permissionscheme")
+        if not isinstance(payload, dict):
+            return None
+        for entry in payload.get("permissionSchemes") or []:
+            if isinstance(entry, dict) and str(entry.get("name", "")).lower() == name.lower():
+                return str(entry["id"])
+        return None
+
+    async def add_permission_grant(
+        self,
+        scheme_id: str,
+        *,
+        permission: str,
+        holder_type: str,
+        holder_parameter: str = "",
+    ) -> str:
+        """Add one grant to a permission scheme; returns the new grant id.
+
+        Re-adding an identical grant 400s ("already exists"); that is the
+        idempotent re-run case and is treated as done (the existing grant id
+        is then resolved by the caller when needed).
+        """
+        holder: dict[str, str] = {"type": holder_type}
+        if holder_parameter:
+            holder["parameter"] = holder_parameter
+        try:
+            result = await self.client.post_json(
+                f"{self.api_root}/permissionscheme/{scheme_id}/permission",
+                json={"permission": permission, "holder": holder},
+            )
+        except TransportError as exc:
+            if exc.status_code == 400 and "already" in _transport_body(exc).lower():
+                return ""
+            raise
+        return _expect_id(result, f"POST {self.api_root}/permissionscheme/{scheme_id}/permission")
+
+    async def remove_permission_grant(self, scheme_id: str, grant_id: str) -> None:
+        """Delete one grant by id. A 404 is treated as already-removed."""
+        try:
+            await self.client.delete(f"{self.api_root}/permissionscheme/{scheme_id}/permission/{grant_id}")
+        except NotFoundError:
+            return
+
+    async def assign_permission_scheme(self, *, project_id: str, scheme_id: str) -> None:
+        """Bind a permission scheme to a project. Synchronous (unlike the
+        issue-security-scheme association, there is no task to poll)."""
+        await self.client.put_json(
+            f"{self.api_root}/project/{project_id}/permissionscheme",
+            json={"id": scheme_id},
+        )
+
+    async def get_project_permission_scheme_id(self, project_id: str) -> str | None:
+        """The id of the scheme bound to a project (always exists in Jira)."""
+        payload = await self.client.get_json(f"{self.api_root}/project/{project_id}/permissionscheme")
+        if isinstance(payload, dict) and payload.get("id") is not None:
+            return str(payload["id"])
+        return None
 
 
 def _expect_id(result: Any, where: str) -> str:

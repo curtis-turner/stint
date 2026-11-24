@@ -88,6 +88,13 @@ class ProjectSnapshot:
     issuetype_screen_scheme_id: str | None = None
     field_configuration_scheme_id: str | None = None
     issue_security_scheme_id: str | None = None
+    permission_scheme_id: str | None = None
+    # role name -> actors; only roles stint reflects (all roles of the
+    # project). Read-only view, frozen at construction.
+    roles: Mapping[str, tuple[RoleActorSnapshot, ...]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "roles", _frozen_mapping(self.roles))
 
 
 @dataclass(frozen=True)
@@ -182,6 +189,42 @@ class IssueTypeSchemeSnapshot:
     default_issuetype_id: str | None = None
 
 
+@dataclass(frozen=True)
+class RoleActorSnapshot:
+    """One actor (user or group) of a project role.
+
+    ``type`` is normalized to ``"user"`` or ``"group"`` (Jira reports
+    ``atlassian-user-role-actor`` / ``atlassian-group-role-actor``).
+    ``parameter`` is the accountId (user) or group name (group) that
+    actor add/remove and diff compare against.
+    """
+
+    id: str  # Jira actor id
+    type: str  # "user" or "group"
+    name: str = ""  # display name
+    parameter: str = ""  # accountId or group name
+
+
+@dataclass(frozen=True)
+class PermissionGrantSnapshot:
+    """One grant of a permission scheme: holder + permission key."""
+
+    id: str  # Jira grant id (needed for removals)
+    permission: str  # e.g. "BROWSE_PROJECTS"
+    holder_type: str  # e.g. "projectRole", "group", "user", "reporter"
+    holder_parameter: str = ""  # role id, group name, accountId, ...
+
+
+@dataclass(frozen=True)
+class PermissionSchemeSnapshot:
+    """A Jira permission scheme with its grants."""
+
+    id: str
+    name: str
+    description: str = ""
+    grants: tuple[PermissionGrantSnapshot, ...] = ()
+
+
 @dataclass
 class SecurityLevelMemberSnapshot:
     """A member (user or group) of an issue security level."""
@@ -248,3 +291,8 @@ class Snapshot:
     field_configurations: dict[str, FieldConfigurationSnapshot] = field(default_factory=dict)
     field_configuration_schemes: dict[str, FieldConfigurationSchemeSnapshot] = field(default_factory=dict)
     security_schemes: dict[str, SecuritySchemeSnapshot] = field(default_factory=dict)
+    permission_schemes: dict[str, PermissionSchemeSnapshot] = field(default_factory=dict)
+    # Global project-role name -> role id map (GET /rest/api/3/role). Used to
+    # compare permission-scheme grants whose holder is a projectRole: Jira's
+    # holder parameter is the role id, declarations name the role.
+    project_roles: dict[str, str] = field(default_factory=dict)

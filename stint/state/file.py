@@ -94,11 +94,18 @@ class SimpleMapping:
 @dataclass
 class ProjectMapping:
     """Projects carry style (CMP vs TMP) so runtime ops can branch. Defaults
-    to ``"company-managed"`` for back-compat with state files written before M7."""
+    to ``"company-managed"`` for back-compat with state files written before M7.
+
+    ``role_actors`` records the *resolved* actor set each declared role was
+    applied with (``{"Administrators": [{"type": "user", "parameter":
+    "<accountId>"}]}``) so re-runs are idempotent after email → accountId
+    resolution — same reason ``SecuritySchemeMapping.member_values`` exists.
+    """
 
     id: str
     style: str = "company-managed"  # or "team-managed"
     key: str = ""
+    role_actors: dict[str, list[dict[str, str]]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"id": self.id}
@@ -106,14 +113,30 @@ class ProjectMapping:
             out["style"] = self.style
         if self.key:
             out["key"] = self.key
+        if self.role_actors:
+            out["role_actors"] = {
+                k: sorted(v, key=lambda m: (m.get("type", ""), m.get("parameter", "")))
+                for k, v in self.role_actors.items()
+            }
         return out
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any], *, where: str = "<project mapping>") -> ProjectMapping:
+        role_actors_raw = raw.get("role_actors") or {}
+        if not isinstance(role_actors_raw, dict):
+            raise StateFileCorruptError(f"state file is corrupt: {where} role_actors must be a mapping")
         return cls(
             id=_required(raw, "id", where),
             style=raw.get("style", "company-managed"),
             key=raw.get("key", ""),
+            role_actors={
+                str(k): [
+                    {"type": str(m.get("type", "")), "parameter": str(m.get("parameter", ""))}
+                    for m in (v or [])
+                    if isinstance(m, dict)
+                ]
+                for k, v in role_actors_raw.items()
+            },
         )
 
 
@@ -153,6 +176,59 @@ class SecuritySchemeMapping:
             default_level_id=raw.get("default_level_id"),
             level_ids={str(k): str(v) for k, v in (raw.get("level_ids") or {}).items()},
             member_values={str(k): [str(v) for v in values] for k, values in (raw.get("member_values") or {}).items()},
+        )
+
+
+@dataclass
+class PermissionSchemeMapping:
+    """One alias -> Jira permission-scheme binding, plus resolved grants.
+
+    ``grants`` records the *resolved* grant set each add was applied with:
+    ``[{"permission": "BROWSE_PROJECTS", "type": "projectRole",
+    "parameter": "10360"}, ...]``. The parameter is what Jira's holder
+    carries (role id / accountId / group name), so re-runs stay idempotent
+    even after email → accountId and role-name → role-id resolution.
+    ``grant_ids`` maps "permission|type|parameter" to Jira's grant id, which
+    grant removal needs (the grant POST answers 201 but existing grants
+    never re-answer).
+    """
+
+    id: str
+    grants: list[dict[str, str]] = field(default_factory=list)
+    grant_ids: dict[str, str] = field(default_factory=dict)
+
+    @staticmethod
+    def grant_key(permission: str, holder_type: str, parameter: str) -> str:
+        return f"{permission}|{holder_type}|{parameter}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return _drop_empty(
+            {
+                "id": self.id,
+                "grants": sorted(
+                    self.grants, key=lambda g: (g.get("permission", ""), g.get("type", ""), g.get("parameter", ""))
+                ),
+                "grant_ids": dict(self.grant_ids),
+            }
+        )
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any], *, where: str = "<permission scheme mapping>") -> PermissionSchemeMapping:
+        grants_raw = raw.get("grants") or []
+        if not isinstance(grants_raw, list):
+            raise StateFileCorruptError(f"state file is corrupt: {where} grants must be a list")
+        return cls(
+            id=_required(raw, "id", where),
+            grants=[
+                {
+                    "permission": str(g.get("permission", "")),
+                    "type": str(g.get("type", "")),
+                    "parameter": str(g.get("parameter", "")),
+                }
+                for g in grants_raw
+                if isinstance(g, dict)
+            ],
+            grant_ids={str(k): str(v) for k, v in (raw.get("grant_ids") or {}).items()},
         )
 
 
@@ -213,6 +289,7 @@ class StateFile:
     field_configurations: dict[str, SimpleMapping] = field(default_factory=dict)
     field_configuration_schemes: dict[str, SimpleMapping] = field(default_factory=dict)
     security_schemes: dict[str, SecuritySchemeMapping] = field(default_factory=dict)
+    permission_schemes: dict[str, PermissionSchemeMapping] = field(default_factory=dict)
     tmp_projects: dict[str, TmpProjectState] = field(default_factory=dict)  # project alias -> TMP state
 
     def to_yaml(self) -> str:
@@ -231,6 +308,7 @@ class StateFile:
                 "field_configurations": {a: m.to_dict() for a, m in self.field_configurations.items()},
                 "field_configuration_schemes": {a: m.to_dict() for a, m in self.field_configuration_schemes.items()},
                 "security_schemes": {a: m.to_dict() for a, m in self.security_schemes.items()},
+                "permission_schemes": {a: m.to_dict() for a, m in self.permission_schemes.items()},
                 "tmp_projects": {a: m.to_dict() for a, m in self.tmp_projects.items()},
             }
         )
@@ -304,6 +382,10 @@ class StateFile:
             security_schemes={
                 a: SecuritySchemeMapping.from_dict(d, where=f"mappings.security_schemes[{a!r}]")
                 for a, d in (m.get("security_schemes") or {}).items()
+            },
+            permission_schemes={
+                a: PermissionSchemeMapping.from_dict(d, where=f"mappings.permission_schemes[{a!r}]")
+                for a, d in (m.get("permission_schemes") or {}).items()
             },
             tmp_projects={
                 a: TmpProjectState.from_dict(d, where=f"mappings.tmp_projects[{a!r}]")

@@ -4,7 +4,73 @@ All notable changes to stint are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version
 numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.19.0] - 2026-11-24
+
+### Added
+
+- **Control-field audit**: the restricted-Edit-screen pattern is a UI guard
+  only — since the override-screen-security deprecation, fields off the Edit
+  screen are still editable through the REST API (JRACLOUD-98054), and Rovo
+  exposes that to every licensed user. Two new read-only surfaces close the
+  loop: `engine.check` warns when a declared Edit screen excludes control
+  fields while the live permission scheme grants `EDIT_ISSUES` (the
+  "cosmetic lock" combination, naming the exact holders), and
+  `engine.audit_control_fields` derives the declared control fields
+  (create/view-screen fields the Edit screen omits), scans changelog entries
+  since a bound, and reports every writer outside an allow-list. The
+  behavior is pinned in the new
+  [Locking guide](docs/guides/locking.md) section, with
+  `scripts/verify_screen_lock.py` to verify it on your own tenant with two
+  identities.
+
+## [0.19.0] - 2026-11-24
+
+### Added
+
+- **Project role actors**: declare role memberships on a Project with
+  `__roles__ = {"Administrators": [User("svc@example.com")], "Viewers":
+  [Group("all-staff")]}`. stint reflects each declared role's live actors
+  (`GET /project/{id}/role` + per-role detail), diffs membership into
+  `op.add_project_role_actor` / `op.remove_project_role_actor` ops, and
+  records resolved actors in the state file so re-runs stay idempotent after
+  email → accountId resolution. Removals are destructive and gated behind
+  `--allow-delete`; roles that are not declared are left unmanaged, so
+  adopting stint on an existing project never wipes its memberships. This is
+  the general form of `__lead_role__` (which stays supported; declaring the
+  same role in both raises a configuration error).
+- **Permission schemes**: declare a `PermissionScheme(alias, name, grants,
+  copy_from)` with holder types `ProjectRole`, `Group`, `User`,
+  `ApplicationRole`, `Reporter`, `Assignee`, `ProjectLead`, bind it with
+  `Project.__permission_scheme__`, and stint reflects all tenant schemes
+  (`GET /permissionscheme?expand=permissions`) and each project's binding,
+  diffs into create-scheme / add-grant / remove-grant / rebind ops, and
+  associates with `PUT /project/{key}/permissionscheme`. Declared grants are
+  always managed; with `copy_from` inherited grants are unmanaged (reported
+  by `engine.check`), without it the scheme is exactly what is declared and
+  undeclared live grants are removed behind `--allow-delete`. `stint
+  validate` rejects unknown permission keys and cross-checks `ProjectRole`
+  holders against the project's declared `__roles__`.
+- **Lockout guard**: never lock out the owning account. Plan time,
+  `stint revision --autogenerate` simulates every planned role-actor and
+  grant removal against the authenticated account's verifiable memberships
+  (its project roles from reflection, its groups from the user API) and the
+  surviving permission-scheme grants, and refuses to write the migration
+  when the account would lose `BROWSE_PROJECTS`/`ADMINISTER_PROJECTS` (role
+  removals) or additionally `EDIT_ISSUES`/`TRANSITION_ISSUES`/`CREATE_ISSUES`
+  (grant removals). Apply time, the remove ops run the same evaluation
+  against live data. Escape with `--allow-lockout` (baked into the rendered
+  migration) or `allow_lockout=True` on the ops; override the required set
+  with `--required-permissions`. Conservative by design: per-issue holders
+  (`reporter`, `assignee`) never count as evidence of retention.
+- `engine.check` now reports project-role and permission-scheme drift:
+  declared roles missing from the project, declared actors missing from a
+  live role, grant/binding drift against the declared `PermissionScheme`.
+- `stint lockout` evaluation lives in `stint.lockout` (pure, reusable);
+  dialect surface grew the guard fact reads (`myself`, user groups,
+  project-role memberships, project permissions) plus the permission-scheme
+  and role-actor write endpoints.
+- New guide: [Lock it for users, not for the service](docs/guides/locking.md),
+  plus worked example `examples/company_managed/permission_scheme.py`.
 
 ## [0.18.1] - 2026-11-23
 

@@ -92,7 +92,179 @@ async def check_project(engine: Engine, project_cls: type[Project], state: State
     issuetypes: list[type[IssueType]] = list(getattr(project_cls, "__issuetypes__", ()) or ())
     for it in issuetypes:
         _check_issuetype(it, state, snapshot, report, scheme_members, create_fields)
+    await _check_roles(dialect, project_cls, state, snapshot, report)
+    await _check_permission_scheme(dialect, project_cls, state, snapshot, report)
+    _check_screen_lock_coverage(dialect, project_cls, state, snapshot, report)
     return report
+
+
+_ROLE_LOCKOUT_NOTE = "the service account may lose access it relies on"
+
+
+async def _check_roles(
+    dialect: Any,
+    project_cls: type[Project],
+    state: Any,
+    snapshot: Any,
+    report: CheckReport,
+) -> None:
+    """Compare declared ``__roles__`` memberships against the snapshot."""
+    roles = getattr(project_cls, "__roles__", None)
+    if not roles:
+        return
+    proj_snap = snapshot.projects.get(project_cls.__key__)
+    if proj_snap is None:
+        return  # project existence already reported
+    for role_name, actors in roles.items():
+        live = proj_snap.roles.get(role_name)
+        if live is None:
+            report.errors.append(f"role {role_name!r} declared in __roles__ does not exist on project {report.project}")
+            continue
+        live_params = {(a.type, a.parameter) for a in live if a.parameter}
+        declared_params: set[tuple[str, str]] = set()
+        for actor in actors:
+            actor_type = "user" if type(actor).__name__ == "User" else "group"
+            declared_value = actor.value if actor_type == "user" else actor.name
+            try:
+                parameter = await dialect.resolve_user(declared_value) if actor_type == "user" else declared_value
+            except ConfigurationError as exc:
+                report.warnings.append(f"role {role_name!r}: cannot resolve actor {declared_value!r}: {exc}")
+                continue
+            declared_params.add((actor_type, parameter))
+            if (actor_type, parameter) not in live_params:
+                report.errors.append(
+                    f"role {role_name!r}: actor {actor_type} {declared_value!r} is not in the "
+                    f"live role ({_ROLE_LOCKOUT_NOTE})"
+                )
+        for actor_type, parameter in sorted(live_params - declared_params):
+            report.warnings.append(
+                f"role {role_name!r}: actor {actor_type} {parameter!r} is in the live role but "
+                f"not declared in __roles__"
+            )
+
+
+def _check_screen_lock_coverage(
+    dialect: Any,
+    project_cls: type[Project],
+    state: Any,
+    snapshot: Any,
+    report: CheckReport,
+) -> None:
+    """Detect the "cosmetic lock" combination: a restricted Edit screen
+    (declared control fields) while ``EDIT_ISSUES`` is granted broadly.
+
+    The Edit screen is no longer an API gate on Jira Cloud: since the
+    override-screen-security deprecation, fields off the edit screen are
+    still editable through the REST API (JRACLOUD-98054), and Rovo exposes
+    that to every licensed user. The permission scheme is the real control,
+    so when the schema declares control fields, surface exactly who holds
+    ``EDIT_ISSUES`` — the person who can judge whether that is intentional.
+    """
+    from stint.audit import declared_control_fields
+
+    control = declared_control_fields(project_cls)
+    if not control:
+        return
+    proj_snap = snapshot.projects.get(project_cls.__key__)
+    if proj_snap is None:
+        return
+    scheme_snap = snapshot.permission_schemes.get(proj_snap.permission_scheme_id or "")
+    if scheme_snap is None:
+        return
+    grants = [g for g in scheme_snap.grants if g.permission == "EDIT_ISSUES"]
+    if not grants:
+        return  # narrow (or absent): the lock holds for API callers
+    roles_by_id = {role_id: name for name, role_id in (snapshot.project_roles or {}).items()}
+
+    def _holder(g: Any) -> str:
+        htype = g.holder_type.lower()
+        if htype == "projectrole":
+            return f"project role {roles_by_id.get(g.holder_parameter, g.holder_parameter)!r}"
+        if htype == "group":
+            return f"group {g.holder_parameter!r}"
+        if htype == "user":
+            return f"user {g.holder_parameter!r}"
+        if htype == "applicationrole":
+            return f"application role {g.holder_parameter!r}" if g.holder_parameter else "any logged-in user"
+        return f"{g.holder_type} {g.holder_parameter!r}".strip()
+
+    fields = sorted({name for names in control.values() for name in names})
+    report.warnings.append(
+        f"project {report.project}: control field(s) {fields} are locked in the UI "
+        f"(absent from a declared Edit screen) but the live permission scheme grants "
+        f"EDIT_ISSUES to {', '.join(_holder(g) for g in grants)}. Screen-locked fields "
+        f"are editable through the REST API (JRACLOUD-98054) by anyone holding "
+        f"EDIT_ISSUES, and Rovo exposes that to every licensed user — narrow the grant "
+        f"or the restricted Edit screen is cosmetic for API clients."
+    )
+
+
+async def _check_permission_scheme(
+    dialect: Any,
+    project_cls: type[Project],
+    state: Any,
+    snapshot: Any,
+    report: CheckReport,
+) -> None:
+    """Compare the declared ``__permission_scheme__`` binding and grants
+    against the snapshot."""
+    scheme = getattr(project_cls, "__permission_scheme__", None)
+    if scheme is None:
+        return
+    proj_snap = snapshot.projects.get(project_cls.__key__)
+    if proj_snap is None:
+        return
+    mapping = state.permission_schemes.get(scheme.alias)
+    if mapping is None:
+        report.errors.append(
+            f"permission scheme {scheme.alias!r} is not in state; run `stint stamp` or `stint upgrade` first."
+        )
+    elif proj_snap.permission_scheme_id is not None and proj_snap.permission_scheme_id != mapping.id:
+        report.errors.append(
+            f"project {report.project} is bound to permission scheme {proj_snap.permission_scheme_id!r} "
+            f"but the schema binds {scheme.alias!r} ({mapping.id!r})"
+        )
+    scheme_snap = snapshot.permission_schemes.get(proj_snap.permission_scheme_id or "")
+    if scheme_snap is None:
+        return
+    live: set[tuple[str, str, str]] = {(g.permission, g.holder_type, g.holder_parameter) for g in scheme_snap.grants}
+    declared: set[tuple[str, str, str]] = set()
+    for permission, holders in scheme.grants.items():
+        for holder in holders:
+            from stint.schema.permissions import (
+                holder_jira_type,
+            )
+            from stint.schema.permissions import (
+                holder_parameter as holder_param,
+            )
+
+            holder_type = holder_jira_type(holder)
+            declared_value = holder_param(holder)
+            try:
+                resolved = await dialect.resolve_permission_holder(holder_type, declared_value)
+            except ConfigurationError as exc:
+                report.warnings.append(
+                    f"permission scheme {scheme.alias!r}: cannot resolve {holder_type} holder {declared_value!r}: {exc}"
+                )
+                continue
+            key = (permission, holder_type, resolved or "")
+            declared.add(key)
+            if key not in live:
+                report.errors.append(
+                    f"permission scheme {scheme.alias!r}: grant {permission} to {holder_type} "
+                    f"{declared_value!r} is not in the live scheme ({_ROLE_LOCKOUT_NOTE})"
+                )
+    for permission, holder_type, holder_parameter in sorted(live - declared):
+        if scheme.copy_from is None:
+            report.warnings.append(
+                f"permission scheme {scheme.alias!r}: grant {permission} to {holder_type} "
+                f"{holder_parameter!r} is in the live scheme but not declared in the schema"
+            )
+        else:
+            report.warnings.append(
+                f"permission scheme {scheme.alias!r}: grant {permission} to {holder_type} "
+                f"{holder_parameter!r} is inherited/unmanaged (copy_from={scheme.copy_from!r})"
+            )
 
 
 def _check_issuetype(

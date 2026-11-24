@@ -261,7 +261,9 @@ Two full, runnable walkthroughs against a real Jira Cloud tenant, each about
   configurations.
 - Schema plane: custom fields, screens, screen schemes, issue type
   screen schemes, field configurations, field configuration schemes,
-  issue types, projects.
+  issue types, projects, issue security schemes, project role actors
+  (`__roles__`), and permission schemes (`__permission_scheme__`) — with
+  plan-time and apply-time lockout guards for the owning service account.
 - Migrations: autogenerate, multi-head merge, upgrade, downgrade,
   brownfield stamp, idempotent ops, advisory lock, `429`/`503` retry.
 - Data plane: reads and writes, identity map, dirty tracking, ADF
@@ -273,7 +275,7 @@ Two full, runnable walkthroughs against a real Jira Cloud tenant, each about
 ## What does not ship in 0.1
 
 - Workflows and workflow schemes.
-- Permission and notification schemes.
+- Notification schemes.
 - ADF parsing on reads (writes wrap plain text correctly).
 - Backends other than Jira. The dialect protocol is the extension point.
 

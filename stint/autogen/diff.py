@@ -295,6 +295,67 @@ class SetProjectIssueSecurityScheme(Change):
     scheme_alias: str
 
 
+@dataclass
+class SetProjectPermissionScheme(Change):
+    project_alias: str
+    scheme_alias: str
+
+
+# Project role actors
+@dataclass
+class AddProjectRoleActor(Change):
+    project_alias: str
+    role_name: str
+    actor_type: str  # "user" or "group"
+    actor_value: str  # declared email/accountId/group name (resolved at apply time)
+
+
+@dataclass
+class RemoveProjectRoleActor(Change):
+    project_alias: str
+    role_name: str
+    actor_type: str  # "user" or "group"
+    actor_parameter: str  # resolved accountId/group name (from reflection)
+
+
+# Permission schemes
+@dataclass
+class CreatePermissionScheme(Change):
+    alias: str
+    name: str
+    description: str
+    copy_from: str | None
+    grants: tuple[tuple[str, str, str], ...]  # (permission, holder_type, declared parameter)
+
+
+@dataclass
+class UpdatePermissionScheme(Change):
+    alias: str
+    name: str | None = None
+    description: str | None = None
+
+
+@dataclass
+class AddPermissionGrant(Change):
+    scheme_alias: str
+    permission: str
+    holder_type: str
+    holder_parameter: str  # declared value; resolved at apply time
+
+
+@dataclass
+class RemovePermissionGrant(Change):
+    scheme_alias: str
+    permission: str
+    holder_type: str
+    holder_parameter: str  # resolved value (from reflection)
+
+
+@dataclass
+class DeletePermissionScheme(Change):
+    alias: str
+
+
 # Issue security schemes
 @dataclass
 class CreateIssueSecurityScheme(Change):
@@ -389,6 +450,10 @@ def diff(
     their resolved ``holder.parameter`` form (declared user email →
     accountId). The caller resolves them where the dialect is reachable;
     the diff itself stays sync so it can be exercised without HTTP.
+
+    Role actors and permission-scheme grant holders declared as user emails
+    use the same map. Project-role grant holders are resolved against the
+    snapshot's global role-name → id map inside the diff (no HTTP needed).
     """
     r = DiffResult()
 
@@ -402,6 +467,8 @@ def diff(
     _diff_fcs(r, desired, snapshot, state, allow_delete)
     _diff_projects(r, desired, snapshot, state, allow_delete)
     _diff_security_schemes(r, desired, snapshot, state, allow_delete, member_params=member_params)
+    _diff_permission_schemes(r, desired, snapshot, state, allow_delete, member_params=member_params)
+    _diff_project_roles(r, desired, snapshot, state, allow_delete, member_params=member_params)
     return r
 
 
@@ -953,6 +1020,13 @@ def _diff_projects(
                         scheme_alias=want.security_scheme,
                     )
                 )
+            if want.permission_scheme is not None:
+                r.changes.append(
+                    SetProjectPermissionScheme(
+                        project_alias=alias,
+                        scheme_alias=want.permission_scheme,
+                    )
+                )
             continue
         # Existing project — name/lead/description diff.
         existing_id = state.projects[alias].id
@@ -1020,6 +1094,14 @@ def _diff_projects(
             state_table=state.security_schemes,
             actual_id=actual.issue_security_scheme_id,
             change_cls=SetProjectIssueSecurityScheme,
+        )
+        _maybe_emit_set_scheme(
+            r,
+            project_alias=alias,
+            desired_scheme=want.permission_scheme,
+            state_table=state.permission_schemes,
+            actual_id=actual.permission_scheme_id,
+            change_cls=SetProjectPermissionScheme,
         )
 
     if allow_delete:
@@ -1187,6 +1269,211 @@ def _diff_security_default_level(
     if not want_level_id or actual.default_security_level_id == want_level_id:
         return
     r.changes.append(SetDefaultSecurityLevel(scheme_alias=want.alias, level_alias=want.default_level))
+
+
+# ── Permission schemes ───────────────────────────────────────────────
+def _diff_permission_schemes(
+    r: DiffResult,
+    desired: DesiredSnapshot,
+    snapshot: Snapshot,
+    state: StateFile,
+    allow_delete: bool,
+    member_params: dict[str, str] | None = None,
+) -> None:
+    """Diff desired permission schemes against reflection.
+
+    Grant policy (explicit, documented): declared grants are always managed
+    (added when missing). Live grants that are NOT declared are removed only
+    when the scheme has no ``copy_from`` (exact policy, ``--allow-delete``
+    gated); with ``copy_from`` they are inherited/unmanaged and only
+    ``engine.check`` reports them.
+    """
+    for alias, want in desired.permission_schemes.items():
+        if want.project is not None and want.project not in desired.projects:
+            r.warnings.append(
+                f"permission_scheme {alias!r}: link target project {want.project!r} "
+                f"is not a declared Project key; the associate op will fail until "
+                f"the schema declares it (Project alias is authoritative)."
+            )
+        if alias not in state.permission_schemes:
+            r.changes.append(
+                CreatePermissionScheme(
+                    alias=alias,
+                    name=want.name,
+                    description=want.description,
+                    copy_from=want.copy_from,
+                    grants=tuple((g.permission, g.holder_type, g.holder_parameter) for g in want.grants),
+                )
+            )
+            continue
+        mapping = state.permission_schemes[alias]
+        actual = snapshot.permission_schemes.get(mapping.id)
+        if actual is None:
+            r.warnings.append(
+                f"permission_scheme {alias!r}: state references id {mapping.id!r} "
+                f"but it's not present in Jira (out-of-band delete?)"
+            )
+            continue
+        name_change = want.name if actual.name != want.name else None
+        desc_change = want.description if actual.description != want.description else None
+        if name_change is not None or desc_change is not None:
+            r.changes.append(UpdatePermissionScheme(alias=alias, name=name_change, description=desc_change))
+        actual_grants = {(g.permission, g.holder_type, g.holder_parameter): g.id for g in actual.grants}
+        recorded = {(g["permission"], g["type"], g["parameter"]) for g in mapping.grants}
+        declared_resolved: set[tuple[str, str, str]] = set()
+        for grant in want.grants:
+            resolved = _resolve_grant_parameter(grant.holder_type, grant.holder_parameter, member_params, snapshot)
+            if grant.holder_type == "projectrole" and resolved is None:
+                # Role name unresolved against the reflected global role map.
+                # Still emit the add: the op resolves per project at apply
+                # time (role ids are tenant-global), and a wrong name fails
+                # there with a clear error instead of here.
+                r.warnings.append(
+                    f"permission_scheme {alias!r}: grant holder project role "
+                    f"{grant.holder_parameter!r} is not in the reflected role map; "
+                    f"emitting the grant anyway (the apply-time role lookup will "
+                    f"fail loudly if the role does not exist)."
+                )
+                resolved = grant.holder_parameter
+            declared_resolved.add((grant.permission, grant.holder_type, resolved or ""))
+            if (grant.permission, grant.holder_type, resolved) in actual_grants:
+                continue
+            if (grant.permission, grant.holder_type, resolved) in recorded:
+                continue
+            r.changes.append(
+                AddPermissionGrant(
+                    scheme_alias=alias,
+                    permission=grant.permission,
+                    holder_type=grant.holder_type,
+                    holder_parameter=grant.holder_parameter,
+                )
+            )
+        if want.copy_from is None:
+            # Exact policy: live grants that are not declared are drift.
+            for (permission, holder_type, holder_parameter), _grant_id in sorted(actual_grants.items()):
+                if (permission, holder_type, holder_parameter) in declared_resolved:
+                    continue
+                if allow_delete:
+                    r.changes.append(
+                        RemovePermissionGrant(
+                            scheme_alias=alias,
+                            permission=permission,
+                            holder_type=holder_type,
+                            holder_parameter=holder_parameter,
+                        )
+                    )
+                else:
+                    r.warnings.append(
+                        f"permission_scheme {alias!r}: grant {permission} to "
+                        f"{holder_type} {holder_parameter!r} is in Jira but not in "
+                        f"schema. Re-run with --allow-delete to remove."
+                    )
+
+    if allow_delete:
+        for alias in sorted(state.permission_schemes):
+            if alias not in desired.permission_schemes:
+                r.changes.append(DeletePermissionScheme(alias=alias))
+    else:
+        _warn_orphans(r, "permission_scheme", state.permission_schemes, desired.permission_schemes)
+
+
+def _resolve_grant_parameter(
+    holder_type: str,
+    holder_parameter: str,
+    member_params: dict[str, str] | None,
+    snapshot: Snapshot,
+) -> str:
+    """Resolve a declared grant holder parameter to Jira's holder form.
+
+    Users: email → accountId via ``member_params`` (fallback: the declared
+    value, assumed already-resolved). projectRole: role name → role id via
+    the snapshot's global role map; returns None when unresolved. Everything
+    else passes through.
+    """
+    if holder_type == "user":
+        return (member_params or {}).get(holder_parameter, holder_parameter)
+    if holder_type.lower() == "projectrole":
+        return snapshot.project_roles.get(holder_parameter) or ""
+    return holder_parameter
+
+
+# ── Project role actors ──────────────────────────────────────────────
+def _diff_project_roles(
+    r: DiffResult,
+    desired: DesiredSnapshot,
+    snapshot: Snapshot,
+    state: StateFile,
+    allow_delete: bool,
+    member_params: dict[str, str] | None = None,
+) -> None:
+    """Diff declared ``__roles__`` memberships against reflection.
+
+    Roles that are not declared are left alone (unmanaged), so adopting
+    stint on an existing project never wipes its memberships. Within a
+    declared role, actors absent from the declaration are removed — gated
+    behind ``allow_delete`` like every destructive change.
+    """
+    for alias, want in desired.projects.items():
+        if not want.roles:
+            continue
+        if alias not in state.projects:
+            # The project is being created in this same migration: only
+            # adds exist (phase-ordered after CreateProject).
+            for role in want.roles:
+                for actor_type, actor_value in role.actors:
+                    r.changes.append(
+                        AddProjectRoleActor(
+                            project_alias=alias,
+                            role_name=role.role_name,
+                            actor_type=actor_type,
+                            actor_value=actor_value,
+                        )
+                    )
+            continue
+        existing_id = state.projects[alias].id
+        actual = _find_project_by_id(snapshot, existing_id)
+        if actual is None:
+            r.warnings.append(f"project {alias!r}: state references id {existing_id!r} but it's not present in Jira")
+            continue
+        for role in want.roles:
+            actual_actors = {(a.type, a.parameter) for a in (actual.roles.get(role.role_name) or ()) if a.parameter}
+            if not actual_actors and role.role_name not in actual.roles:
+                r.warnings.append(
+                    f"project {alias!r}: declared role {role.role_name!r} was not found "
+                    f"on the project in Jira; the actor add(s) will fail at apply time "
+                    f"unless the role exists (Jira templates create a default role set)."
+                )
+            declared: set[tuple[str, str]] = set()
+            for actor_type, actor_value in role.actors:
+                resolved = actor_value
+                if actor_type == "user":
+                    resolved = (member_params or {}).get(actor_value, actor_value)
+                declared.add((actor_type, resolved))
+                if (actor_type, resolved) not in actual_actors:
+                    r.changes.append(
+                        AddProjectRoleActor(
+                            project_alias=alias,
+                            role_name=role.role_name,
+                            actor_type=actor_type,
+                            actor_value=actor_value,
+                        )
+                    )
+            for actor_type, parameter in sorted(actual_actors - declared):
+                if allow_delete:
+                    r.changes.append(
+                        RemoveProjectRoleActor(
+                            project_alias=alias,
+                            role_name=role.role_name,
+                            actor_type=actor_type,
+                            actor_parameter=parameter,
+                        )
+                    )
+                else:
+                    r.warnings.append(
+                        f"project {alias!r}: role {role.role_name!r} actor "
+                        f"{actor_type} {parameter!r} is in Jira but not in the "
+                        f"declared __roles__. Re-run with --allow-delete to remove."
+                    )
 
 
 def _resolve_project_key(

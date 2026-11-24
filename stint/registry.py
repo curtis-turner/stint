@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from stint.fields import CustomField
     from stint.schema.field_config import FieldConfiguration
     from stint.schema.issuetype import IssueType
+    from stint.schema.permissions import PermissionScheme
     from stint.schema.project import Project
     from stint.schema.screen import Screen, ScreenScheme
     from stint.schema.security import SecurityScheme
@@ -84,6 +85,7 @@ class Registry:
         self.screen_schemes: dict[str, ScreenScheme] = {}
         self.field_configurations: dict[str, FieldConfiguration] = {}
         self.security_schemes: dict[str, SecurityScheme] = {}
+        self.permission_schemes: dict[str, PermissionScheme] = {}
 
     def register_issuetype(self, cls: type[IssueType]) -> None:
         alias = getattr(cls, "__alias__", None)
@@ -154,6 +156,19 @@ class Registry:
         self.security_schemes[alias] = scheme
         scheme._declared_module = module  # ty: ignore[unresolved-attribute]
 
+    def register_permission_scheme(self, scheme: PermissionScheme) -> None:
+        """Register a schema-declared ``PermissionScheme`` (from its
+        ``__post_init__``; reflection-built snapshots never touch the registry)."""
+        alias = getattr(scheme, "alias", "")
+        if not alias:
+            raise RegistryError("PermissionScheme declaration requires a non-empty alias")
+        module = _declaring_module()
+        known = self.permission_schemes.get(alias)
+        if known is not None and known is not scheme:
+            _check_replace_on_reload(kind="PermissionScheme", alias=alias, known=known, incoming_module=module)
+        self.permission_schemes[alias] = scheme
+        scheme._declared_module = module  # ty: ignore[unresolved-attribute]
+
     def reset(self) -> None:
         """Used by tests to isolate state."""
         self.issuetypes.clear()
@@ -163,6 +178,7 @@ class Registry:
         self.screen_schemes.clear()
         self.field_configurations.clear()
         self.security_schemes.clear()
+        self.permission_schemes.clear()
 
 
 registry = Registry()

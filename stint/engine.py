@@ -75,6 +75,26 @@ class Engine:
 
         return await check_project(self, project, state)
 
+    async def audit_control_fields(
+        self,
+        project: type[Project],
+        state: StateFile,
+        *,
+        since: Any,
+        allowed_writers: list[str] | tuple[str, ...] = (),
+    ) -> Any:
+        """Scan recent changelog entries for out-of-band writes to declared
+        control fields (see ``stint.audit``).
+
+        Control fields are the fields the schema keeps off a declared Edit
+        screen. The REST API no longer enforces screens on edit
+        (JRACLOUD-98054), so this audit reports every writer outside
+        ``allowed_writers`` that touched one since ``since``. Read-only.
+        """
+        from stint.audit import audit_control_fields
+
+        return await audit_control_fields(self, project, state, since=since, allowed_writers=allowed_writers)
+
     async def close(self) -> None:
         await self.client.close()
 
