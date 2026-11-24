@@ -125,6 +125,50 @@ async def test_changelog_maps_customfield_ids_to_declared_aliases():
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_changelog_maps_cloud_display_names_via_field_id():
+    """Realistic Cloud changelog items: ``field`` carries the display name
+    ("Severity") and ``fieldId`` the id ("customfield_10044") — ``field``
+    never starts with customfield_ on Cloud, so only the id maps back to the
+    declared alias. System fields and unknown ids fall back to ``field``."""
+    page = {
+        "values": [
+            _history(
+                [
+                    _item(
+                        "Severity",
+                        fieldtype="custom",
+                        fieldId="customfield_10044",
+                        **{"from": None, "fromString": None, "to": "100", "toString": "S1"},
+                    ),
+                    _item(
+                        "Story Points",
+                        fieldtype="custom",
+                        fieldId="customfield_99999",
+                        **{"from": "3", "fromString": "3", "to": "5", "toString": "5"},
+                    ),
+                    _item(
+                        "status",
+                        fieldId="status",
+                        **{"from": "10001", "fromString": "In Progress", "to": "10002", "toString": "Done"},
+                    ),
+                ]
+            ),
+        ],
+        "startAt": 0,
+        "total": 1,
+        "isLast": True,
+    }
+    respx.get(f"{CLOUD_ROOT}/issue/PLAT-1/changelog").mock(return_value=httpx.Response(200, json=page))
+    async with AsyncSession(_cloud_engine(), _state()) as session:
+        changes = [change async for change in session.changelog("PLAT-1")]
+    # Known fieldId -> declared alias; unknown id and system fields keep the
+    # display name.
+    assert [c.field for c in changes] == ["bug_severity", "Story Points", "status"]
+    assert changes[0].to_value == "S1"
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_changelog_falls_back_to_raw_ids_without_strings():
     page = {
         "values": [

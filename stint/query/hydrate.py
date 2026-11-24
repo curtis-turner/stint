@@ -29,6 +29,7 @@ from stint.fields import (
     MultiVersionField,
     RadioButtonsField,
     SelectField,
+    TextAreaField,
     UserField,
     VersionField,
     _FieldType,
@@ -180,6 +181,8 @@ def _coerce_custom_field(field_type: type[_FieldType], raw: Any) -> Any:
     - VersionField / GroupField:            {"name": "..."}
     - MultiVersionField / MultiGroupField:  list of the same shape
     - others (text, labels, url, number, date, datetime): bare scalar/list
+    - TextAreaField: bare scalar; Cloud answers an ADF document, parsed
+      back to plain text
     """
     if raw is None:
         return None
@@ -206,5 +209,12 @@ def _coerce_custom_field(field_type: type[_FieldType], raw: Any) -> Any:
     if field_type in (MultiVersionField, MultiGroupField):
         if isinstance(raw, list):
             return [v.get("name") if isinstance(v, dict) else v for v in raw]
+        return raw
+    if field_type is TextAreaField:
+        # Cloud stores textarea values as an ADF document; render it back to
+        # plain text so read-modify-write comparisons don't flap. v2 / Data
+        # Center sends the bare string, which passes through unchanged.
+        if isinstance(raw, dict):
+            return _parse_adf_to_text(raw)
         return raw
     return raw

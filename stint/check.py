@@ -178,7 +178,7 @@ def _check_issuetype(
 async def _createmeta_fields(dialect: Any, project_key: str) -> dict[str, set[str]]:
     """issuetype id -> set of field keys settable on create.
 
-    Read-only: one ``GET /issue/createmeta?projectKeys=...&expand=fields``.
+    Read-only: one ``GET /issue/createmeta?projectKeys=...&expand=projects.issuetypes.fields``.
     """
     raw = await dialect.get_createmeta(project_key)
     out: dict[str, set[str]] = {}

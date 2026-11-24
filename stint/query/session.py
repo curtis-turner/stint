@@ -519,8 +519,16 @@ class AsyncSession:
                 if not isinstance(item, dict):
                     continue
                 field_name = str(item.get("field", ""))
-                if field_name.startswith("customfield_") and field_name in id_to_alias:
-                    field_name = id_to_alias[field_name]
+                # Jira Cloud changelog items carry the display name in
+                # ``field`` ("Severity") and the id in ``fieldId``
+                # ("customfield_10044") — ``field`` never starts with
+                # customfield_ there, so the id lookup is the only one that
+                # fires on Cloud. ``field`` itself holds the raw id on some
+                # payloads (older Data Center), and stays the display name
+                # for system fields and unknown ids.
+                alias = id_to_alias.get(str(item.get("fieldId") or "")) or id_to_alias.get(field_name)
+                if alias is not None:
+                    field_name = alias
                 yield ChangeItem(
                     created=created,
                     author=author_name,
