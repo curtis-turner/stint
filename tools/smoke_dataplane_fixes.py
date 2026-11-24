@@ -675,7 +675,12 @@ async def run(args: argparse.Namespace) -> int:
                     managed = await session.get(plan.model, c.key)
                     if managed is None:
                         return bail("textarea update accepted (ADF on update)", f"GET {c.key} returned nothing")
+                    # Update a system field alongside the custom one: Jira
+                    # emits no changelog items for issue creation, so this is
+                    # what puts a system-field item on the changelog for the
+                    # fallback check below.
                     managed.notes = "smoke revised"
+                    managed.summary = "smoke fixes: textarea (revised)"
                     await session.commit()
                     after = await session.get(plan.model, c.key, fresh=True)
                     ok = after is not None and after.notes == "smoke revised"
@@ -697,7 +702,7 @@ async def run(args: argparse.Namespace) -> int:
                     )
                     checks.check(
                         "changelog keeps system field names unmapped",
-                        "summary" in fields,
+                        any(f.lower() == "summary" for f in fields),
                         f"fields={fields[:8]}",
                     )
                     mine = [change for change in changes if change.field == TEXTAREA_ALIAS]
