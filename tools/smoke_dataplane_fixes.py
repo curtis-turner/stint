@@ -34,7 +34,11 @@ Run it:
 
     STINT_USER='you@example.com' STINT_TOKEN='...' \
     uv run python tools/smoke_dataplane_fixes.py \
-        --url https://you.atlassian.net --project-key SANDBOX
+        --url https://you.atlassian.net --project-key PLAT
+
+--url/--project-key fall back to SMOKE_JIRA_URL / JIRA_URL and
+SMOKE_PROJECT / JIRA_PROJECT. Auth always comes from STINT_TOKEN plus
+STINT_USER (api-token/basic) or STINT_TOKEN alone (pat).
 
 Two full tenant reflects run (build_state plus engine.check's own), so
 expect reflect-dominated runtime on large tenants. Every step prints
@@ -375,7 +379,10 @@ async def run(args: argparse.Namespace) -> int:
     if not os.environ.get("STINT_TOKEN"):
         raise SystemExit("export STINT_TOKEN (and STINT_USER for api-token auth)")
     auth = _build_auth(args.auth, "STINT_TOKEN", "STINT_USER")
-    engine = create_engine(args.url, auth=auth, verify_ssl=not args.no_verify_ssl)
+    # This smoke is Cloud-only by design (fixes 2 and 4 are Cloud behaviors),
+    # so the dialect is pinned: resolve_dialect_name has no domain detection,
+    # a bare https:// URL alone would answer "no dialect given".
+    engine = create_engine(args.url, auth=auth, dialect="jira_cloud", verify_ssl=not args.no_verify_ssl)
 
     created: list[IssueType] = []
 
@@ -580,8 +587,17 @@ async def run(args: argparse.Namespace) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--url", default=os.environ.get("SMOKE_JIRA_URL"), help="e.g. https://you.atlassian.net")
-    parser.add_argument("--project-key", default=os.environ.get("SMOKE_PROJECT"), help="sandbox project key")
+    # SMOKE_* (the tools/ convention) or plain JIRA_* / JIRA_PROJECT.
+    parser.add_argument(
+        "--url",
+        default=os.environ.get("SMOKE_JIRA_URL") or os.environ.get("JIRA_URL"),
+        help="your tenant, e.g. https://you.atlassian.net (env: SMOKE_JIRA_URL or JIRA_URL)",
+    )
+    parser.add_argument(
+        "--project-key",
+        default=os.environ.get("SMOKE_PROJECT") or os.environ.get("JIRA_PROJECT"),
+        help="sandbox project key (env: SMOKE_PROJECT or JIRA_PROJECT)",
+    )
     parser.add_argument("--auth", choices=["api-token", "pat", "basic"], default="api-token")
     parser.add_argument(
         "--task-type", default=None, help="pin the issue type name (default: fewest-required creatable non-subtask)"
@@ -603,7 +619,15 @@ def main() -> None:
     args = parser.parse_args()
 
     if not args.url or not args.project_key:
-        raise SystemExit("--url and --project-key are required (or SMOKE_JIRA_URL / SMOKE_PROJECT)")
+        missing = [name for name, value in (("--url", args.url), ("--project-key", args.project_key)) if not value]
+        raise SystemExit(
+            f"missing {' and '.join(missing)}. Pass them or export the env vars this script "
+            f"reads: SMOKE_JIRA_URL (or JIRA_URL), SMOKE_PROJECT (or JIRA_PROJECT), plus "
+            f"STINT_TOKEN and STINT_USER for auth. Example:\n"
+            f"  STINT_USER='you@example.com' STINT_TOKEN='...' \\\n"
+            f"  uv run python tools/smoke_dataplane_fixes.py \\\n"
+            f"      --url https://you.atlassian.net --project-key PLAT"
+        )
     raise SystemExit(asyncio.run(run(args)))
 
 

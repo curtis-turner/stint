@@ -29,7 +29,6 @@ Run it:
     uv run python tools/smoke_dataplane.py \
         --url https://you.atlassian.net --project-key SEC \
         --required-field 'Severity=S1'
-
     # keep the created issues in Jira instead of deleting them:
     ... uv run python tools/smoke_dataplane.py --keep
 
@@ -454,7 +453,9 @@ async def run(args: argparse.Namespace) -> int:
     if not os.environ.get("STINT_TOKEN"):
         raise SystemExit("export STINT_TOKEN (and STINT_USER for api-token auth)")
     auth = _build_auth(args.auth, "STINT_TOKEN", "STINT_USER")
-    engine = create_engine(args.url, auth=auth, verify_ssl=not args.no_verify_ssl)
+    # CMP-only smoke: pin the dialect — resolve_dialect_name has no domain
+    # detection, a bare https:// URL alone answers "no dialect given".
+    engine = create_engine(args.url, auth=auth, dialect="jira_cloud", verify_ssl=not args.no_verify_ssl)
 
     created: list[IssueType] = []
 
