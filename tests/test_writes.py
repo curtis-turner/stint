@@ -1,6 +1,7 @@
 """M6 data plane: writes via add/delete/commit + dirty tracking."""
 
 import sys
+from typing import Annotated
 
 import httpx
 import pytest
@@ -9,9 +10,12 @@ import respx
 import examples.adf.schema as p
 from stint import (
     AsyncSession,
+    CustomField,
+    IssueType,
     PartialCommitError,
     PATAuth,
     StateFile,
+    TextAreaField,
     create_engine,
 )
 from stint.engine import Engine
@@ -731,6 +735,73 @@ def test_hydrate_description_from_adf():
     }
     bug = hydrate(p.Foo, issue, _platform_state())
     assert bug.description == "hello world"
+
+
+# ── TextArea custom fields: ADF on Cloud ─────────────────────────────
+# The module-level declaration carries the `_cf` suffix per the schema
+# convention; the attribute name itself must not collide with it.
+doc_notes_cf = CustomField(alias="doc_notes", name="Notes", type=TextAreaField)
+
+
+class Doc(IssueType):
+    __alias__ = "doc"
+    __display_name__ = "Doc"
+
+    summary: str
+    notes: Annotated[str | None, doc_notes_cf] = None
+
+
+def _textarea_state() -> StateFile:
+    state = _platform_state()
+    state.custom_fields["doc_notes"] = CustomFieldMapping(id="customfield_10050")
+    return state
+
+
+def test_payload_textarea_wrapped_in_adf_on_cloud():
+    """Cloud v3 answers 400 "Operation value must be an Atlassian Document"
+    for a bare string in a multi-line text custom field; it takes ADF, the
+    same way the system description does. v2 / Data Center keeps the plain
+    string (live tenant, 2026-11)."""
+    doc = Doc(summary="x", notes="line one\n\nline two")
+    dc = build_fields_payload(doc, _textarea_state(), is_cloud=False)
+    cloud = build_fields_payload(doc, _textarea_state(), is_cloud=True)
+    assert dc["customfield_10050"] == "line one\n\nline two"
+    assert cloud["customfield_10050"]["type"] == "doc"
+    assert len(cloud["customfield_10050"]["content"]) == 2
+
+
+def test_payload_textarea_passes_raw_adf_through_on_cloud():
+    """A value already shaped as ADF is sent as-is, like dict comment bodies."""
+    doc = Doc.model_construct(summary="x", notes={"type": "doc", "version": 1, "content": []})
+    cloud = build_fields_payload(doc, _textarea_state(), is_cloud=True)
+    assert cloud["customfield_10050"] == {"type": "doc", "version": 1, "content": []}
+
+
+def test_hydrate_textarea_parses_adf_back_to_plain_text():
+    """Cloud answers the stored ADF document; rendering it back to plain text
+    keeps a read-modify-write from flapping the field dirty."""
+    issue = {
+        "key": "PLAT-1",
+        "fields": {
+            "summary": "x",
+            "customfield_10050": {
+                "type": "doc",
+                "content": [
+                    {"type": "paragraph", "content": [{"type": "text", "text": "first"}]},
+                    {"type": "paragraph", "content": [{"type": "text", "text": "second"}]},
+                ],
+            },
+        },
+    }
+    doc = hydrate(Doc, issue, _textarea_state())
+    assert doc.notes == "first\n\nsecond"
+
+
+def test_hydrate_textarea_keeps_plain_string():
+    """v2 / Data Center sends the bare string; it passes through unchanged."""
+    issue = {"key": "PLAT-1", "fields": {"summary": "x", "customfield_10050": "plain"}}
+    doc = hydrate(Doc, issue, _textarea_state())
+    assert doc.notes == "plain"
 
 
 # ── Mixed success/failure raises PartialCommitError ──────────────────

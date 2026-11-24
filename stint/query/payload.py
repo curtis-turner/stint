@@ -1,7 +1,9 @@
 """Construct Jira `{"fields": ...}` payloads from Pydantic model instances.
 
 Per-field-type rules:
-  - Text / TextArea / URL / ReadOnly: bare string (Cloud wraps ``description`` in ADF)
+  - Text / URL / ReadOnly: bare string
+  - TextArea: bare string on v2 / Data Center; ADF document on Cloud (a dict
+    value passes through as raw ADF), like the system ``description``
   - Select / RadioButtons: ``{"value": "S1"}``
   - MultiSelect / Checkboxes: ``[{"value": "S1"}, ...]``
   - Labels:        bare list of strings, no ``value`` wrapping: ``["a", "b"]``
@@ -305,7 +307,17 @@ def _emit_custom_field(
         return str(value)
     if field_type is NumberField:
         return value
-    if field_type in (TextField, TextAreaField, URLField, ReadOnlyField):
+    if field_type is TextAreaField:
+        # Cloud v3 stores multi-line text custom fields as ADF; a bare
+        # string answers 400 "Operation value must be an Atlassian Document".
+        # A dict value is taken as raw ADF and sent as-is. v2 / Data Center
+        # takes the plain string.
+        if is_cloud:
+            if isinstance(value, dict):
+                return value
+            return wrap_plain_text(str(value))
+        return value
+    if field_type in (TextField, URLField, ReadOnlyField):
         return value
     # Unknown field type → pass through and hope Jira understands
     return value

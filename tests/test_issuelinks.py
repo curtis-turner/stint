@@ -68,6 +68,11 @@ def _inward_blocks(link_id: str, other_key: str) -> dict:
 @respx.mock
 @pytest.mark.asyncio
 async def test_link_posts_type_with_outward_and_inward_keys():
+    """Jira's create semantics are counter-intuitive: the issue under
+    ``inwardIssue`` ends up carrying the link type's outward description
+    ("blocks"). ``link(A, B)`` means "A blocks B", so A goes under
+    ``inwardIssue`` and B under ``outwardIssue`` — the reverse body created
+    "B blocks A" on a live tenant (2026-11)."""
     # No existing links: the pre-check GET must come back empty.
     respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(return_value=httpx.Response(200, json=_issuelinks_payload([])))
     route = respx.post(f"{CLOUD_ROOT}/issueLink").mock(return_value=httpx.Response(201))
@@ -75,8 +80,29 @@ async def test_link_posts_type_with_outward_and_inward_keys():
         await session.link("PLAT-1", "PLAT-2", link_type="Blocks")
     body = json.loads(route.calls[0].request.read())
     assert body["type"] == {"name": "Blocks"}
-    assert body["outwardIssue"] == {"key": "PLAT-1"}  # the blocker is the outward subject
-    assert body["inwardIssue"] == {"key": "PLAT-2"}
+    assert body["inwardIssue"] == {"key": "PLAT-1"}  # the blocker carries the outward description
+    assert body["outwardIssue"] == {"key": "PLAT-2"}
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_link_round_trips_to_outward_direction_on_the_read_side():
+    """Create then read back: PLAT-1's own issuelinks entry must report the
+    outward direction with PLAT-2 as the other key, matching what the Jira
+    UI shows after the create."""
+    respx.get(f"{CLOUD_ROOT}/issue/PLAT-1").mock(
+        side_effect=[
+            # pre-check: no existing links
+            httpx.Response(200, json=_issuelinks_payload([])),
+            # read-back: Jira stored PLAT-1 as the blocker (outward end)
+            httpx.Response(200, json=_issuelinks_payload([_outward_blocks("10000", "PLAT-2")])),
+        ]
+    )
+    respx.post(f"{CLOUD_ROOT}/issueLink").mock(return_value=httpx.Response(201))
+    async with AsyncSession(_cloud_engine(), _state()) as session:
+        await session.link("PLAT-1", "PLAT-2", link_type="Blocks")
+        links = await session.links("PLAT-1")
+    assert [(x.type, x.direction, x.other_key) for x in links] == [("Blocks", "outward", "PLAT-2")]
 
 
 @respx.mock

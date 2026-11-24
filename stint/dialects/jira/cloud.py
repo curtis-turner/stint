@@ -2185,10 +2185,15 @@ class JiraCloudDialect:
 
         Used by the runtime schema check to answer "settable on create":
         the response embeds, per issuetype, the fields on its create screen.
+        ``expand=projects.issuetypes.fields`` is the expand Jira requires to
+        actually include the fields: a bare ``expand=fields`` answers the
+        issue types WITHOUT them, so every declared field reads as "not on
+        the create screen" while inserts setting those fields succeed
+        (live-tenant confirmed, 2026-11).
         """
         return await self.client.get_json(
             f"{self.api_root}/issue/createmeta",
-            params={"projectKeys": project_key, "expand": "fields"},
+            params={"projectKeys": project_key, "expand": "projects.issuetypes.fields"},
         )
 
     async def download_attachment(self, attachment_id: str) -> bytes:
@@ -2223,13 +2228,22 @@ class JiraCloudDialect:
 
     async def create_issue_link(self, *, link_type: str, outward_key: str, inward_key: str) -> None:
         """POST /issueLink. ``outward_key`` is the subject (A in "A blocks
-        B"), ``inward_key`` the object (B)."""
+        B"), ``inward_key`` the object (B).
+
+        Jira's create semantics are counter-intuitive: the issue listed under
+        ``inwardIssue`` is the one that ends up carrying the link type's
+        *outward* description ("blocks"). The subject A must therefore go
+        under ``inwardIssue`` and the object B under ``outwardIssue`` —
+        sending them the other way round creates the link reversed
+        ("B blocks A") with the read side still reporting consistently
+        (live-tenant confirmed, 2026-11).
+        """
         await self.client.post_json(
             f"{self.api_root}/issueLink",
             json={
                 "type": {"name": link_type},
-                "outwardIssue": {"key": outward_key},
-                "inwardIssue": {"key": inward_key},
+                "inwardIssue": {"key": outward_key},
+                "outwardIssue": {"key": inward_key},
             },
         )
 

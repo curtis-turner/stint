@@ -6,6 +6,33 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `session.link()` created issue links in the reverse direction: Jira's
+  `POST /issueLink` gives the issue under `inwardIssue` the link type's
+  *outward* description, so the old body made `link(A, B, "Blocks")` create
+  "B blocks A" instead of "A blocks B" — silently inverted dependencies for
+  sync loops that re-derive links every pass. The keys are swapped and the
+  idempotency pre-check now matches what the create actually stores; a
+  round-trip test pins `links(A)` to `direction="outward"`.
+- Declared `TextAreaField` custom fields are written as an Atlassian Document
+  on Jira Cloud (via `adf.wrap_plain_text`, raw ADF dicts pass through) the
+  same way the system `description` already was: Cloud v3 answers 400
+  "Operation value must be an Atlassian Document" for a bare string, on both
+  insert and update. Hydration renders the stored ADF back to plain text so
+  read-modify-write doesn't flap the field dirty. v2 / Data Center keeps
+  plain strings.
+- `engine.check` sent `expand=fields` on the createmeta GET, an expand Jira
+  does not honor: it returns the issue types without their fields, so every
+  declared system and custom field was reported "not on the create screen"
+  while inserts setting those fields succeeded. Now
+  `expand=projects.issuetypes.fields`.
+- `session.changelog` never mapped custom fields back to their declared
+  aliases on Jira Cloud: changelog items carry the display name in `field`
+  ("Severity") and the id in `fieldId` ("customfield_NNNNN"), and only `field`
+  was looked up. `fieldId` is now the primary lookup, with `field` kept for
+  system fields, unknown ids and payloads that carry the raw id there.
+
 ## [0.18.0] - 2026-11-23
 
 ### Added

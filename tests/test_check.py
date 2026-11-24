@@ -11,6 +11,7 @@ import sys
 from typing import Annotated, Any, Literal, cast
 
 import pytest
+import respx
 
 from stint import StateFile
 from stint.engine import Engine
@@ -291,3 +292,28 @@ def test_cli_check_reports_a_schema_without_projects(tmp_path):
 
     rc = main(["check", "--schema", str(schema_file), "--state", str(tmp_path / "unused.yaml")])
     assert rc == 1
+
+
+# ── Cloud createmeta request shape ────────────────────────────────────
+@pytest.mark.asyncio
+@respx.mock
+async def test_cloud_createmeta_asks_for_the_fields_expand():
+    """``expand=projects.issuetypes.fields`` is the expand Jira honors for
+    embedding each issuetype's create-screen fields: a bare ``expand=fields``
+    answers the issue types WITHOUT them, so every declared field reported
+    "not on the create screen" while inserts setting those fields succeeded
+    (live tenant, 2026-11)."""
+    import httpx
+
+    from stint import PATAuth, create_engine
+
+    respx.get(f"{BASE}/rest/api/3/issue/createmeta").mock(return_value=httpx.Response(200, json={"projects": []}))
+    engine = create_engine(f"jira_cloud+{BASE}", auth=PATAuth("tok"))
+    try:
+        await engine.dialect.get_createmeta("PLAT")
+    finally:
+        await engine.close()
+    route = respx.get(f"{BASE}/rest/api/3/issue/createmeta")
+    params = route.calls[0].request.url.params
+    assert params["projectKeys"] == "PLAT"
+    assert params["expand"] == "projects.issuetypes.fields"
