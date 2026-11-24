@@ -224,6 +224,7 @@ class Plan:
     kwargs: dict[str, Any]
     textarea: RequiredField | None = None
     textarea_fid: str | None = None
+    textarea_hint: str | None = None  # where a sibling type carries one
 
 
 def find_textarea(entry: dict[str, Any], pinned: str | None) -> tuple[str, str] | None:
@@ -352,6 +353,7 @@ async def build_state(engine: Any, args: argparse.Namespace) -> tuple[StateFile,
 
     textarea: RequiredField | None = None
     textarea_fid: str | None = None
+    textarea_hint: str | None = None
     if textarea_binding is not None:
         fid, display = textarea_binding
         textarea_fid = fid
@@ -363,6 +365,20 @@ async def build_state(engine: Any, args: argparse.Namespace) -> tuple[StateFile,
         # the changelog group proves fieldId maps back to the alias.
         state.custom_fields[TEXTAREA_ALIAS] = CustomFieldMapping(id=fid)
         print(f"state:   textarea {display!r} -> {fid} (alias {TEXTAREA_ALIAS!r})")
+    else:
+        # Nothing on THIS type: point at a sibling type that has one, so the
+        # SKIP message names the exact rerun that closes the gap.
+        for other in pool:
+            if other is entry:
+                continue
+            found = find_textarea(other, None)
+            if found is not None:
+                textarea_hint = (
+                    f"type {other['name']!r} has {found[1]!r} ({found[0]}) on its create "
+                    f"screen — rerun with --task-type {other['name']!r} "
+                    f"(adjust --required-field to that type's requirements)"
+                )
+                break
 
     model = build_model(
         name="SmokeFixesModel", alias=entry["name"], title=entry["name"], required=required, textarea=textarea
@@ -370,7 +386,14 @@ async def build_state(engine: Any, args: argparse.Namespace) -> tuple[StateFile,
     kwargs = {f"req_{i}": _parse_value(rf) for i, rf in enumerate(required)}
     return (
         state,
-        Plan(task=entry["name"], model=model, kwargs=kwargs, textarea=textarea, textarea_fid=textarea_fid),
+        Plan(
+            task=entry["name"],
+            model=model,
+            kwargs=kwargs,
+            textarea=textarea,
+            textarea_fid=textarea_fid,
+            textarea_hint=textarea_hint,
+        ),
         types,
     )
 
@@ -495,11 +518,13 @@ async def run(args: argparse.Namespace) -> int:
 
                 # ── groups 3 + 4: textarea ADF + changelog aliases ────
                 if plan.textarea is None or plan.textarea_fid is None:
-                    checks.skip(
-                        "textarea ADF + changelog aliases (fixes 2 + 4)",
+                    why = (
                         f"no multi-line text custom field on {plan.task!r}'s create screen — "
-                        f"add one in the UI or pin an existing one with --textarea-field NAME",
+                        f"add one in the UI or pin an existing one with --textarea-field NAME"
                     )
+                    if plan.textarea_hint:
+                        why += f"; or {plan.textarea_hint}"
+                    checks.skip("textarea ADF + changelog aliases (fixes 2 + 4)", why)
                 else:
                     original = "smoke line one\n\nsmoke line two"
                     c = plan.model(summary="smoke fixes: textarea", notes=original, **plan.kwargs)
