@@ -334,13 +334,14 @@ async def build_state(engine: Any, args: argparse.Namespace) -> tuple[StateFile,
             continue
         key = field_name.lower()
         raw = provided.get(key)
+        snap = snapshot.custom_fields.get(fid)
         if raw is None:
+            hint = f" (live options: {', '.join(snap.options)})" if snap is not None and snap.options else ""
             raise SystemExit(
                 f"issue type {entry['name']!r} requires {field_name!r} ({fid}) on create. Pass "
-                f'--required-field "{field_name}=<value>" (repeatable).'
+                f'--required-field "{field_name}=<value>"{hint} (repeatable).'
             )
         consumed.add(key)
-        snap = snapshot.custom_fields.get(fid)
         if snap is None:
             raise SystemExit(f"required field {field_name!r} ({fid}) is not in the reflect snapshot; cannot shape it.")
         required.append(RequiredField(field_id=fid, name=field_name, raw=raw, snapshot=snap))
