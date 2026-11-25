@@ -91,15 +91,18 @@ async def check_cmd(
     try:
         for project_cls in registry.projects.values():
             report = await engine.check(project_cls, state_file)
-            if report.ok and not report.warnings:
+            if report.ok and not report.warnings and not report.infos:
                 print(f"{report.project}: OK")
                 continue
+            for info in report.infos:
+                print(f"{report.project}: info: {info}")
             for warning in report.warnings:
                 print(f"{report.project}: warning: {warning}")
             for error in report.errors:
                 print(f"{report.project}: error: {error}")
             if report.ok:
-                print(f"{report.project}: OK ({len(report.warnings)} warning(s))")
+                extras = len(report.warnings) + len(report.infos)
+                print(f"{report.project}: OK ({extras} finding(s))")
             else:
                 any_errors = True
     finally:

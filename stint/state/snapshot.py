@@ -366,6 +366,22 @@ class StatusSnapshot:
 
 
 @dataclass
+class AutomationRuleSnapshot:
+    """One automation rule as reflected.
+
+    ``payload`` is the full ``GET rule/{uuid}`` rule body verbatim (the
+    diff normalizes it); summaries that were never fetched in full carry
+    an empty payload.
+    """
+
+    uuid: str
+    name: str
+    state: str = "ENABLED"  # ENABLED | DISABLED
+    scope_apis: tuple[str, ...] = ()  # ruleScopeARIs, as returned
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class Snapshot:
     """Full reflected state of a Jira instance (subset stint manages)."""
 
@@ -386,6 +402,9 @@ class Snapshot:
     workflows: dict[str, WorkflowSnapshot] = field(default_factory=dict)
     workflow_schemes: dict[str, WorkflowSchemeSnapshot] = field(default_factory=dict)
     statuses: dict[str, StatusSnapshot] = field(default_factory=dict)  # keyed by name
+    # Automation rules keyed by uuid (the rule-management APIs' handle; the
+    # state file maps declared aliases to uuids).
+    automation_rules: dict[str, AutomationRuleSnapshot] = field(default_factory=dict)
     # Global project-role name -> role id map (GET /rest/api/3/role). Used to
     # compare permission-scheme grants whose holder is a projectRole: Jira's
     # holder parameter is the role id, declarations name the role.

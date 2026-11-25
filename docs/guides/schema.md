@@ -338,6 +338,94 @@ retention. Escape hatch when you really mean it: `--allow-lockout` on
 `op.remove_permission_grant` in hand-written migrations. Override the
 required set with `--required-permissions`.
 
+## Automation rules and the control-field guard
+
+Some fields are *control* fields: the schema puts them on the create/view
+screens and keeps them off the edit screen, so regular users cannot change
+them in the UI. On Jira Cloud that lock is cosmetic — since the
+override-screen-security deprecation, the REST API ignores screens on edit
+(JRACLOUD-98054), and anyone holding `EDIT_ISSUES` can write the field
+anyway. The practical control left is detect-and-revert with Jira
+Automation, and stint manages those rules like every other scheme object:
+declared, reflected, diffed, applied, recorded in state by uuid.
+
+```python
+from stint import AutomationRule, AutomationRuleScheme, ControlFieldGuard, ProjectRole, User
+
+guard = ControlFieldGuard(
+    alias="trk_control_guard",
+    name="TRK: revert control-field edits",
+    # Default: the control fields derived from the bound project's screens
+    # (create/view minus edit). Pass fields= to add or narrow.
+    allowed_writers=[User("svc-automation@example.com"), ProjectRole("Administrators")],
+    on_violation=["revert", "comment"],  # revert, then note it on the issue
+)
+
+# Escape hatch: a rule exported from the Automation UI, with tenant ids
+# replaced by stint references. stint substitutes them at apply time and
+# fails validation on an unknown one.
+notify_on_close = AutomationRule(
+    alias="trk_notify_on_close",
+    name="TRK: notify owner on close",
+    payload="automation/notify_on_close.json",  # relative to this file
+    refs={"severity": severity},  # "{{stint.field.severity}}" -> customfield_NNNNN
+    enabled=True,
+)
+
+trk_rules = AutomationRuleScheme(alias="trk_rules", name="TRK Automation", rules=[guard, notify_on_close])
+
+
+class Tracker(Project):
+    __automation_rule_scheme__ = trk_rules  # every rule scopes to the bound projects
+```
+
+How the generated guard works:
+
+- **Trigger**: Field value changed on exactly the guarded field ids,
+  filtered to edit operations. Create stays allowed (the create screen is
+  the authoring surface).
+- **Condition**: the initiator is not one of the allowed writers — the
+  native user condition (users, groups, project roles). "Allow rule
+  trigger" stays off, so the revert cannot re-trigger the rule; Jira's
+  loop detection (10 rapid triggers) is not a substitute.
+- **Revert**: an Edit issue action per guarded field restoring the raw
+  previous value from the changelog (`{{#changelog.<id>}}{{from}}{{/}}`) —
+  option ids for selects, full previous sets for multi-value fields,
+  accountIds for user fields — with notifications off, so the bad value
+  does not page watchers twice. Then the optional comment, mentioning the
+  initiator.
+
+The revert happens after the fact: the bad value exists for seconds, and
+both changes appear in history, webhooks, and notifications. Automation
+usage is billed in rule runs that perform actions, so on a busy project a
+guard costs one run per blocked edit.
+
+Cross-cutting rule: **never let the guard fight the service.** The
+authenticated account (the service account) must be among the guard's
+`allowed_writers` — `stint validate` flags it and the ops refuse to apply
+a guard that would revert the service's own writes (escape with
+`--allow-lockout`). The rule's actor is always allowed.
+
+Diff and apply behavior, same rules as the other scheme families:
+adoption by exact name (or uuid from state) never rewrites; the payload
+diff normalizes server-generated noise so an unchanged schema re-runs
+clean; enabled-state and project scope have their own ops (one
+multi-project scope, never copies); orphans delete behind
+`--allow-delete`, disabled first; undeclared rules on the tenant are left
+unmanaged. The rule-management API requires an API token (Forge and OAuth
+apps cannot call it) and an administrator-level account — stint probes
+that with a read before writing anything and stops on a 403 with a clear
+message.
+
+`engine.check` uses the guard to split the cosmetic-lock warning: control
+fields with no enabled guard covering them warn as before, covered fields
+report as info naming the rule, and a drifted guard (disabled in Jira,
+fields no longer matching the screens, or an allow-list that no longer
+includes the authenticated account) warns. `engine.audit_control_fields`
+accepts the guard as the allow-list source and classifies each
+out-of-band write as reverted (a restore followed) or unreverted — the
+ones a service should alert on.
+
 ## Validation and the registry
 
 - [`stint.validate()`](../api/validate.md) collects human-readable problems (project → issue type, screen → custom field, scheme → screen, ...) without raising.

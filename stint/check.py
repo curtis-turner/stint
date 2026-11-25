@@ -49,11 +49,14 @@ _CREATE_EXEMPT = frozenset({"key", "status", "status_category", "created", "upda
 @dataclass
 class CheckReport:
     """Findings for one declared project. ``errors`` mean the declared
-    schema cannot work against the live tenant; ``warnings`` do not block."""
+    schema cannot work against the live tenant; ``warnings`` do not block;
+    ``infos`` report healthy coverage worth knowing about (a guard covering
+    the control fields)."""
 
     project: str
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    infos: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -94,7 +97,7 @@ async def check_project(engine: Engine, project_cls: type[Project], state: State
         _check_issuetype(it, state, snapshot, report, scheme_members, create_fields)
     await _check_roles(dialect, project_cls, state, snapshot, report)
     await _check_permission_scheme(dialect, project_cls, state, snapshot, report)
-    _check_screen_lock_coverage(dialect, project_cls, state, snapshot, report)
+    await _check_screen_lock_coverage(dialect, project_cls, state, snapshot, report)
     await _check_workflows(dialect, project_cls, state, snapshot, report)
     return report
 
@@ -144,24 +147,29 @@ async def _check_roles(
             )
 
 
-def _check_screen_lock_coverage(
+async def _check_screen_lock_coverage(
     dialect: Any,
     project_cls: type[Project],
     state: Any,
     snapshot: Any,
     report: CheckReport,
 ) -> None:
-    """Detect the "cosmetic lock" combination: a restricted Edit screen
-    (declared control fields) while ``EDIT_ISSUES`` is granted broadly.
+    """Split the "cosmetic lock" finding by guard coverage.
 
     The Edit screen is no longer an API gate on Jira Cloud: since the
     override-screen-security deprecation, fields off the edit screen are
     still editable through the REST API (JRACLOUD-98054), and Rovo exposes
-    that to every licensed user. The permission scheme is the real control,
-    so when the schema declares control fields, surface exactly who holds
-    ``EDIT_ISSUES`` — the person who can judge whether that is intentional.
+    that to every licensed user. The practical control is detect-and-revert
+    with an automation guard, so the warning splits three ways:
+
+    - **Uncovered** — control fields are UI-locked, ``EDIT_ISSUES`` is
+      wide, and no enabled guard covers them. The original warning.
+    - **Covered** — a guard covers them. An info line naming the rule.
+    - **Drift** — the guard is disabled, its fields no longer match the
+      derived control fields, or its allow-list no longer includes the
+      authenticated account. A warning per cause.
     """
-    from stint.audit import declared_control_fields
+    from stint.audit import allowed_writer_checker, declared_control_fields
 
     control = declared_control_fields(project_cls)
     if not control:
@@ -190,14 +198,96 @@ def _check_screen_lock_coverage(
         return f"{g.holder_type} {g.holder_parameter!r}".strip()
 
     fields = sorted({name for names in control.values() for name in names})
+    scheme = getattr(project_cls, "__automation_rule_scheme__", None)
+    guards = (
+        [rule for rule in (getattr(scheme, "rules", None) or ()) if getattr(rule, "is_guard", False)] if scheme else []
+    )
+
+    covered: set[str] = set()
+    account_id: str | None = None
+    for guard in guards:
+        guard_fields = set(_guard_field_refs(guard, project_cls))
+        if not guard_fields:
+            continue  # nothing derivable yet; the diff will surface it
+        mapping = state.automation_rules.get(guard.alias)
+        if mapping is None:
+            report.warnings.append(
+                f"project {report.project}: guard {guard.alias!r} is not applied yet (not in "
+                f"state) — control field(s) {sorted(guard_fields)} are UI-locked only and "
+                f"editable through the REST API by anyone holding EDIT_ISSUES."
+            )
+            continue
+        rule_snap = snapshot.automation_rules.get(mapping.id)
+        if rule_snap is None:
+            report.warnings.append(
+                f"project {report.project}: guard {guard.alias!r} is in state (uuid "
+                f"{mapping.id!r}) but Jira has no such rule (out-of-band delete?) — control "
+                f"field(s) {sorted(guard_fields)} are unprotected."
+            )
+            continue
+        if rule_snap.state == "DISABLED":
+            report.warnings.append(
+                f"project {report.project}: guard {guard.alias!r} is disabled in Jira — control "
+                f"field(s) {sorted(guard_fields)} are unprotected until it is enabled."
+            )
+            continue
+        if guard_fields != set(fields):
+            report.warnings.append(
+                f"project {report.project}: guard {guard.alias!r} covers {sorted(guard_fields)} "
+                f"but the derived control fields are {fields} (a screen change moved a "
+                f"field?) — regenerate and reapply the guard."
+            )
+            continue
+        if account_id is None:
+            account_id = await _account_id(dialect)
+        is_allowed = await allowed_writer_checker(dialect, list(guard.allowed_writers), project_id=proj_snap.id)
+        if account_id is not None and not await is_allowed(account_id):
+            report.warnings.append(
+                f"project {report.project}: guard {guard.alias!r} allow-list no longer "
+                f"includes the authenticated account ({account_id}) — the guard would "
+                f"revert the service account's own writes; add it to allowed_writers."
+            )
+            continue
+        covered |= guard_fields
+
+    uncovered = sorted(set(fields) - covered)
+    if guards and covered and not uncovered:
+        guard_names = ", ".join(repr(guard.name) for guard in guards)
+        report.infos.append(
+            f"project {report.project}: control field(s) {fields} are covered by automation "
+            f"guard rule(s) {guard_names} (edits by non-allowed writers are reverted)."
+        )
+        return
+    if not uncovered:
+        return
     report.warnings.append(
-        f"project {report.project}: control field(s) {fields} are locked in the UI "
+        f"project {report.project}: control field(s) {uncovered} are locked in the UI "
         f"(absent from a declared Edit screen) but the live permission scheme grants "
         f"EDIT_ISSUES to {', '.join(_holder(g) for g in grants)}. Screen-locked fields "
         f"are editable through the REST API (JRACLOUD-98054) by anyone holding "
         f"EDIT_ISSUES, and Rovo exposes that to every licensed user — narrow the grant "
-        f"or the restricted Edit screen is cosmetic for API clients."
+        f"or declare a ControlFieldGuard; the restricted Edit screen is cosmetic for "
+        f"API clients."
     )
+
+
+def _guard_field_refs(guard: Any, project_cls: type[Project]) -> list[str]:
+    """The guard's declared field references (explicit or derived), in the
+    same reference space as ``declared_control_fields`` (custom-field alias
+    or system field name)."""
+    from stint.audit import declared_control_fields
+    from stint.fields import CustomField
+
+    if guard.fields is not None:
+        return [f.alias if isinstance(f, CustomField) else str(f) for f in guard.fields]
+    return sorted({key for keys in declared_control_fields(project_cls).values() for key in keys})
+
+
+async def _account_id(dialect: Any) -> str | None:
+    try:
+        return await dialect.my_account_id()
+    except Exception:
+        return None
 
 
 async def _check_workflows(

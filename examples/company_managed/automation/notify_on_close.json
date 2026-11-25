@@ -1,0 +1,57 @@
+{
+  "name": "will be overridden by the declaration",
+  "description": "Notify the issue owner when a severity-controlled bug closes.",
+  "trigger": {
+    "component": "TRIGGER",
+    "parentId": null,
+    "conditionParentId": null,
+    "schemaVersion": 2,
+    "type": "jira.issue.event.trigger:updated",
+    "value": {
+      "eventKey": "jira:issue_updated",
+      "issueEvent": "issue_updated",
+      "eventTypes": []
+    },
+    "children": [],
+    "conditions": [],
+    "connectionId": null
+  },
+  "components": [
+    {
+      "component": "CONDITION",
+      "parentId": null,
+      "conditionParentId": null,
+      "schemaVersion": 1,
+      "type": "jira.comparator.condition",
+      "value": {
+        "first": "{{issue.status.name}}",
+        "second": "Done",
+        "operator": "EQUALS"
+      },
+      "children": [],
+      "conditions": [],
+      "connectionId": null
+    },
+    {
+      "component": "ACTION",
+      "parentId": null,
+      "conditionParentId": null,
+      "schemaVersion": 2,
+      "type": "jira.issue.comment",
+      "value": {
+        "comment": "Closed with severity {{issue.customfield_10056}} ({{stint.field.severity}} refs resolve at apply time).",
+        "publicComment": false,
+        "commentVisibility": null,
+        "sendNotifications": true,
+        "addCommentOnce": false
+      },
+      "children": [],
+      "conditions": [],
+      "connectionId": null
+    }
+  ],
+  "canOtherRuleTrigger": false,
+  "notifyOnError": "FIRSTERROR",
+  "labels": [],
+  "writeAccessType": "UNRESTRICTED"
+}

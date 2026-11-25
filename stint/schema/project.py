@@ -167,6 +167,20 @@ class ProjectMeta(StintMeta):
                         f"({sorted(declared_aliases)})."
                     )
 
+        automation_rule_scheme = getattr(cls, "__automation_rule_scheme__", None)
+        if automation_rule_scheme is not None:
+            if style == "team-managed":
+                raise ConfigurationError(
+                    f"Project {name!r} is team-managed but references an "
+                    f"AutomationRuleScheme. Automation rule management is a "
+                    f"company-managed surface."
+                )
+            if getattr(automation_rule_scheme, "alias", "") == "":
+                raise ConfigurationError(
+                    f"Project {name!r} references an AutomationRuleScheme with no "
+                    f"alias; give the declaration an explicit alias."
+                )
+
         # Track inverse linkage: each issuetype learns which project(s) include
         # it. Used by AsyncSession.add() to infer project when unambiguous.
         for it in issuetypes:
@@ -206,6 +220,9 @@ class Project(BaseModel, metaclass=ProjectMeta):
     - ``__issuetypes__``: list of IssueType subclasses included in this project.
     - ``__security_scheme__``: optional SecurityScheme declaration to
       associate with this project at apply time. CMP only.
+    - ``__automation_rule_scheme__``: optional AutomationRuleScheme to
+      create/keep in sync at apply time; every rule in it is scoped to the
+      bound projects. CMP only.
 
     TMP projects cannot reference reusable schemes (ScreenScheme,
     FieldConfiguration, SecurityScheme); stint rejects this combination at
@@ -218,6 +235,7 @@ class Project(BaseModel, metaclass=ProjectMeta):
     __roles__: ClassVar[dict[str, list[Any]] | None] = None
     __permission_scheme__: ClassVar[Any] = None
     __workflow_scheme__: ClassVar[Any] = None
+    __automation_rule_scheme__: ClassVar[Any] = None
     # Declared so type-checkers see the key subclasses carry (validated by
     # ProjectMeta). __issuetypes__ is read via getattr() like validate.py,
     # since schemas declare it as a list and ProjectMeta normalizes it.

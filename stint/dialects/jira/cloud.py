@@ -13,6 +13,7 @@ from typing import Any, ClassVar
 
 from stint.client.http import JiraHTTPClient
 from stint.dialects.jira import common
+from stint.dialects.jira.automation import AutomationRuleClient
 from stint.exceptions import (
     ConfigurationError,
     NotFoundError,
@@ -20,7 +21,9 @@ from stint.exceptions import (
     ReflectionError,
     TransportError,
 )
+from stint.registry import registry
 from stint.state.snapshot import (
+    AutomationRuleSnapshot,
     CustomFieldSnapshot,
     FieldConfigurationItemSnapshot,
     FieldConfigurationSchemeSnapshot,
@@ -46,10 +49,11 @@ from stint.state.snapshot import (
 )
 
 
-class JiraCloudDialect:
+class JiraCloudDialect(AutomationRuleClient):
     """Jira Cloud dialect. Company-managed and team-managed projects alike
     share this surface; team-managed writes live in a separate dialect
-    (see ``stint.dialects.jira.tmp``).
+    (see ``stint.dialects.jira.tmp``). Automation rule-management endpoints
+    (a different host) come from the ``AutomationRuleClient`` mixin.
     """
 
     name: ClassVar[str] = "jira_cloud"
@@ -88,6 +92,8 @@ class JiraCloudDialect:
         self._user_groups_cache: dict[str, frozenset[str]] = {}
         self._role_membership_cache: dict[tuple[str, str], set[str]] = {}
         self._global_roles_cache: dict[str, str] | None = None
+        # Automation rule-management client state (mixin attributes).
+        self._cloud_id_cache: str | None = None
 
     # ── Detection ────────────────────────────────────────────────────
     async def detect(self) -> bool:
@@ -195,6 +201,13 @@ class JiraCloudDialect:
         project_roles = await self._reflect_global_project_roles()
         statuses, workflows = await self._reflect_workflows()
         workflow_schemes = await self._reflect_workflow_schemes()
+        # Automation rules reflect only when the schema declares any: the
+        # rule-management API lives on another host and costs one GET per
+        # rule, and a schema without rules never reads them (undeclared
+        # rules are unmanaged either way).
+        automation_rules: dict[str, AutomationRuleSnapshot] = {}
+        if registry.automation_rules or registry.automation_rule_schemes:
+            automation_rules = await self._reflect_automation_rules()
         return Snapshot(
             server_info=info,
             custom_fields=custom_fields,
@@ -212,6 +225,7 @@ class JiraCloudDialect:
             statuses=statuses,
             workflows=workflows,
             workflow_schemes=workflow_schemes,
+            automation_rules=automation_rules,
         )
 
     # ── Custom fields ────────────────────────────────────────────────
@@ -589,6 +603,41 @@ class JiraCloudDialect:
                 scheme = common.parse_workflow_scheme(entry)
                 schemes[scheme.id] = scheme
         return schemes
+
+    async def _reflect_automation_rules(self) -> dict[str, AutomationRuleSnapshot]:
+        """Reflect all automation rules (``rule/summary`` + ``GET rule/{uuid}``).
+
+        Rule-management lives on api.atlassian.com, outside the tenant REST
+        root; a tenant that never touches automation (or an account the
+        rule API refuses) must not break the whole reflect, so failures
+        degrade to an empty map. The request's reflect contract is summary
+        then per-rule GET — payloads for every summarized rule, which keeps
+        the diff exact at the cost of one GET per rule (fine at automation
+        rule counts tenants actually have; revisit if that changes).
+        """
+        try:
+            summaries = await self.list_rule_summaries()
+        except (PermissionError, NotFoundError, TransportError) as e:
+            warnings.warn(f"automation rule reflection skipped ({e})", stacklevel=2)
+            return {}
+        rules: dict[str, AutomationRuleSnapshot] = {}
+        for summary in summaries:
+            uuid = str(summary.get("uuid", ""))
+            if not uuid:
+                continue
+            payload: dict[str, Any] = {}
+            try:
+                payload = await self.get_rule(uuid)
+            except (NotFoundError, TransportError):
+                pass  # summary without a readable body: keep the summary shape
+            rules[uuid] = AutomationRuleSnapshot(
+                uuid=uuid,
+                name=str(summary.get("name", payload.get("name", ""))),
+                state=str(summary.get("state", payload.get("state", "")) or ""),
+                scope_apis=tuple(str(a) for a in summary.get("ruleScopeARIs") or []),
+                payload=payload,
+            )
+        return rules
 
     async def _reflect_screens(self) -> dict[str, ScreenSnapshot]:
         screens: dict[str, ScreenSnapshot] = {}

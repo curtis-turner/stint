@@ -103,6 +103,7 @@ nav:
       - Registry: api/registry.md
       - Control-field audit: api/audit.md
       - Workflows: api/workflows.md
+      - Automation rules: api/automation.md
       - Validation: api/validate.md
       - Client: api/client.md
       - Dialects: api/dialects.md
