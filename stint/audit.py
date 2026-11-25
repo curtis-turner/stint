@@ -24,6 +24,11 @@ from stint.exceptions import StintError
 from stint.fields import CustomField
 from stint.registry import registry
 
+# System fields Jira never lets REST callers write (imports aside). They are
+# on create/view screens by nature and off editable screens by nature, so
+# they must not count as "locked" fields for the cosmetic-lock rule.
+_IMMUTABLE_SYSTEM_FIELDS: frozenset[str] = frozenset({"created", "updated"})
+
 if TYPE_CHECKING:
     from stint.engine import Engine
     from stint.schema.project import Project
@@ -79,6 +84,12 @@ def declared_control_fields(project_cls: type[Project]) -> dict[str, tuple[str, 
     restricted-Edit-screen pattern. Comparison uses the declared reference
     identity (custom-field alias or system field name), which is consistent
     across the screens of one scheme by construction.
+
+    Immutable system fields (``Created``, ``Updated``) are excluded: Jira
+    refuses writes to them for every caller regardless of ``EDIT_ISSUES``,
+    so they can never be cosmetic-lock candidates (verified live: a tenant
+    whose only create/view-minus-edit fields are these two fired the
+    cosmetic-lock warning against a wide-open scheme).
     """
     out: dict[str, tuple[str, ...]] = {}
     for it in getattr(project_cls, "__issuetypes__", ()) or ():
@@ -94,6 +105,8 @@ def declared_control_fields(project_cls: type[Project]) -> dict[str, tuple[str, 
         for screen in (scheme.create, scheme.view):
             for ref in screen.fields:
                 key = _ref_key(ref)
+                if key.lower() in _IMMUTABLE_SYSTEM_FIELDS:
+                    continue
                 if key not in editable and key not in control:
                     control.append(key)
         if control:

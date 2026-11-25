@@ -57,7 +57,7 @@ def _isolate_registry():
 
 
 def _schema() -> type[Project]:
-    view_screen = Screen(alias="t_view", name="V", fields=["Summary", impact_field, "Created"])
+    view_screen = Screen(alias="t_view", name="V", fields=["Summary", impact_field, "Labels"])
     edit_screen = Screen(alias="t_edit", name="E", fields=["Summary"])  # Impact locked
     scheme = ScreenScheme(alias="t_screens", name="S", create=view_screen, edit=edit_screen, view=view_screen)
 
@@ -99,7 +99,27 @@ def _snapshot(*, edit_issues_grants: tuple[PermissionGrantSnapshot, ...] = ()) -
 # ── Control-field derivation ─────────────────────────────────────────
 def test_declared_control_fields():
     control = declared_control_fields(_schema())
-    assert control == {"ticket": ("ticket_impact", "Created")}
+    assert control == {"ticket": ("ticket_impact", "Labels")}
+
+
+def test_immutable_system_fields_are_never_control_fields():
+    """Created/Updated cannot be written via REST by anyone, so they are not
+    cosmetic-lock candidates (live-verified false positive on a tenant whose
+    only create/view-minus-edit fields were these two)."""
+    view_screen = Screen(alias="v", name="V", fields=["Summary", "Created", "Updated"])
+    scheme = ScreenScheme(
+        alias="s", name="S", create=view_screen, edit=Screen(alias="e", name="E", fields=["Summary"]), view=view_screen
+    )
+
+    class T(IssueType):
+        __alias__ = "t"
+        __screen_scheme__ = scheme
+
+    class P(Project):
+        __key__ = "P3"
+        __issuetypes__ = [T]
+
+    assert declared_control_fields(P) == {}
 
 
 def test_declared_control_fields_empty_when_edit_covers_all():
@@ -148,7 +168,7 @@ def test_check_warns_when_edit_screen_lock_is_cosmetic():
     report = _run_check(snapshot, _state(), _schema())
     matches = [w for w in report.warnings if "JRACLOUD-98054" in w]
     assert len(matches) == 1
-    assert "ticket_impact" in matches[0] and "Created" in matches[0]
+    assert "ticket_impact" in matches[0] and "Labels" in matches[0]
     # The projectRole holder renders as its role name, not the raw id.
     assert "project role 'Administrators'" in matches[0]
 
@@ -242,7 +262,7 @@ async def test_audit_reports_out_of_band_writes():
             since="2026/11/01 00:00",
             allowed_writers=["svc@example.com"],
         )
-    assert report.control_fields == ("Created", "ticket_impact")
+    assert report.control_fields == ("Labels", "ticket_impact")
     assert len(report.writes) == 1
     write = report.writes[0]
     assert write.issue_key == "TRK-1"
