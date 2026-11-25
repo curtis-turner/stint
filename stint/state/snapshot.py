@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
+from typing import Any
 
 
 def _frozen_mapping(value: Mapping | None) -> Mapping:
@@ -89,6 +90,9 @@ class ProjectSnapshot:
     field_configuration_scheme_id: str | None = None
     issue_security_scheme_id: str | None = None
     permission_scheme_id: str | None = None
+    # Bound workflow scheme id; "" when the project is on the Default
+    # Workflow Scheme (which has no id in Jira).
+    workflow_scheme_id: str = ""
     # role name -> actors; only roles stint reflects (all roles of the
     # project). Read-only view, frozen at construction.
     roles: Mapping[str, tuple[RoleActorSnapshot, ...]] = field(default_factory=dict)
@@ -277,6 +281,91 @@ class SecuritySchemeSnapshot:
 
 
 @dataclass
+class TransitionRuleSnapshot:
+    """One condition/validator/postfunction rule on a transition, as
+    reflected. Parsed into a tree by the reflector; only conditions are
+    structured (validators/postfunctions are kept opaque so adoption
+    preserves them)."""
+
+    kind: str  # "condition" | "validator" | "postfunction"
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TransitionSnapshot:
+    """One workflow transition as reflected."""
+
+    id: str
+    name: str
+    from_statuses: tuple[str, ...] = ()  # status names
+    to_status: str = ""  # status name ("" on the create transition)
+    is_initial: bool = False  # Jira's auto-added create transition
+    conditions: dict[str, Any] | None = None  # raw rules.conditions payload
+    validators: tuple[TransitionRuleSnapshot, ...] = ()
+    postfunctions: tuple[TransitionRuleSnapshot, ...] = ()
+    screen_id: str | None = None
+    # The full reflected TransitionUpdateDTO payload, verbatim. Update ops
+    # send undeclared transitions back in this form so the declarative
+    # replace never deletes them (preservation, unmanaged).
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class WorkflowStatusSnapshot:
+    """A status inside a workflow as reflected."""
+
+    id: str
+    name: str
+    category: str = "indeterminate"  # new | indeterminate | done
+    description: str = ""
+    scope: str = "GLOBAL"  # GLOBAL or PROJECT:<projectId>
+
+
+@dataclass
+class WorkflowSnapshot:
+    """A workflow as reflected (statuses + transitions + rules)."""
+
+    id: str  # new-model UUID (company-managed bulk APIs reference by id)
+    name: str
+    description: str = ""
+    scope: str = "GLOBAL"  # GLOBAL or PROJECT:<projectId>
+    statuses: tuple[WorkflowStatusSnapshot, ...] = ()
+    transitions: tuple[TransitionSnapshot, ...] = ()
+    is_draft: bool = False
+    # Optimistic-locking version (DocumentVersion). Required by
+    # POST /workflows/update; captured from create/search responses.
+    version_id: str = ""
+    version_number: int = 0
+
+
+@dataclass
+class WorkflowSchemeSnapshot:
+    """A workflow scheme as reflected: default workflow + issuetype mappings.
+
+    Reflected from the classic scheme APIs, which reference workflows by
+    name; ``default_workflow``/``mappings`` values are workflow names.
+    """
+
+    id: str
+    name: str
+    description: str = ""
+    default_workflow: str = ""  # workflow name
+    mappings: dict[str, str] = field(default_factory=dict)  # issueTypeId -> workflow name
+    is_draft: bool = False
+
+
+@dataclass
+class StatusSnapshot:
+    """A tenant-global status."""
+
+    id: str
+    name: str
+    category: str = "indeterminate"  # new | indeterminate | done
+    description: str = ""
+    scope: str = "GLOBAL"  # GLOBAL or PROJECT:<projectId>
+
+
+@dataclass
 class Snapshot:
     """Full reflected state of a Jira instance (subset stint manages)."""
 
@@ -292,6 +381,11 @@ class Snapshot:
     field_configuration_schemes: dict[str, FieldConfigurationSchemeSnapshot] = field(default_factory=dict)
     security_schemes: dict[str, SecuritySchemeSnapshot] = field(default_factory=dict)
     permission_schemes: dict[str, PermissionSchemeSnapshot] = field(default_factory=dict)
+    # Workflows keyed by name (the Cloud bulk APIs reference workflows by
+    # name; ids exist but names are the stable handle across schemes).
+    workflows: dict[str, WorkflowSnapshot] = field(default_factory=dict)
+    workflow_schemes: dict[str, WorkflowSchemeSnapshot] = field(default_factory=dict)
+    statuses: dict[str, StatusSnapshot] = field(default_factory=dict)  # keyed by name
     # Global project-role name -> role id map (GET /rest/api/3/role). Used to
     # compare permission-scheme grants whose holder is a projectRole: Jira's
     # holder parameter is the role id, declarations name the role.

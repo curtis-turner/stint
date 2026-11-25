@@ -68,6 +68,7 @@ from stint.schema.permissions import (
 )
 from stint.schema.roles import Group, User
 from stint.schema.security import SecurityLevel, SecurityLevelMember, SecurityScheme
+from stint.schema.workflows import Permission, Status, Transition, Workflow, WorkflowScheme
 from stint.state import (
     CustomFieldSnapshot,
     SecurityLevelMemberSnapshot,
@@ -119,6 +120,7 @@ __all__ = [
     "Reporter",
     "StintError",
     "PermissionError",
+    "Permission",
     "Project",
     "RadioButtonsField",
     "ReadOnlyField",
@@ -140,8 +142,10 @@ __all__ = [
     "StateFileCorruptError",
     "StateFileError",
     "StateFileWriteError",
+    "Status",
     "TextAreaField",
     "TextField",
+    "Transition",
     "TransitionError",
     "TransportError",
     "URLField",
@@ -149,6 +153,8 @@ __all__ = [
     "User",
     "UserField",
     "VersionField",
+    "Workflow",
+    "WorkflowScheme",
     "and_",
     "create_engine",
     "get_context",

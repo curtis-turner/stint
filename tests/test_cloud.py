@@ -9,6 +9,7 @@ import respx
 
 from stint import APITokenAuth, create_engine
 from tests._stubs import stub_project_roles_and_permission_schemes as _stub_project_roles_and_permission_schemes
+from tests._stubs import stub_workflows as _stub_workflows
 
 BASE = "https://acme.atlassian.net"
 CLOUD_ROOT = f"{BASE}/rest/api/3"
@@ -71,6 +72,7 @@ def _stub_empty(mock: respx.MockRouter) -> None:
     # Project→scheme binding lookup (part of project reflection).
     mock.get(f"{CLOUD_ROOT}/issuesecurityschemes/project").mock(return_value=httpx.Response(200, json=_paginated([])))
     _stub_project_roles_and_permission_schemes(mock, CLOUD_ROOT)
+    _stub_workflows(mock, CLOUD_ROOT)
 
 
 # ── Detection ────────────────────────────────────────────────────────

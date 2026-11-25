@@ -145,6 +145,28 @@ class ProjectMeta(StintMeta):
                     f"give the declaration an explicit alias."
                 )
 
+        workflow_scheme = getattr(cls, "__workflow_scheme__", None)
+        if workflow_scheme is not None:
+            if style == "team-managed":
+                raise ConfigurationError(
+                    f"Project {name!r} is team-managed but references a WorkflowScheme. "
+                    f"Team-managed projects have no shared workflow scheme "
+                    f"association."
+                )
+            if getattr(workflow_scheme, "alias", "") == "":
+                raise ConfigurationError(
+                    f"Project {name!r} references a WorkflowScheme with no alias; "
+                    f"give the declaration an explicit alias."
+                )
+            declared_aliases = {it_alias for it in issuetypes if (it_alias := getattr(it, "__alias__", ""))}
+            for it_alias in workflow_scheme.mappings or {}:
+                if it_alias not in declared_aliases:
+                    raise ConfigurationError(
+                        f"Project {name!r} WorkflowScheme mapping key {it_alias!r} is not "
+                        f"one of the project's declared issuetype aliases "
+                        f"({sorted(declared_aliases)})."
+                    )
+
         # Track inverse linkage: each issuetype learns which project(s) include
         # it. Used by AsyncSession.add() to infer project when unambiguous.
         for it in issuetypes:
@@ -195,6 +217,7 @@ class Project(BaseModel, metaclass=ProjectMeta):
     __lead_role__: ClassVar[str | None] = None
     __roles__: ClassVar[dict[str, list[Any]] | None] = None
     __permission_scheme__: ClassVar[Any] = None
+    __workflow_scheme__: ClassVar[Any] = None
     # Declared so type-checkers see the key subclasses carry (validated by
     # ProjectMeta). __issuetypes__ is read via getattr() like validate.py,
     # since schemas declare it as a list and ProjectMeta normalizes it.

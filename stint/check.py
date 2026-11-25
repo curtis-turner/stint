@@ -95,6 +95,7 @@ async def check_project(engine: Engine, project_cls: type[Project], state: State
     await _check_roles(dialect, project_cls, state, snapshot, report)
     await _check_permission_scheme(dialect, project_cls, state, snapshot, report)
     _check_screen_lock_coverage(dialect, project_cls, state, snapshot, report)
+    await _check_workflows(dialect, project_cls, state, snapshot, report)
     return report
 
 
@@ -197,6 +198,190 @@ def _check_screen_lock_coverage(
         f"EDIT_ISSUES, and Rovo exposes that to every licensed user — narrow the grant "
         f"or the restricted Edit screen is cosmetic for API clients."
     )
+
+
+async def _check_workflows(
+    dialect: Any,
+    project_cls: type[Project],
+    state: Any,
+    snapshot: Any,
+    report: CheckReport,
+) -> None:
+    """Workflow drift: binding, statuses, transitions, and the transition
+    lockout evaluation (read-only — runs the same restrict comparison the
+    apply-time guard runs, so a schema change that would strand the
+    service account's transitions surfaces at check time too)."""
+    from stint.lockout import (
+        lost_transitions,
+        restrict_rule_parameters,
+    )
+
+    scheme_alias = getattr(getattr(project_cls, "__workflow_scheme__", None), "alias", "")
+    if not scheme_alias:
+        return
+    proj_snap = snapshot.projects.get(project_cls.__key__)
+    if proj_snap is None:
+        return  # project existence already reported
+    scheme_state = state.workflow_schemes.get(scheme_alias)
+    scheme_snap = snapshot.workflow_schemes.get(proj_snap.workflow_scheme_id or "")
+    if scheme_state is None or scheme_snap is None:
+        return  # not yet applied: the diff will create/adopt/bind
+    if scheme_snap.id != scheme_state.id:
+        report.errors.append(
+            f"workflow_scheme {scheme_alias!r}: project binds scheme {proj_snap.workflow_scheme_id!r} "
+            f"but state records {scheme_state.id!r} (out-of-band rebind?)"
+        )
+    if scheme_snap.default_workflow and scheme_snap.default_workflow != scheme_state.default_workflow:
+        pass  # default drift is name-vs-alias space; the diff covers rebinds
+    declared_wf_aliases = {scheme_state.default_workflow, *scheme_state.mappings.values()}
+    declared_wf_aliases.discard("")
+    for wf_alias in sorted(declared_wf_aliases):
+        wf_state = state.workflows.get(wf_alias)
+        if wf_state is None:
+            continue
+        live = snapshot.workflows.get(wf_state.name)
+        if live is None:
+            live = next((w for w in snapshot.workflows.values() if w.id == wf_state.id), None)
+        if live is None:
+            report.errors.append(
+                f"workflow {wf_alias!r}: state references id {wf_state.id!r} but no workflow "
+                f"named {wf_state.name!r} is live in Jira (out-of-band delete?)"
+            )
+            continue
+        project_cls_workflow = _declared_workflow(project_cls, wf_alias)
+        if project_cls_workflow is None:
+            continue
+        declared_status_names = {s.name for s in project_cls_workflow.statuses}
+        live_status_names = {s.name for s in live.statuses}
+        for missing in sorted(declared_status_names - live_status_names):
+            report.errors.append(f"workflow {wf_alias!r}: declared status {missing!r} is not on the live workflow")
+        declared_transitions = {t.name: t for t in project_cls_workflow.transitions}
+        live_transitions = {t.name: t for t in live.transitions}
+        for name in sorted(set(declared_transitions) - set(live_transitions)):
+            report.errors.append(
+                f"workflow {wf_alias!r}: declared transition {name!r} does not exist on the live workflow"
+            )
+        for name in sorted(set(live_transitions) - set(declared_transitions)):
+            report.warnings.append(
+                f"workflow {wf_alias!r}: transition {name!r} is on the live workflow but not declared "
+                f"(preserved unmanaged; validators/postfunctions ride along)"
+            )
+
+    # Transition lockout evaluation (read-only): declared restrict vs live
+    # restrict for every workflow the scheme references. Same evaluator the
+    # apply-time guard runs; roles resolve via the account's project
+    # memberships, groups via group-id lookup, permissions via
+    # /mypermissions.
+    account_id = await dialect.my_account_id()
+    account_groups = await dialect.user_groups(account_id)
+    group_ids = await dialect.resolve_group_ids(sorted(account_groups)) if account_groups else {}
+    memberships = await dialect.project_role_memberships(proj_snap.id, account_id)
+    global_roles = await dialect.global_project_role_ids()
+    role_ids = {global_roles[n] for n in memberships if n in global_roles}
+    before: dict[str, dict[str, str] | None] = {}
+    after: dict[str, dict[str, str] | None] = {}
+    permission_keys: set[str] = set()
+    for wf_alias in sorted(declared_wf_aliases):
+        wf_state = state.workflows.get(wf_alias)
+        declared = _declared_workflow(project_cls, wf_alias)
+        if wf_state is None or declared is None:
+            continue
+        live = snapshot.workflows.get(wf_state.name) or next(
+            (w for w in snapshot.workflows.values() if w.id == wf_state.id), None
+        )
+        if live is None:
+            continue
+        for t in live.transitions:
+            params = restrict_rule_parameters(t.conditions)
+            before[f"{wf_state.name}:{t.name}"] = params
+            if params:
+                permission_keys.update(k.strip() for k in str(params.get("permissionKeys", "")).split(",") if k.strip())
+        for t in declared.transitions:
+            user_values = [h.value for h in t.restrict_to if type(h).__name__ == "User"]
+            resolved_users: dict[str, str] = {}
+            for value in user_values:
+                if "@" in value:
+                    try:
+                        resolved_users[value] = await dialect.resolve_user(value)
+                    except ConfigurationError:
+                        resolved_users[value] = value
+                else:
+                    resolved_users[value] = value
+            resolved = _declared_restrict_parameters(t.restrict_to, snapshot.project_roles, group_ids, resolved_users)
+            after[f"{wf_state.name}:{t.name}"] = resolved
+            if resolved:
+                permission_keys.update(
+                    k.strip() for k in str(resolved.get("permissionKeys", "")).split(",") if k.strip()
+                )
+    held: set[str] = set()
+    keys = sorted(permission_keys)
+    if keys:
+        have = await dialect.my_project_permissions(proj_snap.id, keys)
+        held = {key for key, ok in have.items() if ok}
+    lost = lost_transitions(
+        before,
+        after,
+        account_id=account_id,
+        account_role_ids=role_ids,
+        account_group_ids=set(group_ids.values()),
+        held_permission_keys=held,
+    )
+    if lost:
+        report.errors.append(
+            f"applying the declared workflow restrict set would take away the authenticated "
+            f"account's ability to use transition(s) {sorted(lost)}; regenerate with "
+            f"--allow-lockout to force it"
+        )
+
+
+def _declared_restrict_parameters(
+    holders: list[Any],
+    role_name_to_id: dict[str, str],
+    group_name_to_id: dict[str, str],
+    resolved_users: dict[str, str],
+) -> dict[str, str] | None:
+    """Declared restrict holders → restrict-rule parameters (check-time
+    form, best-effort). Unresolvable role/group names return None
+    (conservatively unrestricted — the apply-time resolution is
+    authoritative and raises on unknown names). ``resolved_users`` maps
+    declared user values (emails) to accountIds, pre-resolved by the
+    async caller."""
+    roles = [h.name for h in holders if type(h).__name__ == "ProjectRole"]
+    groups = [h.name for h in holders if type(h).__name__ == "Group"]
+    users = [h.value for h in holders if type(h).__name__ == "User"]
+    perms = [h.key for h in holders if type(h).__name__ == "Permission"]
+    if not (roles or groups or users or perms):
+        return None
+    role_ids = [role_name_to_id.get(n) for n in roles]
+    if roles and any(rid is None for rid in role_ids):
+        return None
+    group_ids = [group_name_to_id.get(n) for n in groups]
+    if groups and any(gid is None for gid in group_ids):
+        return None
+    resolved: dict[str, str] = {}
+    if role_ids:
+        resolved["roleIds"] = ",".join(str(rid) for rid in role_ids)
+    if group_ids:
+        resolved["groupIds"] = ",".join(str(gid) for gid in group_ids)
+    if users:
+        resolved["accountIds"] = ",".join(resolved_users.get(v, v) for v in users)
+    if perms:
+        resolved["permissionKeys"] = ",".join(perms)
+    return resolved or None
+
+
+def _declared_workflow(project_cls: type[Project], wf_alias: str):
+    """The declared Workflow object for an alias, searched through the
+    project's bound WorkflowScheme (default + mappings)."""
+    scheme = getattr(project_cls, "__workflow_scheme__", None)
+    if scheme is None:
+        return None
+    if getattr(scheme.default, "alias", "") == wf_alias:
+        return scheme.default
+    for workflow in (scheme.mappings or {}).values():
+        if getattr(workflow, "alias", "") == wf_alias:
+            return workflow
+    return None
 
 
 async def _check_permission_scheme(

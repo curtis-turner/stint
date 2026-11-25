@@ -43,3 +43,18 @@ def stub_project_roles_and_permission_schemes(mock: respx.MockRouter, root: str)
     mock.get(url__regex=rf"^{esc}/permissionscheme($|\?)").mock(
         return_value=httpx.Response(200, json={"permissionSchemes": []})
     )
+
+
+def stub_workflows(mock: respx.MockRouter, root: str) -> None:
+    """Empty stubs for the workflow-family reflect reads.
+
+    - ``GET /workflows/search`` → single page, no workflows, no statuses
+    - ``GET /workflowscheme`` → empty page
+    - ``GET /workflowscheme/project`` → empty page (projects on the default
+      scheme, which has no id)
+    """
+    mock.get(f"{root}/workflows/search").mock(
+        return_value=httpx.Response(200, json={"values": [], "statuses": [], "isLast": True})
+    )
+    mock.get(f"{root}/workflowscheme").mock(return_value=httpx.Response(200, json=paginated([])))
+    mock.get(f"{root}/workflowscheme/project").mock(return_value=httpx.Response(200, json=paginated([])))

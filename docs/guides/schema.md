@@ -227,6 +227,98 @@ Grant policy (explicit, no silent default):
 `stint validate` cross-checks `ProjectRole` holders against the project's
 declared `__roles__` so a typo'd role name doesn't grant to nobody.
 
+## Workflows and workflow schemes
+
+"Regular users can't move this to Done" is a *transition condition*: restrict
+the transition to a role, group, user, or permission. Statuses are
+tenant-global (referenced by name across workflows); workflows are
+company-managed objects referenced by name; a workflow scheme binds a default
+workflow plus per-issuetype overrides to the project.
+
+```python
+from stint import Status, Transition, Workflow, WorkflowScheme, ProjectRole, Permission
+
+open_ = Status("Open", category="new")
+in_progress = Status("In Progress")
+done = Status("Done", category="done")
+
+tracker_flow = Workflow(
+    alias="tracker_flow",
+    name="Tracker Workflow",
+    statuses=[open_, in_progress, done],
+    initial=open_,
+    transitions=[
+        Transition("Start", from_=[open_], to=in_progress),
+        Transition("Close", from_=[in_progress], to=done, restrict_to=[ProjectRole("Administrators")]),
+        Transition("Reopen", from_=[done], to=open_, restrict_to=[Permission("ADMINISTER_PROJECTS")]),
+    ],
+)
+
+tracker_wfs = WorkflowScheme(alias="tracker_wfs", name="Tracker WFS", default=tracker_flow)
+
+
+class Tracker(Project):
+    __workflow_scheme__ = tracker_wfs
+```
+
+Restrict holders: `ProjectRole(name)`, `Group(name)`, `User(email)`,
+`Permission(key)`. They all map to one aggregate rule
+(`system:restrict-issue-transition`) whose criteria are OR-ed — a role member
+*or* a group member *or* someone holding the permission may transition.
+Role names resolve to Jira role ids and group names to group ids at apply
+time; unknown names fail loudly instead of restricting to nobody.
+
+Declared vs. undeclared, per object:
+
+- **Adoption is non-destructive.** A workflow or scheme that already exists
+  in Jira is recorded into state without rewriting it: undeclared
+  transitions, validators, and postfunctions are preserved (unmanaged), and
+  `engine.check` reports drift.
+- **Updates are declarative but preserving.** When declared content drifts,
+  the update payload sends declared transitions plus every undeclared live
+  status and transition verbatim, so Jira's full-replace update semantics
+  never delete what the schema doesn't manage.
+- **Orphans** (tracked in state, gone from the schema) delete behind
+  `--allow-delete` — schemes first, then workflows.
+- Jira's implicit `Create` transition into the initial status is always sent
+  explicitly; the platform does not auto-add it.
+
+## Workflow scheme binding and status mappings
+
+Binding a scheme to a project being created in the same migration is the
+synchronous associate path. Rebinding an **existing** project is different:
+Jira runs an async switch task, and statuses that would vanish under the
+target scheme require explicit `status_mappings` in the migration.
+
+stint never guesses a mapping. Before any write, the op asks Jira which
+statuses would be stranded (`POST /workflowscheme/update/mappings`); if any
+are, the op refuses and lists them, and you fill the mapping:
+
+```python
+await op.set_project_workflow_scheme(
+    project_alias="TRK",
+    scheme_alias="tracker_wfs",
+    live=True,
+    status_mappings={"Legacy Status": "Done"},  # old status name -> new status name
+)
+```
+
+The task is polled to completion (`GET /task/{id}`; COMPLETE/FAILED), so an
+apply either finished the migration or failed visibly.
+
+## Transition lockout guard
+
+Workflow changes can take away a transition the account stint authenticates
+as can use today — and services that drive `session.transition()` stop
+working. Both the plan-time check (`engine.check`) and the apply-time ops
+evaluate: of every transition the account provably can use under the current
+restrict set (roles via its project memberships, groups via group-id
+resolution, permissions via `/mypermissions`), none may become unusable.
+Escape with `--allow-lockout`, like every other guard. Role and permission
+holders are only verifiable with project context — bare
+`op.update_workflow` calls verify group/account holders; scheme switches
+verify everything.
+
 ## Lockout guard: never lock out the owning account
 
 Every role-actor removal and permission-grant change can remove the account

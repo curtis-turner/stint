@@ -102,6 +102,7 @@ nav:
       - State: api/state.md
       - Registry: api/registry.md
       - Control-field audit: api/audit.md
+      - Workflows: api/workflows.md
       - Validation: api/validate.md
       - Client: api/client.md
       - Dialects: api/dialects.md

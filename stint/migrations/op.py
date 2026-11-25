@@ -18,12 +18,13 @@ import asyncio
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from stint.exceptions import ConfigurationError, StintError
+from stint.exceptions import ConfigurationError, NotFoundError, StintError
 from stint.fields import _FieldType, jira_system_field_id
 from stint.lockout import (
     DEFAULT_ROLE_GUARD_PERMISSIONS,
     DEFAULT_SCHEME_GUARD_PERMISSIONS,
     missing_permissions,
+    restrict_rule_parameters,
 )
 from stint.migrations.context import get_context
 from stint.migrations.exceptions import UnsupportedDowngradeError
@@ -1830,3 +1831,900 @@ def _resolve_scheme_mappings(
         scheme = _require_existing(op_name, scheme_alias, scheme_table)
         out.append({"issueTypeId": it_id, scheme_key: scheme.id})
     return out
+
+
+# ── Workflows / workflow schemes ─────────────────────────────────────
+async def _await_workflow_task(dialect: Any, task: Any, what: str) -> dict[str, Any]:
+    """Poll a workflow-family task bean to a terminal state, bounded.
+
+    Mirrors ``_await_security_task`` for the 303-task endpoints (project
+    scheme switch, draft publish, scheme update with issue migrations): an
+    immediate terminal state never polls; a terminal failure raises with
+    the bean; running out of attempts points the operator at the task
+    endpoint instead of going silently green."""
+    from stint.exceptions import StintError
+
+    if not isinstance(task, dict):
+        return {}
+    status = str(task.get("status", "COMPLETE")).upper()
+    if status in _TASK_TERMINAL_FAILURE:
+        raise StintError(f"{what} task failed: {str(task)[:300]}")
+    if status not in ("ENQUEUED", "RUNNING"):
+        return task
+    poll_path = task.get("self") or task.get("location")
+    if not poll_path:
+        raise StintError(
+            f"{what} is not complete ({status}) and the response carries no "
+            f"self/location link to poll; the task status must be checked "
+            f"manually: {str(task)[:300]}"
+        )
+    for _ in range(_ASSOCIATE_POLL_ATTEMPTS):
+        await asyncio.sleep(_ASSOCIATE_POLL_DELAY)
+        task = await dialect.client.get_json(str(poll_path))
+        if not isinstance(task, dict):
+            continue
+        status = str(task.get("status", "")).upper()
+        if status in _TASK_TERMINAL_FAILURE:
+            raise StintError(f"{what} task failed: {str(task)[:300]}")
+        if status not in ("ENQUEUED", "RUNNING"):
+            return task
+    raise StintError(
+        f"{what} task did not finish within {_ASSOCIATE_POLL_ATTEMPTS * _ASSOCIATE_POLL_DELAY:.0f}s; "
+        f"check its status at {poll_path} and re-run the migration if it failed."
+    )
+
+
+def _category_to_jira(category: str) -> str:
+    return {"new": "TODO", "indeterminate": "IN_PROGRESS", "done": "DONE"}.get(category, category)
+
+
+def _status_reference(name: str) -> str:
+    """A caller-supplied statusReference for one create/update call.
+
+    References are per-call correlation keys Jira resolves to real status
+    ids in the response. Derived from the sanitized name so logs stay
+    readable; UUIDs are only required for team-managed workflows, which
+    stint does not manage."""
+    cleaned = "".join(c if (c.isalnum() or c in "-_") else "-" for c in name)
+    return f"stint-{cleaned.strip('-').lower()}"
+
+
+async def _resolve_restrict_parameters(
+    dialect: Any,
+    restrict_to: Iterable[Mapping[str, Any]],
+    *,
+    op_name: str,
+) -> dict[str, Any] | None:
+    """Resolve declared restrict holders into the aggregate
+    ``system:restrict-issue-transition`` parameters.
+
+    Holders: dict(holder_type=..., holder_parameter=...) with the *declared*
+    values. Role names resolve via the global role map (``GET /role``),
+    group names via ``GET /group/bulk``, users via account search;
+    permission keys pass through. Returns None when nothing is declared."""
+    holders = list(restrict_to)
+    if not holders:
+        return None
+    role_names = [str(h.get("holder_parameter", "")) for h in holders if h.get("holder_type") == "projectRole"]
+    group_names = [str(h.get("holder_parameter", "")) for h in holders if h.get("holder_type") == "group"]
+    permission_keys = [str(h.get("holder_parameter", "")) for h in holders if h.get("holder_type") == "permission"]
+    account_ids: list[str] = []
+    for h in holders:
+        if h.get("holder_type") == "user":
+            account_ids.append(await dialect.resolve_user(str(h.get("holder_parameter", ""))))
+    role_map = await dialect.global_project_role_ids() if role_names else {}
+    unmatched_roles = sorted({n for n in role_names if n not in role_map})
+    if unmatched_roles:
+        raise ConfigurationError(
+            f"{op_name}: restrict holder project role(s) {unmatched_roles} do not exist "
+            f"in Jira (resolved against GET /role). Create the role or fix the name."
+        )
+    group_map = await dialect.resolve_group_ids(sorted(set(group_names))) if group_names else {}
+    unmatched_groups = sorted({n for n in group_names if n not in group_map})
+    if unmatched_groups:
+        raise ConfigurationError(
+            f"{op_name}: restrict holder group(s) {unmatched_groups} do not exist in Jira "
+            f"(resolved against GET /group/bulk)."
+        )
+    parameters: dict[str, str] = {}
+    if role_map:
+        parameters["roleIds"] = ",".join(role_map[n] for n in role_names)
+    if group_map:
+        parameters["groupIds"] = ",".join(group_map[n] for n in group_names)
+    if permission_keys:
+        parameters["permissionKeys"] = ",".join(permission_keys)
+    if account_ids:
+        parameters["accountIds"] = ",".join(account_ids)
+    return parameters or None
+
+
+def _restrict_conditions(parameters: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The ``ConditionGroupUpdate`` wrapping one restrict rule. ``operation``
+    is ANY: the restrict rule itself evaluates true when any criterion
+    (role, group, permission, account) is met."""
+    if not parameters:
+        return None
+    return {
+        "operation": "ANY",
+        "conditions": [{"ruleKey": "system:restrict-issue-transition", "parameters": parameters}],
+    }
+
+
+def _workflow_payload_transitions(
+    transitions: Iterable[Mapping[str, Any]],
+    reference_by_name: Mapping[str, str],
+    resolved_restrict: Mapping[str, dict[str, Any] | None],
+    *,
+    initial: str,
+    op_name: str,
+) -> list[dict[str, Any]]:
+    """Build the workflow's transitions array.
+
+    Jira's INITIAL ``Create`` transition into ``initial`` is always sent
+    explicitly (the API does not auto-add one — the official example sends
+    it). Declared transitions become DIRECTED (or GLOBAL when no source
+    statuses are declared) with their restrict rule, if any."""
+    payload_transitions: list[dict[str, Any]] = [
+        {
+            "id": "1",
+            "name": "Create",
+            "type": "INITIAL",
+            "toStatusReference": reference_by_name[initial],
+            "links": [],
+        }
+    ]
+    for t in transitions:
+        to_name = str(t["to"])
+        if to_name not in reference_by_name:
+            raise ConfigurationError(
+                f"{op_name}: transition {t.get('name')!r} targets status {to_name!r} "
+                f"which is not among the workflow's statuses"
+            )
+        from_names = [str(f) for f in (t.get("from_") or [])]
+        for f in from_names:
+            if f not in reference_by_name:
+                raise ConfigurationError(
+                    f"{op_name}: transition {t.get('name')!r} declares source status {f!r} "
+                    f"which is not among the workflow's statuses"
+                )
+        entry: dict[str, Any] = {
+            "name": str(t["name"]),
+            "type": "GLOBAL" if not from_names else "DIRECTED",
+            "toStatusReference": reference_by_name[to_name],
+        }
+        if t.get("description"):
+            entry["description"] = str(t["description"])
+        if from_names:
+            entry["links"] = [{"fromStatusReference": reference_by_name[f]} for f in from_names]
+        else:
+            entry["links"] = []
+        conditions = _restrict_conditions(resolved_restrict.get(str(t.get("name", ""))))
+        if conditions is not None:
+            entry["conditions"] = conditions
+        payload_transitions.append(entry)
+    return payload_transitions
+
+
+async def _resolve_workflow_statuses(
+    dialect: Any,
+    ctx: Any,
+    statuses: Iterable[Mapping[str, Any]],
+    *,
+    workflow_alias: str,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Split declared statuses into (request-ready WorkflowStatusUpdate list,
+    name → numeric-id-or-reference map).
+
+    Statuses already known (the state file's recorded ids, or resolvable by
+    name via ``GET /statuses/byNames``) are reused by id; new ones get a
+    synthetic ``statusReference`` and are created inline by the bulk
+    workflow call. A None lookup (unresolved name) is treated as a new
+    status — status names are not tenant-unique and Jira decides."""
+    names: list[str] = []
+    seen: set[str] = set()
+    for s in statuses:
+        name = str(s["name"])
+        if name not in seen:
+            seen.add(name)
+            names.append(name)
+    recorded = ctx.state.workflows.get(workflow_alias)
+    known_ids: dict[str, str] = dict(recorded.status_ids) if recorded is not None else {}
+    live = await dialect.resolve_status_ids(names)
+    for name, status_id in live.items():
+        if status_id is not None and name not in known_ids:
+            known_ids[name] = status_id
+    out: list[dict[str, Any]] = []
+    ids: dict[str, str] = {}
+    for name in names:
+        status = next(s for s in statuses if str(s["name"]) == name)
+        body: dict[str, Any] = {
+            "name": name,
+            "statusCategory": _category_to_jira(str(status.get("category", "indeterminate"))),
+        }
+        if status.get("description"):
+            body["description"] = str(status["description"])
+        status_id = known_ids.get(name)
+        if status_id:
+            out.append({"id": status_id, "statusReference": status_id, **body})
+            ids[name] = status_id
+        else:
+            reference = _status_reference(name)
+            out.append({"statusReference": reference, **body})
+            ids[name] = reference  # resolved to the numeric id by the response
+    return out, ids
+
+
+def _record_workflow_mapping(
+    ctx: Any,
+    alias: str,
+    *,
+    workflow_id: str,
+    name: str,
+    version_id: str,
+    version_number: int,
+    status_ids: Mapping[str, str] | None = None,
+) -> None:
+    from stint.state.file import WorkflowMapping
+
+    mapping = ctx.state.workflows.get(alias)
+    if mapping is None:
+        mapping = WorkflowMapping(id=workflow_id)
+        ctx.state.workflows[alias] = mapping
+    mapping.id = workflow_id
+    mapping.name = name
+    mapping.version_id = version_id
+    mapping.version_number = version_number
+    if status_ids:
+        for status_name, status_id in status_ids.items():
+            mapping.status_ids[status_name] = status_id
+    ctx.persist()
+
+
+def _mapping_from_response(ctx: Any, alias: str, response: Mapping[str, Any], *, name_hint: str) -> str:
+    """Record a workflow mapping from a create/update response body.
+
+    Response ``statuses[]`` carry both the caller's ``statusReference`` and
+    the real numeric ``id`` — synthetic references resolve to ids here."""
+    workflows = response.get("workflows") if isinstance(response, dict) else None
+    status_rows = response.get("statuses") if isinstance(response, dict) else None
+    for entry in workflows or []:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("name", "")).lower() != name_hint.lower():
+            continue
+        version = entry.get("version") or {}
+        mapping = ctx.state.workflows.get(alias)
+        status_ids = dict(mapping.status_ids) if mapping is not None else {}
+        for s in status_rows or []:
+            if isinstance(s, dict) and s.get("id") and s.get("name"):
+                status_ids[str(s["name"])] = str(s["id"])
+        _record_workflow_mapping(
+            ctx,
+            alias,
+            workflow_id=str(entry.get("id", "")),
+            name=str(entry.get("name", name_hint)),
+            version_id=str(version.get("id", "")),
+            version_number=int(version.get("versionNumber", 0) or 0),
+            status_ids=status_ids or None,
+        )
+        return str(entry["id"])
+    raise StintError(
+        f"workflow create/update response did not include the workflow {name_hint!r}; "
+        f"cannot record its id and version: {str(response)[:300]}"
+    )
+
+
+def _reference_resolution_updates(
+    ctx: Any, alias: str, references: Mapping[str, str], response: Mapping[str, Any]
+) -> None:
+    """After a create/update, replace synthetic statusReferences with the
+    numeric ids the response assigned."""
+    mapping = ctx.state.workflows.get(alias)
+    if mapping is None:
+        return
+    for s in response.get("statuses") or []:
+        if not isinstance(s, dict):
+            continue
+        reference = str(s.get("statusReference", ""))
+        if not reference.startswith("stint-") or not s.get("id"):
+            continue
+        for status_name, mapped in list(references.items()):
+            if mapped == reference:
+                mapping.status_ids[status_name] = str(s["id"])
+    ctx.persist()
+
+
+async def create_workflow(
+    *,
+    alias: str,
+    name: str,
+    description: str = "",
+    statuses: Iterable[Mapping[str, Any]],
+    initial: str,
+    transitions: Iterable[Mapping[str, Any]],
+) -> str:
+    """Create one workflow (``POST /workflows/create``, single-workflow call)
+    and register its alias→UUID mapping.
+
+    ``statuses`` entries: dict(name, category, description). Statuses that
+    already exist tenant-wide (resolved by name, plus the state file) are
+    reused by id; new ones are created inline by the same call.
+    ``transitions`` entries: dict(name, from=[status names], to) plus
+    optional ``restrict_to=[dict(holder_type, holder_parameter)]`` carrying
+    *declared* values — roles/groups/users/permissions resolve into the
+    aggregate ``system:restrict-issue-transition`` rule at apply time.
+
+    Synchronous: a 409 means another workflow-config task is running
+    (surfaced as TransportError)."""
+    ctx = get_context()
+    _require_alias(alias, "create_workflow")
+    existing = _existing_id_or_none(ctx.state.workflows, alias)
+    if existing is not None:
+        return existing
+    dialect = ctx.engine.dialect
+    live = await dialect.read_workflow_by_name(name)
+    if live is not None:
+        raise ConfigurationError(
+            f"create_workflow: a workflow named {name!r} already exists in Jira. "
+            f"Regenerate the migration so it emits AdoptWorkflow instead, or rename "
+            f"the declaration."
+        )
+    statuses = list(statuses)
+    transitions = list(transitions)
+    resolved_restrict: dict[str, dict[str, Any] | None] = {}
+    for t in transitions:
+        resolved_restrict[str(t["name"])] = await _resolve_restrict_parameters(
+            dialect, t.get("restrict_to") or [], op_name="create_workflow"
+        )
+    status_payload, status_ids = await _resolve_workflow_statuses(dialect, ctx, statuses, workflow_alias=alias)
+    workflow_payload = {
+        "name": name,
+        "description": description,
+        "statuses": [{"statusReference": status_ids[str(s["name"])]} for s in statuses],
+        "transitions": _workflow_payload_transitions(
+            transitions, status_ids, resolved_restrict, initial=initial, op_name="create_workflow"
+        ),
+    }
+    response = await dialect.create_workflows(statuses=status_payload, workflows=[workflow_payload])
+    workflow_id = _mapping_from_response(ctx, alias, response, name_hint=name)
+    _reference_resolution_updates(ctx, alias, status_ids, response)
+    return workflow_id
+
+
+async def adopt_workflow(*, alias: str, name: str) -> str:
+    """Record an existing workflow into state without rewriting it.
+
+    Reads ``GET /workflows/search?queryString=`` for the UUID id, version,
+    and full status map. Adoption is non-destructive: undeclared
+    transitions, validators and postfunctions stay; drift is reported by
+    ``engine.check``."""
+    ctx = get_context()
+    _require_alias(alias, "adopt_workflow")
+    existing = _existing_id_or_none(ctx.state.workflows, alias)
+    if existing is not None:
+        return existing
+    dialect = ctx.engine.dialect
+    live = await dialect.read_workflow_by_name(name)
+    if live is None:
+        raise ConfigurationError(f"adopt_workflow: no workflow named {name!r} exists in Jira.")
+    status_ids = {s.name: s.id for s in live.statuses if s.id}
+    _record_workflow_mapping(
+        ctx,
+        alias,
+        workflow_id=live.id,
+        name=live.name,
+        version_id=live.version_id,
+        version_number=live.version_number,
+        status_ids=status_ids,
+    )
+    return live.id
+
+
+async def update_workflow(
+    *,
+    alias: str,
+    name: str,
+    statuses: Iterable[Mapping[str, Any]],
+    initial: str,
+    transitions: Iterable[Mapping[str, Any]],
+    preserve_statuses: Iterable[str] = (),
+    preserve_transitions: Iterable[Mapping[str, Any]] = (),
+    allow_lockout: bool = False,
+    project_id: str | None = None,
+) -> str:
+    """Update a workflow's declared content (``POST /workflows/update``).
+
+    Declarative but *preserving*: undeclared live statuses and transitions
+    ride along (``preserve_statuses`` / ``preserve_transitions`` carry the
+    reflected forms) so the replace never deletes them — Jira's exact
+    replace-vs-merge semantics for omitted entries are undocumented. The
+    workflow's current document ``version`` is read live (optimistic
+    locking); a concurrent edit since reflection surfaces as a 409.
+
+    Transition lockout guard: refuses to run when the authenticated
+    account provably loses a transition (group/account holders are always
+    verifiable; role/permission holders only when ``project_id`` is given,
+    which scheme-switch ops provide), unless ``allow_lockout`` is passed.
+    """
+    ctx = get_context()
+    mapping = _require_existing("update_workflow", alias, ctx.state.workflows)
+    dialect = ctx.engine.dialect
+    live = await dialect.read_workflow_by_name(name)
+    if live is None:
+        raise StintError(f"update_workflow: no workflow named {name!r} exists in Jira (out-of-band delete?).")
+    if not live.version_id:
+        raise StintError(f"update_workflow: Jira returned no document version for workflow {name!r}.")
+    statuses = list(statuses)
+    transitions = list(transitions)
+    resolved_restrict: dict[str, dict[str, Any] | None] = {}
+    for t in transitions:
+        resolved_restrict[str(t["name"])] = await _resolve_restrict_parameters(
+            dialect, t.get("restrict_to") or [], op_name="update_workflow"
+        )
+    if not allow_lockout:
+        await _guard_transition_changes(
+            dialect,
+            live,
+            workflow_name=name,
+            resolved_restrict=resolved_restrict,
+            declared_transition_names={str(t["name"]) for t in transitions},
+            project_id=project_id,
+        )
+    status_payload, status_ids = await _resolve_workflow_statuses(dialect, ctx, statuses, workflow_alias=alias)
+    # Preserved (undeclared) live statuses ride along with their id and
+    # category from the live read.
+    live_status_by_name = {s.name: s for s in live.statuses}
+    for preserved_name in dict.fromkeys(preserve_statuses):
+        preserved = live_status_by_name.get(preserved_name)
+        if preserved is None or not preserved.id:
+            raise StintError(
+                f"update_workflow: preserved status {preserved_name!r} is no longer on the "
+                f"live workflow (out-of-band rename?); regenerate the migration."
+            )
+        status_payload.append(
+            {
+                "id": preserved.id,
+                "statusReference": preserved.id,
+                "name": preserved.name,
+                "statusCategory": _category_to_jira(preserved.category),
+            }
+        )
+        status_ids[preserved_name] = preserved.id
+    workflow_payload = {
+        "id": mapping.id,
+        "version": {"id": live.version_id, "versionNumber": live.version_number},
+        "statuses": [
+            {"statusReference": status_ids[str(s["name"])]}
+            for s in statuses + [dict(name=n) for n in dict.fromkeys(preserve_statuses)]
+        ],
+        "transitions": _workflow_payload_transitions(
+            transitions, status_ids, resolved_restrict, initial=initial, op_name="update_workflow"
+        ),
+    }
+    for preserved in preserve_transitions:
+        if isinstance(preserved, dict):
+            workflow_payload["transitions"].append(dict(preserved))
+    response = await dialect.update_workflows(statuses=status_payload, workflows=[workflow_payload])
+    task_id = response.get("taskId") if isinstance(response, dict) else None
+    if task_id:
+        await _await_workflow_task(dialect, await dialect.get_task(str(task_id)), f"workflow {name!r} update")
+    _mapping_from_response(ctx, alias, response, name_hint=name)
+    _reference_resolution_updates(ctx, alias, status_ids, response)
+    return ctx.state.workflows[alias].id
+
+
+async def _guard_transition_changes(
+    dialect: Any,
+    live: Any,
+    *,
+    workflow_name: str,
+    resolved_restrict: Mapping[str, dict[str, Any] | None],
+    declared_transition_names: set[str],
+    project_id: str | None = None,
+) -> None:
+    """Op-time transition lockout guard for workflow updates.
+
+    Simulates the declared transition set against the live one via
+    ``stint.lockout.lost_transitions``. Group/account holders are always
+    verifiable; role ids (the account's project-role memberships) and
+    permission keys (``GET /mypermissions``) are verifiable only with
+    ``project_id`` — scheme-switch ops supply it, bare workflow updates
+    degrade to group/account verification (documented conservative
+    direction: unprovable holders never produce a violation)."""
+    from stint.lockout import lost_transitions
+
+    account_id = await dialect.my_account_id()
+    account_groups = await dialect.user_groups(account_id)
+    group_ids = await dialect.resolve_group_ids(sorted(account_groups)) if account_groups else {}
+    role_ids: set[str] = set()
+    held_permissions: set[str] = set()
+    if project_id is not None:
+        memberships = await dialect.project_role_memberships(project_id, account_id)
+        global_roles = await dialect.global_project_role_ids()
+        role_ids = {global_roles[n] for n in memberships if n in global_roles}
+        permission_keys = sorted(
+            {
+                key.strip()
+                for params in list(resolved_restrict.values())
+                for key in str((params or {}).get("permissionKeys", "")).split(",")
+                if key.strip()
+            }
+        )
+        if permission_keys:
+            have = await dialect.my_project_permissions(project_id, permission_keys)
+            held_permissions = {key for key, ok in have.items() if ok}
+    before: dict[str, dict[str, str] | None] = {}
+    for t in live.transitions:
+        before[f"{workflow_name}:{t.name}"] = restrict_rule_parameters(t.conditions)
+    after: dict[str, dict[str, str] | None] = dict(before)
+    # The INITIAL Create transition is always preserved.
+    for name, params in resolved_restrict.items():
+        key = f"{workflow_name}:{name}"
+        after[key] = dict(params) if params is not None else None
+    # Undeclared live transitions ride along in the payload unchanged.
+    for t in live.transitions:
+        key = f"{workflow_name}:{t.name}"
+        if t.name not in declared_transition_names:
+            after[key] = before.get(key)
+    lost = lost_transitions(
+        before,
+        after,
+        account_id=account_id,
+        account_role_ids=role_ids,
+        account_group_ids=set(group_ids.values()),
+        held_permission_keys=held_permissions,
+    )
+    if lost:
+        raise StintError(
+            f"update_workflow: the authenticated account would lose the ability to use "
+            f"transition(s) {sorted(lost)} on workflow {workflow_name!r}. Pass "
+            f"allow_lockout=True to force it."
+        )
+
+
+async def delete_workflow(*, alias: str) -> None:
+    """Delete a workflow by id. Idempotent: no-op when absent from state.
+    Jira refuses for active/system/scheme-associated workflows — the
+    emitted order deletes schemes (and unbinds projects) first."""
+    ctx = get_context()
+    mapping = ctx.state.workflows.get(alias)
+    if mapping is None:
+        return
+    try:
+        await ctx.engine.dialect.delete_workflow(mapping.id)
+    except NotFoundError:
+        pass
+    del ctx.state.workflows[alias]
+    ctx.persist()
+
+
+async def create_workflow_scheme(
+    *,
+    alias: str,
+    name: str,
+    description: str = "",
+    default_workflow: str,
+    mappings: Iterable[Mapping[str, str]],
+) -> str:
+    """Create a workflow scheme (``POST /workflowscheme``) and register its
+    alias→id mapping. ``mappings`` entries: dict(issuetype=<alias>,
+    workflow=<alias>) — aliases resolve against the state file (the
+    classic scheme APIs talk Jira issuetype ids and workflow names)."""
+    ctx = get_context()
+    _require_alias(alias, "create_workflow_scheme")
+    existing = _existing_id_or_none(ctx.state.workflow_schemes, alias)
+    if existing is not None:
+        return existing
+    dialect = ctx.engine.dialect
+    adopted = await dialect.find_workflow_scheme_id_by_name(name)
+    if adopted is not None:
+        _record_workflow_scheme_mapping(ctx, alias, adopted, mappings)
+        return adopted
+    issue_type_mappings = {
+        _require_existing("create_workflow_scheme", m["issuetype"], ctx.state.issuetypes).id: (
+            _require_existing("create_workflow_scheme", m["workflow"], ctx.state.workflows).name
+        )
+        for m in mappings
+    }
+    default_workflow_name = _require_existing("create_workflow_scheme", default_workflow, ctx.state.workflows).name
+    scheme_id = await dialect.create_workflow_scheme(
+        name=name,
+        description=description,
+        default_workflow=default_workflow_name,
+        issue_type_mappings=issue_type_mappings,
+    )
+    _record_workflow_scheme_mapping(ctx, alias, scheme_id, mappings, default_workflow=default_workflow)
+    return scheme_id
+
+
+def _record_workflow_scheme_mapping(
+    ctx: Any,
+    alias: str,
+    scheme_id: str,
+    mappings: Iterable[Mapping[str, str]],
+    *,
+    default_workflow: str = "",
+) -> None:
+    from stint.state.file import WorkflowSchemeMapping
+
+    mapping = ctx.state.workflow_schemes.get(alias)
+    if mapping is None:
+        mapping = WorkflowSchemeMapping(id=scheme_id)
+        ctx.state.workflow_schemes[alias] = mapping
+    mapping.id = scheme_id
+    if default_workflow:
+        mapping.default_workflow = default_workflow
+    for m in mappings:
+        it_alias = str(m["issuetype"])
+        wf_alias = str(m["workflow"])
+        wf = ctx.state.workflows.get(wf_alias)
+        it = ctx.state.issuetypes.get(it_alias)
+        if wf is not None:
+            mapping.workflows[wf_alias] = wf.id
+        if it is not None:
+            mapping.issue_type_ids[it_alias] = it.id
+        mapping.mappings[it_alias] = wf_alias
+    ctx.persist()
+
+
+async def adopt_workflow_scheme(*, alias: str, name: str, mappings: Iterable[Mapping[str, str]] = ()) -> str:
+    """Record an existing workflow scheme into state without rewriting it.
+
+    Adoption is non-destructive: default/mapping drift is reported by
+    ``engine.check`` and corrected only by an explicitly generated
+    UpdateWorkflowScheme."""
+    ctx = get_context()
+    _require_alias(alias, "adopt_workflow_scheme")
+    existing = _existing_id_or_none(ctx.state.workflow_schemes, alias)
+    if existing is not None:
+        return existing
+    dialect = ctx.engine.dialect
+    scheme_id = await dialect.find_workflow_scheme_id_by_name(name)
+    if scheme_id is None:
+        raise ConfigurationError(f"adopt_workflow_scheme: no workflow scheme named {name!r} exists in Jira.")
+    _record_workflow_scheme_mapping(ctx, alias, scheme_id, mappings)
+    return scheme_id
+
+
+async def update_workflow_scheme(
+    *,
+    alias: str,
+    name: str | None = None,
+    description: str | None = None,
+    default_workflow: str | None = None,
+    mappings: Iterable[Mapping[str, str]] | None = None,
+) -> None:
+    """Update a workflow scheme's declared content
+    (``PUT /workflowscheme/{id}``). Only changed fields are sent; a full
+    ``mappings`` set replaces ``issueTypeMappings``. Idempotent re-runs
+    resolve everything against state."""
+    ctx = get_context()
+    mapping = _require_existing("update_workflow_scheme", alias, ctx.state.workflow_schemes)
+    dialect = ctx.engine.dialect
+    body: dict[str, Any] = {}
+    if name is not None:
+        body["name"] = name
+    if description is not None:
+        body["description"] = description
+    if default_workflow is not None:
+        body["defaultWorkflow"] = _require_existing(
+            "update_workflow_scheme", default_workflow, ctx.state.workflows
+        ).name
+    if mappings is not None:
+        body["issueTypeMappings"] = {
+            _require_existing("update_workflow_scheme", m["issuetype"], ctx.state.issuetypes).id: (
+                _require_existing("update_workflow_scheme", m["workflow"], ctx.state.workflows).name
+            )
+            for m in mappings
+        }
+    if not body:
+        return
+    await dialect.update_workflow_scheme(mapping.id, **body)
+    if mappings is not None:
+        _record_workflow_scheme_mapping(ctx, alias, mapping.id, mappings, default_workflow=default_workflow or "")
+    elif default_workflow is not None:
+        mapping.default_workflow = default_workflow
+        ctx.persist()
+
+
+async def delete_workflow_scheme(*, alias: str) -> None:
+    """Delete a workflow scheme. Idempotent: no-op when absent from state;
+    Jira refuses while a project uses it (the emitted order unbinds
+    projects first)."""
+    ctx = get_context()
+    mapping = ctx.state.workflow_schemes.get(alias)
+    if mapping is None:
+        return
+    try:
+        await ctx.engine.dialect.delete_workflow_scheme(mapping.id)
+    except NotFoundError:
+        pass
+    del ctx.state.workflow_schemes[alias]
+    ctx.persist()
+
+
+async def set_project_workflow_scheme(
+    *,
+    project_alias: str,
+    scheme_alias: str,
+    live: bool,
+    status_mappings: Mapping[str, str] | None = None,
+    allow_lockout: bool = False,
+) -> None:
+    """Bind (``live=False``, empty projects: sync ``PUT
+    /workflowscheme/project``) or switch (``live=True``: async ``POST
+    /workflowscheme/project/switch`` with task polling) a project's
+    workflow scheme.
+
+    Never guesses a mapping: for live projects the op reads Jira's
+    required-mappings API first. Statuses that would be stranded under the
+    target scheme require an explicit ``status_mappings`` entry
+    (``{"Old Status": "New Status"}``) — without one the op raises and
+    lists exactly what it needs, before any write happens.
+
+    Transition lockout guard (live projects): compares the transitions the
+    authenticated account can use today (old scheme's workflows, judged
+    from restrict holders vs its memberships, groups and permissions)
+    against the target scheme's, and refuses when one would be lost,
+    unless ``allow_lockout`` is passed."""
+    ctx = get_context()
+    project = _require_existing("set_project_workflow_scheme", project_alias, ctx.state.projects)
+    _refuse_tmp(project, project_alias, "set_project_workflow_scheme", ctx.state.jira_url)
+    scheme = _require_existing("set_project_workflow_scheme", scheme_alias, ctx.state.workflow_schemes)
+    dialect = ctx.engine.dialect
+    if not live:
+        await dialect.associate_workflow_scheme(project_id=project.id, scheme_id=scheme.id)
+        project.workflow_scheme_id = scheme.id
+        ctx.persist()
+        return
+
+    # ── live project: required-mapping discovery ────────────────────
+    workflows_for_issue_types: list[dict[str, Any]] = []
+    for it_alias, wf_alias in scheme.mappings.items():
+        it_id = scheme.issue_type_ids.get(it_alias)
+        wf_state = ctx.state.workflows.get(scheme.workflows.get(wf_alias, ""))
+        if it_id is None or wf_state is None:
+            continue
+        workflows_for_issue_types.append({"workflowId": wf_state.id, "issueTypeIds": [it_id]})
+    default_wf_state = ctx.state.workflows.get(scheme.workflows.get(scheme.default_workflow, ""))
+    required = await dialect.get_required_scheme_mappings(
+        scheme_id=scheme.id,
+        workflows_for_issue_types=workflows_for_issue_types,
+        default_workflow_id=default_wf_state.id if default_wf_state is not None else None,
+    )
+    required_rows = required.get("statusMappingsByIssueTypes") or []
+    needing = {
+        str(row.get("issueTypeId", "")): [str(sid) for sid in (row.get("statusIds") or [])]
+        for row in required_rows
+        if isinstance(row, dict) and row.get("statusIds")
+    }
+    mappings = dict(status_mappings or {})
+    new_status_ids: dict[str, str] = {}
+    for wf_alias in scheme.workflows:
+        wf_state = ctx.state.workflows.get(wf_alias)
+        if wf_state is not None:
+            new_status_ids.update(wf_state.status_ids)
+    old_names = sorted(mappings)
+    old_ids = await dialect.resolve_status_ids(old_names) if old_names else {}
+    unresolved = [n for n in old_names if not old_ids.get(n)]
+    if unresolved:
+        raise ConfigurationError(
+            f"set_project_workflow_scheme: status_mappings key(s) {unresolved} do not "
+            f"resolve to a status in Jira (GET /statuses/byNames, global scope)."
+        )
+    override_rows: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for it_id, status_ids in needing.items():
+        rows = []
+        for old_status_id in status_ids:
+            matched = [old_name for old_name, old_id in old_ids.items() if old_id == old_status_id]
+            if not matched or matched[0] not in mappings:
+                missing.append(matched[0] if matched else old_status_id)
+                continue
+            new_name = mappings[matched[0]]
+            new_status_id = new_status_ids.get(new_name)
+            if not new_status_id:
+                missing.append(f"{old_status_id}->{new_name}")
+                continue
+            rows.append({"oldStatusId": old_status_id, "newStatusId": new_status_id})
+        if rows:
+            override_rows.append({"issueTypeId": it_id, "statusMappings": rows})
+    if missing:
+        raise ConfigurationError(
+            f"set_project_workflow_scheme: switching project {project_alias!r} to scheme "
+            f"{scheme_alias!r} would strand issues in status(es) that the target scheme "
+            f"does not have: {sorted(set(missing))}. Add explicit status_mappings entries "
+            f'({{"<old status name>": "<new status name>"}}) to the migration before '
+            f"applying — stint never guesses a mapping."
+        )
+    if not allow_lockout:
+        await _guard_project_scheme_switch(
+            dialect,
+            project_id=project.id,
+            current_scheme_id=project.workflow_scheme_id,
+            target_scheme_id=scheme.id,
+        )
+    task = await dialect.switch_project_workflow_scheme(
+        project_id=project.id,
+        target_scheme_id=scheme.id,
+        mappings_by_issue_type_override=override_rows or None,
+    )
+    await _await_workflow_task(dialect, task, f"workflow-scheme switch for project {project_alias!r}")
+    project.workflow_scheme_id = scheme.id
+    ctx.persist()
+
+
+async def _guard_project_scheme_switch(
+    dialect: Any,
+    *,
+    project_id: str,
+    current_scheme_id: str,
+    target_scheme_id: str,
+) -> None:
+    """Transition lockout guard for scheme switches (full verification).
+
+    Reads the current and target schemes' workflows live, extracts every
+    transition's restrict parameters, and evaluates which transitions the
+    authenticated account provably loses (roles via its project
+    memberships, groups via group-id resolution, permissions via
+    ``GET /mypermissions``). Raises listing the lost transitions."""
+    from stint.lockout import lost_transitions
+
+    account_id = await dialect.my_account_id()
+    account_groups = await dialect.user_groups(account_id)
+    group_ids = await dialect.resolve_group_ids(sorted(account_groups)) if account_groups else {}
+    memberships = await dialect.project_role_memberships(project_id, account_id)
+    global_roles = await dialect.global_project_role_ids()
+    role_ids = {global_roles[n] for n in memberships if n in global_roles}
+    before_params, before_keys = await _scheme_transition_parameters(dialect, current_scheme_id)
+    after_params, after_keys = await _scheme_transition_parameters(dialect, target_scheme_id)
+    permission_keys = sorted(before_keys | after_keys)
+    held: set[str] = set()
+    if permission_keys:
+        have = await dialect.my_project_permissions(project_id, permission_keys)
+        held = {key for key, ok in have.items() if ok}
+    lost = lost_transitions(
+        before_params,
+        after_params,
+        account_id=account_id,
+        account_role_ids=role_ids,
+        account_group_ids=set(group_ids.values()),
+        held_permission_keys=held,
+    )
+    if lost:
+        raise StintError(
+            f"set_project_workflow_scheme: switching the scheme of project {project_id} "
+            f"would take away the authenticated account's ability to use transition(s) "
+            f"{sorted(lost)}. Pass allow_lockout=True to force it."
+        )
+
+
+async def _scheme_transition_parameters(
+    dialect: Any,
+    scheme_id: str,
+) -> tuple[dict[str, dict[str, str] | None], set[str]]:
+    """Restrict parameters (and the union of permission keys involved) for
+    every transition of every workflow referenced by a scheme."""
+    from stint.lockout import restrict_rule_parameters
+
+    params_by_key: dict[str, dict[str, str] | None] = {}
+    permission_keys: set[str] = set()
+    if not scheme_id:
+        return params_by_key, permission_keys
+    scheme = await dialect.get_workflow_scheme(scheme_id)
+    workflow_names = {scheme.default_workflow} | set(scheme.mappings.values())
+    workflow_names.discard("")
+    seen: set[str] = set()
+    for wf_name in sorted(workflow_names):
+        if wf_name in seen:
+            continue
+        seen.add(wf_name)
+        workflow = await dialect.read_workflow_by_name(wf_name)
+        if workflow is None:
+            continue
+        for t in workflow.transitions:
+            params = restrict_rule_parameters(t.conditions)
+            params_by_key[f"{wf_name}:{t.name}"] = params
+            if params:
+                permission_keys.update(k.strip() for k in str(params.get("permissionKeys", "")).split(",") if k.strip())
+    return params_by_key, permission_keys

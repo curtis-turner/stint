@@ -32,6 +32,11 @@ from stint.state.snapshot import (
     SecurityLevelMemberSnapshot,
     SecurityLevelSnapshot,
     SecuritySchemeSnapshot,
+    TransitionRuleSnapshot,
+    TransitionSnapshot,
+    WorkflowSchemeSnapshot,
+    WorkflowSnapshot,
+    WorkflowStatusSnapshot,
 )
 
 # ── Pagination ────────────────────────────────────────────────────────
@@ -594,4 +599,146 @@ def parse_issue_security_scheme(payload: dict[str, Any]) -> SecuritySchemeSnapsh
         if payload.get("defaultSecurityLevelId")
         else None,
         levels=levels,
+    )
+
+
+# ── Workflows / statuses / workflow schemes ───────────────────────────
+_STATUS_CATEGORY_TO_STINT = {
+    "TODO": "new",
+    "IN_PROGRESS": "indeterminate",
+    "DONE": "done",
+}
+
+
+def stint_status_category(jira_category: Any) -> str:
+    """Jira's status-category enum (TODO/IN_PROGRESS/DONE) → stint's
+    declaration vocabulary (new/indeterminate/done). Unknown values are
+    preserved as-is so drift detection keeps reporting what Jira said."""
+    raw = str(jira_category or "")
+    return _STATUS_CATEGORY_TO_STINT.get(raw, raw)
+
+
+def parse_workflow_status(payload: dict[str, Any]) -> tuple[str, WorkflowStatusSnapshot]:
+    """One ``JiraWorkflowStatus`` → (id, snapshot). The status id doubles as
+    the persisted ``statusReference``."""
+    status_id = str(payload.get("id", ""))
+    scope = payload.get("scope") or {}
+    scope_type = str(scope.get("type", "GLOBAL"))
+    return (
+        status_id,
+        WorkflowStatusSnapshot(
+            id=status_id,
+            name=str(payload.get("name", "")),
+            category=stint_status_category(payload.get("statusCategory")),
+            description=str(payload.get("description", "") or ""),
+            scope=scope_type if scope_type == "GLOBAL" else f"PROJECT:{(scope.get('project') or {}).get('id', '')}",
+        ),
+    )
+
+
+def parse_workflow_status_map(payloads: list[dict[str, Any]]) -> dict[str, WorkflowStatusSnapshot]:
+    """The flattened ``statuses[]`` of a workflow-search page → id → snapshot."""
+    out: dict[str, WorkflowStatusSnapshot] = {}
+    for entry in payloads:
+        if isinstance(entry, dict):
+            _id, status = parse_workflow_status(entry)
+            out[_id] = status
+    return out
+
+
+def parse_workflow(payload: dict[str, Any], statuses: dict[str, WorkflowStatusSnapshot]) -> WorkflowSnapshot:
+    """Parse one ``JiraWorkflow`` entry of the workflow-search response.
+
+    ``statuses`` is the id → snapshot map from the same response (workflow
+    entries reference statuses by ``statusReference``, which equals the
+    persisted status id). Transition rules keep their raw payloads
+    (conditions/validators/actions) — the diff compares declared restrict
+    holders against parsed restrict rules and leaves everything else
+    unmanaged.
+    """
+    workflow_statuses: list[WorkflowStatusSnapshot] = []
+    for entry in payload.get("statuses") or []:
+        if not isinstance(entry, dict):
+            continue
+        reference = str(entry.get("statusReference", ""))
+        status = statuses.get(reference)
+        if status is not None:
+            workflow_statuses.append(status)
+
+    transitions: list[TransitionSnapshot] = []
+    for entry in payload.get("transitions") or []:
+        if not isinstance(entry, dict):
+            continue
+        t_type = str(entry.get("type", "DIRECTED"))
+        links = [
+            str(link.get("fromStatusReference", "")) for link in entry.get("links") or [] if isinstance(link, dict)
+        ]
+        from_names: list[str] = []
+        for reference in links:
+            status = statuses.get(reference)
+            if status is not None:
+                from_names.append(status.name)
+        to_ref = str(entry.get("toStatusReference", ""))
+        to_status = statuses.get(to_ref)
+        to_name = to_status.name if to_status is not None else to_ref
+        validators = tuple(
+            TransitionRuleSnapshot(kind="validator", raw=v)
+            for v in (entry.get("validators") or [])
+            if isinstance(v, dict)
+        )
+        postfunctions = tuple(
+            TransitionRuleSnapshot(kind="postfunction", raw=a)
+            for a in (entry.get("actions") or [])
+            if isinstance(a, dict)
+        )
+        conditions = entry.get("conditions")
+        screen = entry.get("transitionScreen") or {}
+        transitions.append(
+            TransitionSnapshot(
+                id=str(entry.get("id", "")),
+                name=str(entry.get("name", "")),
+                from_statuses=tuple(from_names),
+                to_status=to_name,
+                is_initial=t_type == "INITIAL",
+                conditions=conditions if isinstance(conditions, dict) else None,
+                validators=validators,
+                postfunctions=postfunctions,
+                screen_id=str(screen.get("id")) if screen.get("id") is not None else None,
+                raw=dict(entry),
+            )
+        )
+
+    scope = payload.get("scope") or {}
+    scope_type = str(scope.get("type", "GLOBAL"))
+    version = payload.get("version") or {}
+    return WorkflowSnapshot(
+        id=str(payload.get("id", "")),
+        name=str(payload.get("name", "")),
+        description=str(payload.get("description", "") or ""),
+        scope=scope_type if scope_type == "GLOBAL" else f"PROJECT:{(scope.get('project') or {}).get('id', '')}",
+        statuses=tuple(workflow_statuses),
+        transitions=tuple(transitions),
+        is_draft=bool(payload.get("isDraft", False)),
+        version_id=str(version.get("id", "")),
+        version_number=int(version.get("versionNumber", 0) or 0),
+    )
+
+
+def parse_workflow_scheme(payload: dict[str, Any]) -> WorkflowSchemeSnapshot:
+    """Parse one classic ``WorkflowScheme`` entry (GET/POST /workflowscheme).
+
+    The classic shape: ``defaultWorkflow`` is a workflow NAME, and
+    ``issueTypeMappings`` maps issueTypeId → workflow NAME. ``issueTypes``
+    (id → IssueTypeDetails) is included in responses and gives the
+    mappings their display names, but the diff keys on the raw ids.
+    """
+    return WorkflowSchemeSnapshot(
+        id=str(payload.get("id", "")),
+        name=str(payload.get("name", "")),
+        description=str(payload.get("description", "") or ""),
+        default_workflow=str(payload.get("defaultWorkflow", "") or ""),
+        mappings={
+            str(it_id): str(workflow_name) for it_id, workflow_name in (payload.get("issueTypeMappings") or {}).items()
+        },
+        is_draft=bool(payload.get("draft", False)),
     )

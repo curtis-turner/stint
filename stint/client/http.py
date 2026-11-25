@@ -85,6 +85,29 @@ class JiraHTTPClient:
     async def post_json(self, path: str, *, json: Any, **kwargs: Any) -> Any:
         return self._unwrap(await self._send_with_retry("POST", path, json=json, **kwargs))
 
+    async def post_for_task(self, path: str, *, json: Any, **kwargs: Any) -> Any:
+        """POST an endpoint that may signal an async task with 303 See Other.
+
+        Jira's long-running operations (workflow-scheme project switch,
+        draft publish, scheme update with issue migrations) answer 303 with
+        a ``Location`` header pointing at the task-progress bean. The
+        response is unwrapped there; synchronous 200/204s fall through to
+        the normal JSON unwrap (the returned body is the operation's
+        response, e.g. ``WorkflowUpdateResponse``).
+        """
+        response = await self._send_with_retry("POST", path, json=json, **kwargs)
+        if response.status_code == 303:
+            location = response.headers.get("Location", "")
+            if not location:
+                raise TransportError(
+                    f"303 from {self._display_url(response.request.url)} without a Location header",
+                    status_code=303,
+                    body=response.text,
+                )
+            return await self.get_json(location)
+        self._unwrap(response)
+        return response.json() if response.content else {}
+
     async def put_json(self, path: str, *, json: Any, **kwargs: Any) -> Any:
         return self._unwrap(await self._send_with_retry("PUT", path, json=json, **kwargs))
 

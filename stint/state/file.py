@@ -106,6 +106,7 @@ class ProjectMapping:
     style: str = "company-managed"  # or "team-managed"
     key: str = ""
     role_actors: dict[str, list[dict[str, str]]] = field(default_factory=dict)
+    workflow_scheme_id: str = ""  # bound workflow scheme ("" = unbound/default)
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"id": self.id}
@@ -118,6 +119,8 @@ class ProjectMapping:
                 k: sorted(v, key=lambda m: (m.get("type", ""), m.get("parameter", "")))
                 for k, v in self.role_actors.items()
             }
+        if self.workflow_scheme_id:
+            out["workflow_scheme_id"] = self.workflow_scheme_id
         return out
 
     @classmethod
@@ -129,6 +132,7 @@ class ProjectMapping:
             id=_required(raw, "id", where),
             style=raw.get("style", "company-managed"),
             key=raw.get("key", ""),
+            workflow_scheme_id=raw.get("workflow_scheme_id", ""),
             role_actors={
                 str(k): [
                     {"type": str(m.get("type", "")), "parameter": str(m.get("parameter", ""))}
@@ -233,6 +237,90 @@ class PermissionSchemeMapping:
 
 
 @dataclass
+class WorkflowMapping:
+    """One alias -> Jira workflow binding, plus ids the update path needs.
+
+    ``workflow_id`` is the new-model UUID (create/update reference the
+    workflow by it and updates require optimistic-locking ``version``).
+    ``version_id``/``version_number`` are the last observed
+    ``DocumentVersion`` — every write must feed back the version it read,
+    so ops capture it from the create/update response and reflection
+    refreshes it. ``status_ids`` maps a declared status name to Jira's
+    numeric status id (statuses are tenant-global, resolved by name).
+    """
+
+    id: str  # workflow UUID
+    name: str = ""
+    version_id: str = ""
+    version_number: int = 0
+    status_ids: dict[str, str] = field(default_factory=dict)  # status name -> numeric id
+
+    def to_dict(self) -> dict[str, Any]:
+        return _drop_empty(
+            {
+                "id": self.id,
+                "name": self.name,
+                "version_id": self.version_id,
+                "version_number": self.version_number,
+                "status_ids": dict(self.status_ids),
+            }
+        )
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any], *, where: str = "<workflow mapping>") -> WorkflowMapping:
+        return cls(
+            id=_required(raw, "id", where),
+            name=raw.get("name", ""),
+            version_id=raw.get("version_id", ""),
+            version_number=int(raw.get("version_number", 0) or 0),
+            status_ids={str(k): str(v) for k, v in (raw.get("status_ids") or {}).items()},
+        )
+
+
+@dataclass
+class WorkflowSchemeMapping:
+    """One alias -> Jira workflow-scheme binding.
+
+    ``id`` is the scheme's numeric id. ``workflows`` maps workflow *alias*
+    to workflow UUID (the scheme's classic APIs talk workflow names, the
+    new-model switch/update APIs talk ids; both need state).
+    ``issue_type_ids`` maps a declared issuetype alias to the Jira issuetype
+    id used as the ``issueTypeMappings`` key. ``mappings`` keeps the
+    declared issuetype-alias → workflow-alias association (ops re-derive
+    the Jira shapes from it); ``default_workflow`` is the default
+    workflow's alias (the new-model required-mappings call wants the
+    default's id).
+    """
+
+    id: str
+    workflows: dict[str, str] = field(default_factory=dict)  # workflow alias -> workflow id
+    issue_type_ids: dict[str, str] = field(default_factory=dict)  # issuetype alias -> jira issuetype id
+    mappings: dict[str, str] = field(default_factory=dict)  # issuetype alias -> workflow alias
+    default_workflow: str = ""  # default workflow alias
+
+    def to_dict(self) -> dict[str, Any]:
+        return _drop_empty(
+            {
+                "id": self.id,
+                "workflows": dict(self.workflows),
+                "issue_type_ids": dict(self.issue_type_ids),
+                "mappings": dict(self.mappings),
+                "default_workflow": self.default_workflow,
+            }
+        )
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any], *, where: str = "<workflow scheme mapping>") -> WorkflowSchemeMapping:
+        return cls(
+            id=_required(raw, "id", where),
+            workflows={str(k): str(v) for k, v in (raw.get("workflows") or {}).items()},
+            issue_type_ids={str(k): str(v) for k, v in (raw.get("issue_type_ids") or {}).items()},
+            mappings={str(k): str(v) for k, v in (raw.get("mappings") or {}).items()},
+            default_workflow=raw.get("default_workflow", ""),
+        )
+
+
+@dataclass
 class TmpProjectState:
     """One team-managed project's alias -> Jira ID mappings.
 
@@ -290,6 +378,8 @@ class StateFile:
     field_configuration_schemes: dict[str, SimpleMapping] = field(default_factory=dict)
     security_schemes: dict[str, SecuritySchemeMapping] = field(default_factory=dict)
     permission_schemes: dict[str, PermissionSchemeMapping] = field(default_factory=dict)
+    workflows: dict[str, WorkflowMapping] = field(default_factory=dict)
+    workflow_schemes: dict[str, WorkflowSchemeMapping] = field(default_factory=dict)
     tmp_projects: dict[str, TmpProjectState] = field(default_factory=dict)  # project alias -> TMP state
 
     def to_yaml(self) -> str:
@@ -309,6 +399,8 @@ class StateFile:
                 "field_configuration_schemes": {a: m.to_dict() for a, m in self.field_configuration_schemes.items()},
                 "security_schemes": {a: m.to_dict() for a, m in self.security_schemes.items()},
                 "permission_schemes": {a: m.to_dict() for a, m in self.permission_schemes.items()},
+                "workflows": {a: m.to_dict() for a, m in self.workflows.items()},
+                "workflow_schemes": {a: m.to_dict() for a, m in self.workflow_schemes.items()},
                 "tmp_projects": {a: m.to_dict() for a, m in self.tmp_projects.items()},
             }
         )
@@ -386,6 +478,14 @@ class StateFile:
             permission_schemes={
                 a: PermissionSchemeMapping.from_dict(d, where=f"mappings.permission_schemes[{a!r}]")
                 for a, d in (m.get("permission_schemes") or {}).items()
+            },
+            workflows={
+                a: WorkflowMapping.from_dict(d, where=f"mappings.workflows[{a!r}]")
+                for a, d in (m.get("workflows") or {}).items()
+            },
+            workflow_schemes={
+                a: WorkflowSchemeMapping.from_dict(d, where=f"mappings.workflow_schemes[{a!r}]")
+                for a, d in (m.get("workflow_schemes") or {}).items()
             },
             tmp_projects={
                 a: TmpProjectState.from_dict(d, where=f"mappings.tmp_projects[{a!r}]")

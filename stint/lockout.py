@@ -27,6 +27,7 @@ grant's holder matches the account:
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from typing import Any
 
 # Role-actor removals: the account must stay able to see and administer the
 # project.
@@ -70,6 +71,133 @@ def holder_grants_permission(
     # reporter / assignee / userCustomField / groupCustomField / unknown:
     # per-issue or unresolvable — never count as retention evidence.
     return False
+
+
+# ── Transition restrict guard ─────────────────────────────────────────
+
+
+def restrict_rule_parameters(conditions: Mapping[str, Any] | None) -> dict[str, str] | None:
+    """Extract the ``system:restrict-issue-transition`` parameters from a
+    reflected transition's ``conditions`` (a ``ConditionGroupConfiguration``
+    that may nest ``conditionGroups`` recursively).
+
+    Returns the aggregate parameters map (``roleIds``/``groupIds``/
+    ``permissionKeys``/``accountIds``/... — comma-separated strings), or
+    None when the transition is unrestricted. Multiple restrict rules in
+    one conditions tree are merged (union of each parameter key); the rule
+    evaluates as true when *any* criterion is met, so unioning the
+    holders keeps the evaluation conservative for "is the account among
+    them".
+    """
+    if not isinstance(conditions, Mapping):
+        return None
+    params: dict[str, str] = {}
+
+    def _collect(group: Mapping[str, Any]) -> None:
+        for condition in group.get("conditions") or ():
+            if not isinstance(condition, Mapping):
+                continue
+            rule_key = str(condition.get("ruleKey", ""))
+            if rule_key == "system:restrict-issue-transition":
+                for key, value in (condition.get("parameters") or {}).items():
+                    existing = params.get(key, "")
+                    merged = {v.strip() for v in f"{existing},{value}".split(",") if v.strip()}
+                    params[key] = ",".join(sorted(merged))
+            elif rule_key == "system:restrict-from-all-users":
+                # Blocks everyone (optionally API clients too); treat as an
+                # empty accountIds allow-list: nobody qualifies.
+                params.setdefault("accountIds", "")
+        for sub in group.get("conditionGroups") or ():
+            if isinstance(sub, Mapping):
+                _collect(sub)
+
+    _collect(conditions)
+    return params or None
+
+
+def account_can_transition(
+    params: Mapping[str, str] | None,
+    *,
+    account_id: str,
+    account_role_ids: Iterable[str],
+    account_group_ids: Iterable[str],
+    held_permission_keys: Iterable[str] = (),
+) -> bool:
+    """Whether the account can use a transition restricted by ``params``.
+
+    The restrict rule evaluates true when ANY criterion is met
+    (roleIds / groupIds / permissionKeys / accountIds). ``params=None``
+    (unrestricted) → always usable. Without ``held_permission_keys`` a
+    permission-only restriction is unprovable (returns False) — the
+    conservative direction: usability is never assumed."""
+    if params is None:
+        return True
+    role_ids = set(account_role_ids)
+    group_ids = set(account_group_ids)
+    held_permission_keys = frozenset(held_permission_keys or ())
+    allowed_accounts = {v.strip() for v in str(params.get("accountIds", "")).split(",") if v.strip()}
+    if account_id in allowed_accounts:
+        return True
+    allowed_roles = {v.strip() for v in str(params.get("roleIds", "")).split(",") if v.strip()}
+    if role_ids & allowed_roles:
+        return True
+    allowed_groups = {v.strip() for v in str(params.get("groupIds", "")).split(",") if v.strip()}
+    if group_ids & allowed_groups:
+        return True
+    allowed_permissions = {v.strip() for v in str(params.get("permissionKeys", "")).split(",") if v.strip()}
+    if allowed_permissions & held_permission_keys:
+        return True
+    return False
+
+
+def lost_transitions(
+    before: Mapping[str, Mapping[str, str] | None],
+    after: Mapping[str, Mapping[str, str] | None],
+    *,
+    account_id: str,
+    account_role_ids: Iterable[str],
+    account_group_ids: Iterable[str],
+    held_permission_keys: Iterable[str] = (),
+) -> tuple[str, ...]:
+    """Transitions the account provably loses between the old and new state.
+
+    Keys are transition identities (``"<workflow>:<transition name>"``);
+    values are the restrict parameters (None = unrestricted). A
+    transition is "lost" when the account provably could use it before and
+    provably cannot after. Transitions absent from ``after`` count as
+    lost too (deleted transitions the account used). Restrictions whose
+    holders cannot be verified (roles without project context,
+    permissions without ``held_permission_keys``) are never provable and
+    never produce a violation by themselves.
+
+    Returns the offending transition keys (empty = no lockout).
+    """
+    role_ids = set(account_role_ids)
+    group_ids = set(account_group_ids)
+    permissions = frozenset(held_permission_keys or ())
+    lost: list[str] = []
+    for key, old_params in before.items():
+        if not account_can_transition(
+            old_params,
+            account_id=account_id,
+            account_role_ids=role_ids,
+            account_group_ids=group_ids,
+            held_permission_keys=permissions,
+        ):
+            continue  # not provably usable today → no violation
+        if key not in after:
+            lost.append(key)  # the transition is being deleted
+            continue
+        if account_can_transition(
+            after[key],
+            account_id=account_id,
+            account_role_ids=role_ids,
+            account_group_ids=group_ids,
+            held_permission_keys=permissions,
+        ):
+            continue
+        lost.append(key)
+    return tuple(lost)
 
 
 def missing_permissions(
