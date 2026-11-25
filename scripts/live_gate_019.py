@@ -49,9 +49,9 @@ async def main() -> int:
         print("STINT_USER / STINT_TOKEN not set; source .stint/verify.env first.")
         return 2
 
-    from stint import PATAuth
+    from stint import APITokenAuth
 
-    engine = create_engine(url, auth=PATAuth(token))
+    engine = create_engine(url, auth=APITokenAuth(user, token))
     async with engine:
         print("=== reflect ===")
         snap = await engine.reflect()
