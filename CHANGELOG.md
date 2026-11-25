@@ -4,7 +4,7 @@ All notable changes to stint are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version
 numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.20.0] - 2026-11-24
 
 ### Added
 
@@ -39,6 +39,14 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Worked example `examples/company_managed/workflow.py` and a Workflows
   section in the schema guide.
 
+### Fixed
+
+- `engine.check`'s cosmetic-lock rule no longer flags immutable
+  system fields (`Created`, `Updated`) as control fields — Jira refuses
+  writes to them for every caller regardless of `EDIT_ISSUES`, so they can
+  never be cosmetic-lock candidates (found during live-tenant verification;
+  #63).
+
 ## [0.19.0] - 2026-11-24
 
 ### Added
@@ -57,10 +65,6 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [Locking guide](docs/guides/locking.md) section, with
   `scripts/verify_screen_lock.py` to verify it on your own tenant with two
   identities.
-
-## [0.19.0] - 2026-11-24
-
-### Added
 
 - **Project role actors**: declare role memberships on a Project with
   `__roles__ = {"Administrators": [User("svc@example.com")], "Viewers":
