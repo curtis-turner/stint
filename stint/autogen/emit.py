@@ -1072,7 +1072,11 @@ def _render_automation_rule_call(op_name: str, change: Any, allow_lockout: bool 
     if change.refs:
         entries = ", ".join(f"dict(ref={n!r}, kind={k!r}, value={v!r})" for n, k, v in change.refs)
         kwargs.append(f"refs=[{entries}]")
+    if change.scope_projects:
+        kwargs.append(f"scope_projects={list(change.scope_projects)!r}")
     kwargs.append(f"enabled={change.enabled!r}")
+    if change.actor is not None:
+        kwargs.append(f"actor={change.actor!r}")
     if change.is_guard:
         kwargs.append("is_guard=True")
         if change.allowed_writers:

@@ -241,9 +241,10 @@ class DesiredAutomationRule:
     ``refs`` are (name, kind, declared value) triples — ops resolve them at
     apply time (custom-field aliases from state, emails to accountIds,
     role/group names to ids). ``scope_projects`` comes from the scheme's
-    bound projects (project keys); the scope op resolves ids at apply.
-    Guards carry ``allowed_writers`` (kind, declared value) so apply can
-    enforce the never-fight-the-service rule.
+    bound projects (project keys); create and the scope op resolve ids at
+    apply. Guards carry ``allowed_writers`` (kind, declared value) so apply
+    can enforce the never-fight-the-service rule. ``actor`` is the declared
+    "Run rule as" email/accountId, None = Jira's A4J app actor.
     """
 
     alias: str
@@ -255,6 +256,7 @@ class DesiredAutomationRule:
     is_guard: bool = False
     allowed_writers: tuple[tuple[str, str], ...] = ()
     scope_projects: tuple[str, ...] = ()
+    actor: str | None = None
 
 
 @dataclass(frozen=True)
@@ -785,6 +787,7 @@ def build_desired_snapshot(
                     is_guard=True,
                     allowed_writers=tuple((kind, declared) for _name, kind, declared in rule.writer_specs()),
                     scope_projects=bound_projects,
+                    actor=rule.actor.value if rule.actor else None,
                 )
             else:
                 desired.automation_rules[rule.alias] = DesiredAutomationRule(
@@ -797,6 +800,7 @@ def build_desired_snapshot(
                     is_guard=False,
                     allowed_writers=(),
                     scope_projects=bound_projects,
+                    actor=rule.actor.value if rule.actor else None,
                 )
 
     return desired

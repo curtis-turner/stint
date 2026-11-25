@@ -19,6 +19,7 @@ import json
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from stint.dialects.jira.automation import complete_rule_payload, mint_rule_uuid
 from stint.exceptions import ConfigurationError, NotFoundError, StintError
 from stint.fields import _FieldType, jira_system_field_id
 from stint.lockout import (
@@ -2742,21 +2743,36 @@ async def create_automation_rule(
     name: str,
     description: str = "",
     payload: Mapping[str, Any],
+    scope_projects: Iterable[str] = (),
     refs: Iterable[Mapping[str, str]] = (),
     enabled: bool = True,
     is_guard: bool = False,
     allowed_writers: Iterable[Mapping[str, str]] = (),
+    actor: str | None = None,
     allow_lockout: bool = False,
 ) -> str:
     """Create one automation rule (``POST rule``) and register its
     alias→uuid mapping.
 
-    ``payload`` is the declared rule JSON with ``{{stint.*}}`` placeholders
-    intact; ``refs`` entries are ``dict(ref=..., kind=..., value=...)``
-    triples in declared form (custom-field alias, system field name, role/
-    group name, user email) — resolved at apply time and recorded in state
-    so re-runs stay idempotent. The declaration's ``name`` and ``enabled``
-    win over the payload's.
+    The create payload must be complete: the rule-management API answers
+    its generic "could not be parsed" 400 when any of ``actor``,
+    ``authorAccountId``, ``components``, or ``ruleScopeARIs`` is missing
+    (measured live). stint therefore resolves and sends the full shape:
+
+    - ``uuid``: minted client-side, RFC 9562 UUIDv7 (create rejects an
+      omitted or non-V7 uuid).
+    - ``actor``: the declared ``actor=User('...')``, else Jira's
+      "Automation for Jira" app account (found by ``accountType == "app"``
+      + display name, never by an id prefix).
+    - ``authorAccountId``: the authenticated account.
+    - ``ruleScopeARIs``: the bound projects' ARIs (site ARI when the
+      scheme has none), resolved from state after the project creates.
+
+    ``scope_projects`` entries are project keys. ``refs`` entries are
+    ``dict(ref=..., kind=..., value=...)`` triples in declared form —
+    resolved at apply time and recorded in state so re-runs stay
+    idempotent. The declaration's ``name``, ``description``, ``enabled``,
+    and ``actor`` win over the payload's.
 
     Guards (``is_guard=True``) enforce the cross-cutting rule first: the
     authenticated account must be one of the ``allowed_writers``, or the
@@ -2787,9 +2803,17 @@ async def create_automation_rule(
     resolved = await _resolve_automation_refs(dialect, ctx.state, refs, op_name="create_automation_rule")
     rule_payload = substitute_refs(json.loads(json.dumps(dict(payload))), resolved)
     _check_unresolved(alias, rule_payload)
-    rule_payload["name"] = name
-    rule_payload["description"] = description
-    rule_payload["state"] = "ENABLED" if enabled else "DISABLED"
+    scope_apis = await _scope_apis_for_keys(dialect, ctx, scope_projects, op_name="create_automation_rule")
+    rule_payload = complete_rule_payload(
+        rule_payload,
+        uuid=mint_rule_uuid(),
+        name=name,
+        description=description,
+        state="ENABLED" if enabled else "DISABLED",
+        author_account_id=await dialect.my_account_id(),
+        actor_account_id=await _automation_actor_id(dialect, actor),
+        scope_apis=scope_apis,
+    )
     rule_uuid = await dialect.create_rule(rule_payload)
     ctx.state.automation_rules[alias] = AutomationRuleMapping(
         id=rule_uuid,
@@ -2828,16 +2852,21 @@ async def update_automation_rule(
     name: str,
     description: str = "",
     payload: Mapping[str, Any],
+    scope_projects: Iterable[str] = (),
     refs: Iterable[Mapping[str, str]] = (),
+    enabled: bool = True,
     is_guard: bool = False,
     allowed_writers: Iterable[Mapping[str, str]] = (),
+    actor: str | None = None,
     allow_lockout: bool = False,
 ) -> str:
     """Replace a rule's declared content (``PUT rule/{uuid}``).
 
     The PUT body is the full declared payload with refs resolved — Jira
     replaces the rule's components (new ones created, removed ones
-    deleted). Same guard enforcement and permission probe as creation."""
+    deleted). The mandatory create fields (actor, authorAccountId,
+    ruleScopeARIs, uuid) are re-sent: the update payload has the same
+    shape. Same guard enforcement and permission probe as creation."""
     ctx = get_context()
     mapping = _require_existing("update_automation_rule", alias, ctx.state.automation_rules)
     dialect = ctx.engine.dialect
@@ -2848,13 +2877,58 @@ async def update_automation_rule(
     resolved = await _resolve_automation_refs(dialect, ctx.state, refs, op_name="update_automation_rule")
     rule_payload = substitute_refs(json.loads(json.dumps(dict(payload))), resolved)
     _check_unresolved(alias, rule_payload)
-    rule_payload["name"] = name
-    rule_payload["description"] = description
+    scope_apis = await _scope_apis_for_keys(dialect, ctx, scope_projects, op_name="update_automation_rule")
+    rule_payload = complete_rule_payload(
+        rule_payload,
+        uuid=mapping.id,
+        name=name,
+        description=description,
+        state="ENABLED" if enabled else "DISABLED",
+        author_account_id=await dialect.my_account_id(),
+        actor_account_id=await _automation_actor_id(dialect, actor),
+        scope_apis=scope_apis,
+    )
     await dialect.update_rule(mapping.id, rule_payload)
     mapping.name = name
+    mapping.enabled = enabled
     mapping.refs = dict(resolved_by_ref(refs, resolved))
     ctx.persist()
     return mapping.id
+
+
+async def _automation_actor_id(dialect: Any, actor: str | None) -> str:
+    """The rule actor's accountId: the declared User, else Jira's
+    "Automation for Jira" app account."""
+    if actor:
+        return await dialect.resolve_user(actor)
+    return await dialect.find_automation_actor_id()
+
+
+async def _scope_apis_for_keys(
+    dialect: Any,
+    ctx: Any,
+    scope_projects: Iterable[str],
+    *,
+    op_name: str,
+) -> list[str]:
+    """Project keys → ruleScopeARIs. An empty scope produces the site ARI
+    (a global rule): ``ari:cloud:jira::site/<cloudId>``. The cloudId is
+    resolved once and kept in state."""
+    keys = list(scope_projects)
+    cloud_id = ctx.state.cloud_id or await dialect.get_cloud_id()
+    if ctx.state.cloud_id != cloud_id:
+        ctx.state.cloud_id = cloud_id
+        ctx.persist()
+    if not keys:
+        return [f"ari:cloud:jira::site/{cloud_id}"]
+    missing = [key for key in keys if key not in ctx.state.projects]
+    if missing:
+        raise ConfigurationError(
+            f"{op_name}: project key(s) {missing} are not in state — the rule's scope "
+            f"cannot resolve. Create the projects first (phase order guarantees this) "
+            f"or fix the scheme binding."
+        )
+    return [f"ari:cloud:jira:{cloud_id}:project/{ctx.state.projects[key].id}" for key in keys]
 
 
 async def set_automation_rule_state(*, alias: str, enabled: bool) -> None:
@@ -2879,20 +2953,9 @@ async def set_automation_rule_scope(*, alias: str, scope_projects: Iterable[str]
     mapping = _require_existing("set_automation_rule_scope", alias, ctx.state.automation_rules)
     dialect = ctx.engine.dialect
     await dialect.probe_rule_management()
-    keys = list(scope_projects)
-    missing = [key for key in keys if key not in ctx.state.projects]
-    if missing:
-        raise ConfigurationError(
-            f"set_automation_rule_scope: project key(s) {missing} are not in state — "
-            f"the rule's scope cannot resolve. Create the projects first (phase order "
-            f"guarantees this) or fix the scheme binding."
-        )
-    cloud_id = ctx.state.cloud_id or await dialect.get_cloud_id()
-    if ctx.state.cloud_id != cloud_id:
-        ctx.state.cloud_id = cloud_id
-    apis = [f"ari:cloud:jira:{cloud_id}:project/{ctx.state.projects[key].id}" for key in keys]
+    apis = await _scope_apis_for_keys(dialect, ctx, scope_projects, op_name="set_automation_rule_scope")
     await dialect.set_rule_scope(mapping.id, apis)
-    mapping.scope_projects = keys
+    mapping.scope_projects = list(scope_projects)
     ctx.persist()
 
 

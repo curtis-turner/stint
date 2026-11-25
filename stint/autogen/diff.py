@@ -422,10 +422,12 @@ class CreateAutomationRule(Change):
     name: str
     description: str
     payload: dict[str, Any]  # rule JSON, {{stint.*}} placeholders intact
+    scope_projects: tuple[str, ...] = ()  # bound project keys (ARIs resolved at apply)
     refs: tuple[tuple[str, str, str], ...] = ()  # (ref name, kind, declared value)
     enabled: bool = True
     is_guard: bool = False
     allowed_writers: tuple[tuple[str, str], ...] = ()  # guards: (kind, declared value)
+    actor: str | None = None  # declared actor email/accountId (None = A4J app actor)
 
 
 @dataclass
@@ -442,9 +444,12 @@ class UpdateAutomationRule(Change):
     alias: str
     name: str
     payload: dict[str, Any]  # declared payload, placeholders intact
+    scope_projects: tuple[str, str] | tuple[str, ...] = ()
     refs: tuple[tuple[str, str, str], ...] = ()
+    enabled: bool = True
     is_guard: bool = False
     allowed_writers: tuple[tuple[str, str], ...] = ()
+    actor: str | None = None
 
 
 @dataclass
@@ -2002,7 +2007,7 @@ def _diff_automation_rules(
     touches them.
     """
     for alias, want in desired.automation_rules.items():
-        desired_scope = _desired_scope_projects(want, snapshot, state, r)
+        desired_scope = _desired_scope_projects(want)
         if alias not in state.automation_rules:
             existing = next(
                 (rule for rule in snapshot.automation_rules.values() if rule.name.lower() == want.name.lower()),
@@ -2010,7 +2015,7 @@ def _diff_automation_rules(
             )
             if existing is not None:
                 r.changes.append(AdoptAutomationRule(alias=alias, name=want.name))
-                if desired_scope is not None:
+                if desired_scope:
                     r.changes.append(SetAutomationRuleScope(alias=alias, scope_projects=desired_scope))
                 continue
             r.changes.append(
@@ -2019,21 +2024,21 @@ def _diff_automation_rules(
                     name=want.name,
                     description=want.description,
                     payload=want.payload,
+                    scope_projects=desired_scope,
                     refs=want.refs,
                     enabled=want.enabled,
                     is_guard=want.is_guard,
                     allowed_writers=want.allowed_writers,
+                    actor=want.actor,
                 )
             )
-            if desired_scope is None:
-                r.warnings.append(
-                    f"automation_rule {alias!r}: scope cannot be derived yet (no bound "
-                    f"projects in state and no cloudId recorded); the rule is created "
-                    f"unscoped — rerun `stint revision --autogenerate` after the projects "
-                    f"exist to pin its scope."
-                )
-            else:
+            if desired_scope:
                 r.changes.append(SetAutomationRuleScope(alias=alias, scope_projects=desired_scope))
+            else:
+                r.warnings.append(
+                    f"automation_rule {alias!r}: no project is bound to the scheme, so the "
+                    f"rule is created site-scoped — bind projects to narrow it."
+                )
             continue
 
         mapping = state.automation_rules[alias]
@@ -2052,9 +2057,11 @@ def _diff_automation_rules(
                     alias=alias,
                     name=want.name,
                     payload=want.payload,
+                    scope_projects=desired_scope or (),
                     refs=want.refs,
                     is_guard=want.is_guard,
                     allowed_writers=want.allowed_writers,
+                    actor=want.actor,
                 )
             )
         elif comparison is None:
@@ -2065,7 +2072,7 @@ def _diff_automation_rules(
             )
         if want.enabled != (actual.state != "DISABLED"):
             r.changes.append(SetAutomationRuleState(alias=alias, enabled=want.enabled))
-        if desired_scope is not None and sorted(actual.scope_apis) != _scope_apis(desired_scope, state):
+        if desired_scope and sorted(actual.scope_apis) != _scope_apis(desired_scope, state):
             r.changes.append(SetAutomationRuleScope(alias=alias, scope_projects=desired_scope))
 
     if allow_delete:
@@ -2076,28 +2083,15 @@ def _diff_automation_rules(
         _warn_orphans(r, "automation_rule", state.automation_rules, desired.automation_rules)
 
 
-def _desired_scope_projects(
-    want: DesiredAutomationRule,
-    snapshot: Snapshot,
-    state: StateFile,
-    r: DiffResult,
-) -> tuple[str, ...] | None:
-    """The declared scope as project keys, None when it cannot be derived.
+def _desired_scope_projects(want: DesiredAutomationRule) -> tuple[str, ...]:
+    """The declared scope as project keys (empty = site-scoped default).
 
     The scheme's bound projects come through ``want.scope_projects``; the
-    scope op resolves their Jira ids at apply. Projects referenced but not
-    in state (created in this same migration) still yield a scope — the op
-    runs after their create.
+    create/scope ops resolve their Jira ids at apply, after project
+    creates run. Create carries the scope too — the API refuses a create
+    without it.
     """
-    del snapshot
-    if not want.scope_projects:
-        return ()
-    missing = [key for key in want.scope_projects if key not in state.projects]
-    if missing:
-        # Projects created by this same migration: the scope op still fires
-        # and resolves ids at apply time, after the create.
-        return want.scope_projects
-    return want.scope_projects
+    return tuple(want.scope_projects)
 
 
 def _scope_apis(scope_projects: tuple[str, ...], state: StateFile) -> list[str]:

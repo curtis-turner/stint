@@ -14,11 +14,14 @@ GA 29 August 2025; delete added 3 March 2026. Mixed into
 
 from __future__ import annotations
 
+import asyncio
+import secrets
+import time
 from typing import Any, ClassVar
 
 from stint.client.http import JiraHTTPClient
 from stint.dialects.jira import common
-from stint.exceptions import PermissionError, ReflectionError
+from stint.exceptions import PermissionError, ReflectionError, StintError
 
 # Page-loop budget shared with the other reflect loops.
 _MAX_AUTOMATION_PAGES = common._MAX_PAGES
@@ -30,6 +33,7 @@ class AutomationRuleClient:
     AUTOMATION_API_BASE: ClassVar[str] = "https://api.atlassian.com/automation/public/jira"
 
     _cloud_id_cache: str | None = None
+    _automation_actor_cache: str | None = None
 
     # The host dialect's HTTP client (declared so the mixin type-checks;
     # JiraCloudDialect supplies it).
@@ -119,15 +123,31 @@ class AutomationRuleClient:
         """Create a rule (``POST rule``) → its uuid.
 
         The body has the same shape as the ``GET rule/{uuid}`` response, so
-        an exported payload round-trips. ``ruleScopeARIs`` may be empty at
-        create; the scope op pins it right after.
+        an exported payload round-trips. ``ruleScopeARIs`` must be present
+        (the scope op pins multi-project scopes right after).
+
+        Measured-live quirk: the endpoint *intermittently* answers 400
+        "Failed to create rule" for identical, valid payloads and then
+        accepts a retry (see notes/automation_api_research.md). Unlike a
+        shape error — which answers "could not be parsed" or a field-scoped
+        message — this marker is retried with backoff.
         """
         cloud_id = await self.get_cloud_id()
-        result = await self.client.post_json(self._automation_url(cloud_id, "rule"), json={"rule": rule})
-        uuid = result.get("ruleUuid") if isinstance(result, dict) else None
-        if not uuid:
-            raise ReflectionError(f"POST rule returned no ruleUuid: {str(result)[:200]!r}")
-        return str(uuid)
+        path = self._automation_url(cloud_id, "rule")
+        attempt = 0
+        while True:
+            try:
+                result = await self.client.post_json(path, json={"rule": rule})
+                uuid = result.get("ruleUuid") if isinstance(result, dict) else None
+                if not uuid:
+                    raise ReflectionError(f"POST rule returned no ruleUuid: {str(result)[:200]!r}")
+                return str(uuid)
+            except StintError as e:
+                transient = "Failed to create rule" in str(e)
+                if not transient or attempt >= 2:
+                    raise
+                attempt += 1
+                await asyncio.sleep(2.0 * 2 ** (attempt - 1))
 
     async def update_rule(self, rule_uuid: str, rule: dict[str, Any]) -> None:
         """Replace a rule's payload (``PUT rule/{uuid}``).
@@ -161,11 +181,56 @@ class AutomationRuleClient:
     async def delete_rule(self, rule_uuid: str) -> None:
         """Delete a disabled rule (``DELETE rule/{uuid}``).
 
-        Jira refuses enabled rules — the op disables first. Deleting an
-        already-deleted rule 404s; ops treat that as done.
+        Jira refuses enabled rules — the op disables first. Two live
+        quirks: the endpoint answers **415 without a Content-Type header**
+        even though the request has no body, and deleting an
+        already-deleted rule 404s (ops treat that as done).
         """
         cloud_id = await self.get_cloud_id()
-        await self.client.delete(self._automation_url(cloud_id, f"rule/{rule_uuid}"))
+        await self.client.delete(
+            self._automation_url(cloud_id, f"rule/{rule_uuid}"),
+            headers={"Content-Type": "application/json"},
+        )
+
+    # ── Actor resolution ──────────────────────────────────────────────
+    async def find_automation_actor_id(self) -> str:
+        """The "Automation for Jira" app account's accountId, cached.
+
+        Create requires an ``actor`` that exists, is active, and has
+        product access — the app account is the default (and the safest:
+        it cannot be deactivated by offboarding). Found by
+        ``accountType == "app"`` + display name, never by the ``557058:``
+        id prefix (the prefix misses most app accounts and matches real
+        humans). Raises when the tenant has no such account.
+        """
+        if self._automation_actor_cache is not None:
+            return self._automation_actor_cache
+        start = 0
+        page_size = 200
+        for _ in range(_MAX_AUTOMATION_PAGES):
+            payload = await self.client.get_json(
+                "/rest/api/3/users/search",
+                params={"startAt": start, "maxResults": page_size},
+            )
+            users = payload if isinstance(payload, list) else []
+            for user in users:
+                if not isinstance(user, dict):
+                    continue
+                if (
+                    user.get("accountType") == "app"
+                    and str(user.get("displayName", "")).strip() == "Automation for Jira"
+                ):
+                    if user.get("accountId"):
+                        self._automation_actor_cache = str(user["accountId"])
+                        return self._automation_actor_cache
+            if len(users) < page_size:
+                break
+            start += page_size
+        raise ReflectionError(
+            "no 'Automation for Jira' app account found on this tenant — every "
+            "Automation rule needs an actor; declare one with actor=User('...') "
+            "on the AutomationRule, or check that Automation is enabled on the site"
+        )
 
 
 def _next_cursor(links: Any) -> str | None:
@@ -188,3 +253,74 @@ def _next_cursor(links: Any) -> str | None:
     rest = text[idx + len(marker) :]
     cursor = rest.split("&", 1)[0]
     return cursor or None
+
+
+def mint_rule_uuid() -> str:
+    """A fresh RFC 9562 UUIDv7, minted client-side for every create.
+
+    Create rejects an omitted uuid and a non-V7 uuid with the generic
+    "could not be parsed" 400 (measured live; see
+    notes/automation_api_research.md). ``uuid.uuid7`` exists from Python
+    3.14; older interpreters get the hand-rolled form (unix-ts-ms |
+    version 7 | rand_a | variant | rand_b).
+    """
+    import uuid
+
+    if hasattr(uuid, "uuid7"):
+        return str(uuid.uuid7())
+    ms = time.time_ns() // 1_000_000
+    value = (ms & 0xFFFFFFFFFFFF) << 80
+    value |= 0x7 << 76  # version 7
+    value |= secrets.randbits(12) << 64
+    value |= 0b10 << 62  # RFC variant bits
+    value |= secrets.randbits(62)
+    return str(uuid.UUID(int=value))
+
+
+def complete_rule_payload(
+    payload: dict[str, Any],
+    *,
+    uuid: str,
+    name: str,
+    description: str,
+    state: str,
+    author_account_id: str,
+    actor_account_id: str,
+    scope_apis: list[str],
+) -> dict[str, Any]:
+    """Fill the create/update payload with the fields the API requires.
+
+    The rule-management API answers its generic "could not be parsed" 400
+    when any of ``actor``, ``authorAccountId``, ``components``,
+    ``ruleScopeARIs``, ``canOtherRuleTrigger``, ``notifyOnError``,
+    ``name``, ``state``, ``trigger``, ``writeAccessType``, or
+    ``collaborators`` is missing (measured live: omitting any of these
+    reads as a missing field, not a value error — the collaborator list is
+    documented-optional but this build refuses its absence).
+    ``description``/``labels`` are optional. The declaration wins over the
+    payload on name/description/state, and stint always owns uuid (minted
+    V7 on create, the recorded one on update), author, actor, and scope.
+    """
+    body = dict(payload)
+    body["uuid"] = uuid
+    body["name"] = name
+    body["description"] = description
+    body["state"] = state
+    body["authorAccountId"] = author_account_id
+    # The REST payload's actor carries the id under "actor" (the export
+    # file's "value" key is a different shape — sending it reads as a
+    # missing actor and create fails with "Failed to create rule").
+    body["actor"] = {"type": "ACCOUNT_ID", "actor": actor_account_id}
+    body["ruleScopeARIs"] = scope_apis
+    body.setdefault("collaborators", [])
+    body.setdefault("canOtherRuleTrigger", False)
+    body.setdefault("notifyOnError", "FIRSTERROR")
+    body.setdefault("labels", [])
+    body.setdefault("writeAccessType", "UNRESTRICTED")
+    if not body.get("components"):
+        raise ReflectionError(
+            f"rule {name!r} has no components — the API requires at least one valid "
+            f'condition or action ("Automation rule must contain at least one valid '
+            f'condition or action")'
+        )
+    return body

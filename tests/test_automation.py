@@ -253,20 +253,28 @@ def test_build_guard_payload_trigger_condition_actions():
         {"value": "{{stint.field.cve_ids}}", "type": "field"},
         {"value": "priority", "type": "field"},  # system field inlined
     ]
-    (condition,) = [c for c in payload["components"] if c["type"] == "jira.user.condition"]
-    # De Morgan: AND of negations, one entry per writer kind.
-    assert condition["value"]["operator"] == "AND"
-    checks = {c["check"]: c for c in condition["value"]["conditions"]}
-    assert checks["USER_IS_NOT"]["criteria"] == [{"type": "ACCOUNT_ID", "value": "{{stint.user.writer0}}"}]
-    assert checks["NOT_IN_GROUP"]["criteria"] == [{"type": "NAME", "value": "{{stint.group.writer1}}"}]
-    assert checks["NOT_IN_PROJECT_ROLE"]["criteria"] == [{"type": "NAME", "value": "{{stint.role.writer2}}"}]
+    condition_components = [c for c in payload["components"] if c["type"] == "jira.user.condition"]
+    # One condition component per writer kind (mixing checks crashes the
+    # create on this build); chained components AND implicitly = the AND of
+    # negations (De Morgan for "not any allowed writer").
+    assert len(condition_components) == 3
+    checks: dict[str, Any] = {}
+    for c in condition_components:
+        (entry,) = c["value"]["conditions"]
+        checks[entry["check"]] = entry["criteria"]
+        assert c["value"]["operator"] == "OR"
+    assert checks["USER_IS_NOT"] == [{"type": "ID", "value": "{{stint.user.writer0}}"}]
+    assert checks["NOT_IN_GROUP"] == [{"type": "ID", "value": "{{stint.group.writer1}}"}]
+    assert checks["NOT_IN_ROLE"] == [{"type": "ID", "value": "{{stint.role.writer2}}"}]
     (edit,) = [c for c in payload["components"] if c["type"] == "jira.issue.edit"]
     advanced = json.loads(edit["value"]["advancedFields"])
-    assert advanced["fields"]["{{stint.field.severity}}"] == "{{#changelog.{{stint.field.severity}}}}{{from}}{{/}}"
-    assert advanced["fields"]["{{stint.field.owner}}"] == {
-        "accountId": "{{#changelog.{{stint.field.owner}}}}{{from}}{{/}}"
-    }
+    # Selects restore by option id ({"id": ...}); user fields by accountId;
+    # labels split the previous space-joined set. `fieldChange.from` is the
+    # raw previous value on this trigger (changelog is empty there — measured).
+    assert advanced["fields"]["{{stint.field.severity}}"] == {"id": "{{fieldChange.from}}"}
+    assert advanced["fields"]["{{stint.field.owner}}"] == {"accountId": "{{fieldChange.from}}"}
     assert '.split(" ")' in advanced["fields"]["{{stint.field.cve_ids}}"]  # labels restore as a set
+    assert advanced["fields"]["priority"] == "{{fieldChange.from}}"
     assert edit["value"]["sendNotifications"] is False  # the bad value must not page watchers twice
     (comment,) = [c for c in payload["components"] if c["type"] == "jira.issue.comment"]
     assert "[~accountid:{{initiator.accountId}}]" in comment["value"]["comment"]
@@ -280,7 +288,7 @@ def test_guard_without_comment_omits_comment_action():
 
 def test_guard_restore_forms_by_field_type():
     number = CustomField(alias="score", name="Score", type=NumberField, options=[])
-    assert guard_restore(number) == "{{#changelog.{{stint.field.score}}}}{{from}}{{/}}"
+    assert guard_restore(number) == "{{fieldChange.from}}"
 
 
 def guard_restore(field: CustomField) -> str:
@@ -594,6 +602,16 @@ def _stub_automation(mock: respx.MockRouter, *, summaries: list[dict[str, Any]] 
                 if "svc-automation" in str(request.url)
                 else [{"accountId": "acct-stranger", "emailAddress": "someone-else@example.com"}]
             ),
+        )
+    )
+    # The "Automation for Jira" app account (create's default actor), via
+    # the offset-paginated users/search.
+    mock.get(f"{CLOUD_ROOT}/users/search").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"accountId": "557058:a4j", "accountType": "app", "displayName": "Automation for Jira", "active": True}
+            ],
         )
     )
 

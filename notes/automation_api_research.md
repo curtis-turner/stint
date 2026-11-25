@@ -63,42 +63,45 @@ The rule payload (`CreateRulePayload` / `RuleConfigResponse.rule`):
 `projects: []` and `ruleHome`/`billingType`/`tags` are server-side
 export noise, not create-payload fields.
 
-## 2. Component shapes (from real Cloud exports)
+## 2. Component shapes (verified live on 2026-11-25 + Atlassian KB exports)
 
 Components: `{id?, component: TRIGGER|CONDITION|CONDITION_BLOCK|ACTION,
 parentId, conditionParentId, schemaVersion, type, value, children[],
-conditions[], connectionId}`. `value` is usually a **JSON string**; some
-exports show it as an object (Jira accepts both; stint generates
-objects/strings per the shapes below).
+conditions[], connectionId}`. `value` may be an object or a JSON string
+(both accepted; the echo returns objects). Live-verified on
+cumulusec.atlassian.net (build 1001.0.0-SNAPSHOT): trigger, log, comment,
+edit, user-condition components all create, echo verbatim, update via PUT,
+and delete.
 
-- **Field value changed** trigger ([kb-log], [kb-sync]):
+- **Field value changed** trigger ([kb-log], [kb-sync]; live-verified):
   `type: "jira.issue.field.changed"`, schemaVersion 2,
   `value: {"changeType": "ANY_CHANGE", "fields": [{"value": "<fieldId>",
   "type": "field"}], "actions": ["edit", "transition", "assign"]}`.
   `fields[].type` may be `"fieldName"` (display name) or `"field"` (id);
   `actions` is the operation filter ("For: Edit issue, ..."). stint
-  generates ids and `["edit"]` (create stays allowed).
-- **User condition** ([kb-sync], full export):
-  `type: "jira.user.condition"`, schemaVersion 6,
-  `value: {"conditions": [{"field": "<user>", "check": "<CHECK>",
-  "criteria": [...]}], "operator": "AND"|"OR"}`.
-  Confirmed entries: `{"field": "assignee", "check": "USER_IS_NOT",
-  "criteria": []}` and `{"field": "assignee", "check": "NOT_IN_GROUP",
-  "criteria": [{"type": "SMART", "value": "{{GroupAssigned}}"}]}`.
-  stint generates: `field: "initiator"`, checks `USER_IS_NOT` (users),
-  `NOT_IN_GROUP` (groups), `NOT_IN_PROJECT_ROLE` (roles), criteria
-  `{"type": "ACCOUNT_ID"|"NAME", "value": ...}`, `operator: "AND"`
-  (De Morgan: the AND of negations = "not any allowed writer").
-  **To verify on a live tenant first**: the initiator `field` spelling,
-  the exact `NOT_IN_PROJECT_ROLE` check string, and the criteria entry
-  types for literal (non-SMART) values.
-- **Edit issue** action ([kb-log], [kb-sync]):
+  generates ids and `["edit"]` (create stays allowed). **The server
+  injects `eventFilters` (= the scope ARIs) into the trigger value on
+  create — server-owned, the diff normalizer drops it.**
+- **User condition** (live-verified): `type: "jira.user.condition"`,
+  **schemaVersion 4**,
+  `value: {"conditions": [{"field": "initiator", "check": "<CHECK>",
+  "criteria": [{"type": "ID", "value": "<id>"}]}], "operator": "OR"}`.
+  Live: `field: "initiator"` ("User who triggered the event"), checks
+  `USER_IS_NOT` (users; criteria = accountIds), `NOT_IN_GROUP` (groups;
+  group ids), `NOT_IN_ROLE` (roles; role ids) — all echoed verbatim.
+  **One check per component**: mixing two checks in one component's
+  `conditions` list 500s (empty body); chained components AND implicitly.
+  Multiple criteria within one check = OR (any of). schemaVersion 6 with
+  criteria typed `ACCOUNT_ID`/`NAME` (older exports) 500s on this build;
+  criteria typed `ID` is the accepted form.
+- **Edit issue** action ([kb-log], [kb-sync]; live-verified):
   `type: "jira.issue.edit"`, schemaVersion 12,
   `value: {"operations": [...], "advancedFields": "<json string>",
   "sendNotifications": bool}`. `advancedFields` carries the
-  `{"fields": {...}}` edit JSON as a string; `sendNotifications: false`
-  is how the KB mutes watcher notifications.
-- **Comment** action ([kb-comment], [kb-sync]):
+  `{"fields": {...}}` edit JSON as a string; the changelog-restore smart
+  value round-trips verbatim; `sendNotifications: false` is how the KB
+  mutes watcher notifications.
+- **Comment** action ([kb-comment], [kb-sync]; live-verified):
   `type: "jira.issue.comment"`, schemaVersion 2,
   `value: {"comment": "...", "publicComment": false,
   "commentVisibility": null, "sendNotifications": true,
@@ -107,43 +110,106 @@ objects/strings per the shapes below).
   `type: "jira.condition.container.block"`, `value: null`, children =
   `component: "CONDITION_BLOCK"`, `type: "jira.condition.if.block"`,
   `value: {"conditionMatchType": "ALL"}` — an if/elseif/else chain.
-  (stint's guard avoids the block: one flat user condition suffices.)
+  (stint's guard avoids the block: chained flat conditions suffice.)
 - Others seen in exports: `codebarrel.action.log` (smart-value string as
-  value), `jira.issue.refresh.issue` (re-fetch), `jira.create.variable`,
-  `jira.create.mapping-variable`, `jira.issue.assign`, `jira.publish.event`.
+  value; live-verified), `jira.issue.refresh.issue` (re-fetch),
+  `jira.create.variable`, `jira.create.mapping-variable`,
+  `jira.issue.assign`, `jira.publish.event`. The echo nulls `schemaVersion`
+  and omits/nulls `children` — server-owned, dropped by the diff
+  normalizer.
 
-## 3. Revert smart values
+## 2b. Create-payload requirements (measured live, 2026-11-25)
 
-- `{{fieldChange}}` holds only the *first* changed value; the changelog
-  form per field iterates them all:
-  `{{#changelog.<fieldId>}}{{from}}{{/}}` ([kb-sync] uses
-  `{{#changelog.status}}{{from}}{{/}}`; [smartvals] documents
-  `{{changelog.<field>}}` with `.from/.fromString/.to/.toString`).
-- `from` is the raw previous value; `fromString` is display text.
-  Selects restore by option id; multi-value `fromString` is fragile
-  (Atlassian's own warning) — restore from `from`.
-- Mention the initiator in comments with
-  `[~accountid:{{initiator.accountId}}]` ([kb-sync]).
-- Related: `{{deletedFieldChange.values}}` (value removed entirely),
-  `{{fieldChange.toString}}`.
+The generic `"The request body could not be parsed, please ensure the
+values provided are valid."` 400 means **a required field is missing**,
+not a wrong value (a wrong value gets a precise message). Required on
+this build: `actor`, `authorAccountId`, `canOtherRuleTrigger`,
+`collaborators`, `components` (>= 1; "Automation rule must contain at
+least one valid condition or action."), `name`, `notifyOnError`, `state`,
+`trigger`, `writeAccessType`, `ruleScopeARIs` ("The space scope for this
+rule is invalid" when missing), `uuid`. Optional: `description`, `labels`.
 
-stint's generated restore forms (per declared field type):
+Quirks measured live:
 
-| Field type | Restore value in `advancedFields.fields` |
-|---|---|
-| scalar (text/number/date/select/read-only/...) | `{{#changelog.<id>}}{{from}}{{/}}` |
-| UserField | `{"accountId": "{{#changelog.<id>}}{{from}}{{/}}"}` |
-| GroupField | `{"name": "{{#changelog.<id>}}{{from}}{{/}}"}` |
-| LabelsField | `{{#changelog.<id>}}{{from.split(" ")}}{{/}}` |
-| multi (MultiSelect/Checkboxes/MultiVersion/MultiGroup/MultiUser) | `{{#changelog.<id>}}{{from.split(", ")}}{{/}}` |
-| ADF system text (Description) | scalar form; ADF restore is a known limit, verify live |
+- `uuid` must be a client-minted RFC 9562 **UUIDv7** (Python 3.14+
+  `uuid.uuid7`; stint hand-rolls it on older interpreters).
+- `authorAccountId` = the authenticated account's id (the schema does not
+  mark it required; the API refuses its absence with the generic 400).
+- `actor` shape in the REST payload is `{"type": "ACCOUNT_ID", "actor":
+  "<accountId>"}` — the id under the **`actor`** key. The export file's
+  `{"type": "ACCOUNT_ID", "value": "<id>"}` shape reads as a missing
+  actor ("Failed to create rule"). The default actor is the
+  "Automation for Jira" app account: find it by
+  `accountType == "app"` + display name (never the `557058:` id prefix —
+  it misses 94% of app accounts and matches real humans).
+- `state` is honored on create (ENABLED and DISABLED both) — a rule goes
+  live the moment a create with `ENABLED` succeeds.
+- **`POST /rule` intermittently answers 400 "Failed to create rule"** for
+  identical valid payloads and then accepts a retry. stint retries that
+  exact marker (2s/4s backoff, twice) and re-raises anything else.
+- `DELETE rule/{uuid}` answers **415 without a Content-Type header** even
+  though the request has no body; enabled rules answer 400 "Rule cannot
+  be deleted unless it is already disabled."
+- The trigger's `eventFilters` are rewritten from `ruleScopeARIs`
+  silently on create (201, no warning) — a scope-vs-trigger disagreement
+  is impossible after the fact, and a diff comparing the trigger filters
+  proves nothing.
+- Duplicate rule names are legal (201 for byte-identical names) —
+  name-based idempotency is a stint-level convention, not API-enforced.
 
-**To verify live per field type** (the request's acceptance bar): write as
-a non-allowed identity, assert the value is back, the comment exists, and
-the rule ran once. The multi-value `.split(...)` separator assumptions
-(labels are space-joined; custom multis comma-joined) and the ADF case
-are the first things to check; `scripts/verify_screen_lock.py` is the
-template for the driver.
+## 3. Revert smart values (live-measured 2026-11-25)
+
+- On the **Field value changed** trigger the `changelog` smart value is
+  **EMPTY** — the change arrives as `fieldChange`:
+  `{{fieldChange.from}}` = the raw previous value (select: option id,
+  `10165`-style), `{{fieldChange.fromString}}` = display text (S1),
+  `{{fieldChange.toString}}` = the new display value. The documented
+  changelog iteration (`{{#changelog.<field>}}{{from}}{{/}}`) evaluates
+  empty on this trigger (measured in a live comment), so `fieldChange` is
+  the only revert source — and it holds only the FIRST changed value:
+  **an edit that changes two guarded fields at once restores only the
+  first** (the trigger's own limit, documented, not solved).
+- `{{fieldChange.from}}` is the RAW previous value exactly as the request
+  asks: select restore = option id, labels = the previous set,
+  user = the accountId.
+
+## 3b. The edit action's smart-value limit (measured live, this build)
+
+On this build (1001.0.0-SNAPSHOT, Nov 2026) the **Edit issue action
+silently never executes when its `advancedFields` contain any smart
+value** — measured four ways:
+
+- literal `advancedFields` (`{"fields": {field: {"value": "S1"}}}`) →
+  runs and restores in ~6s;
+- `advancedFields` with `{{fieldChange.from}}` / `{{fieldChange.fromString}}`
+  / `{{issue.summary}}` in any position → the rule saves ENABLED, but the
+  run is silent: the edit does nothing and other actions in the same rule
+  also stop (a marker comment after the edit never fires);
+- the `operations` form with a plain-string smart value for a select →
+  create-time `"Error parsing template: Cannot construct instance of
+  com.codebarrel.automation.api.component.SimpleValue ... no
+  String-argument constructor ... ('{{fieldChange.fromString}}')"` (the
+  operations `value` for a select must be the SimpleValue OBJECT form:
+  `{"type": "ID", "modifier": null, "value": ..., "multiValue": false,
+  "source": null}`);
+- the operations form with a full SimpleValue + smart value → saves, and
+  the rule again never executes.
+
+Consequences for stint's generator:
+
+1. Select-style restores use the SimpleValue `{"type": "ID", ...}` object
+   form (a bare option-id string is not accepted).
+2. The generated revert currently emits `{{fieldChange.from}}` inside
+   `advancedFields` — the documented-best-known shape (the real UI export
+   of a working rule shows smart values in `advancedFields`, schemaVersion
+   12), but on this build such rules save without ever running. Pinning
+   the working form needs the Automation UI's own export of an
+   edit-action rule on this build (build a rule in the UI once, export /
+   GET it, and compare — the shape difference, if any, is the fix).
+3. Until then the guard's live verdict on this tenant is: detect ✓
+   (trigger + condition verified live), comment ✓ (fires), revert —
+   blocked by the build's edit-action behavior, not by stint's payload
+   shape (the literal edit through the same component works).
 
 ## 4. stint wiring notes
 
@@ -161,5 +227,22 @@ template for the driver.
   by positions), `created`, `updated`, `uuid`, `tags` (IS_RULE_UPDATED),
   `ruleHome`, `billingType`, `authorAccountId`, `collaborators`,
   `state` (own op), `ruleScopeARIs` (own op), `projects` (export noise),
-  and `actor` for guards (stint omits it; Jira reports the "Automation
-  for Jira" account id).
+  `schemaVersion` (the echo nulls it), `eventFilters` (scope-derived),
+  `actor` for guards, and defaults absent `children`/`conditions` to `[]`
+  (the echo omits or nulls them where create sends `[]`).
+
+## 5. Live-gate verdict (2026-11-25, scripts/live_gate_021.py)
+
+- **Phase 0 (read)**: PASS — cloudId, permission probe, listing.
+- **Phase 1 (round-trip)**: PASS — create DISABLED → GET echo (name,
+  trigger type, components) → state flip ENABLED/DISABLED → delete. The
+  diff normalizer reports declared == reflected on the real echo.
+- **Phase 2 (guard shape)**: PASS — the generated ControlFieldGuard
+  payload (trigger + user condition + edit + comment) creates, echoes
+  verbatim (user condition: initiator / USER_IS_NOT / criteria type ID),
+  and survives a PUT of the same payload with a zero diff after.
+- **Phase 3 (live revert)**: detect ✓ / comment ✓ / revert blocked by the
+  build's edit-action behavior (section 3b) — the same edit action
+  restores in ~6s with a literal value, so stint's payload shape is right
+  and the smart-value execution is the open item (UI-export comparison
+  pending).

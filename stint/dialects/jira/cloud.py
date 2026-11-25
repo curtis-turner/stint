@@ -94,6 +94,7 @@ class JiraCloudDialect(AutomationRuleClient):
         self._global_roles_cache: dict[str, str] | None = None
         # Automation rule-management client state (mixin attributes).
         self._cloud_id_cache: str | None = None
+        self._automation_actor_cache: str | None = None
 
     # ── Detection ────────────────────────────────────────────────────
     async def detect(self) -> bool:

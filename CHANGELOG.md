@@ -35,16 +35,17 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   screens, create/view minus edit) filtered to edit operations, the native
   user condition (initiator not among the allowed users/groups/project
   roles, "Allow rule trigger" off), then per-field Edit issue actions
-  restoring the raw previous value from the changelog
-  (`{{#changelog.<id>}}{{from}}{{/}}`: option ids for selects, full
-  previous sets for multi-value fields, accountIds for user fields) with
-  notifications off, then an optional comment. Cross-cutting rule
-  enforced: the authenticated service account must be among
-  `allowed_writers` (`stint validate` flags it; the ops refuse to apply a
-  guard that would revert the service's own writes; `--allow-lockout`
-  forces it). Live per-field-type acceptance (the revert shapes) is
-  pinned in `notes/automation_api_research.md` as the follow-up
-  verification pass.
+  restoring the raw previous value with notifications off, then an
+  optional comment. Cross-cutting rule enforced: the authenticated
+  service account must be among `allowed_writers` (`stint validate`
+  flags it; the ops refuse to apply a guard that would revert the
+  service's own writes; `--allow-lockout` forces it). The rule's actor is
+  always allowed. The generated shapes are verified against a live tenant
+  (create → echo → update → revert → delete; see
+  `notes/automation_api_research.md`): the trigger carries `fieldChange`
+  (the `changelog` smart value is empty on this trigger — measured), and
+  an edit that changes two guarded fields at once restores only the first
+  (the trigger's own limit).
 
 ### Changed
 

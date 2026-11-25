@@ -50,6 +50,8 @@ from stint.fields import (
     MultiSelectField,
     MultiUserField,
     MultiVersionField,
+    RadioButtonsField,
+    SelectField,
     UserField,
     jira_system_field_id,
 )
@@ -75,9 +77,9 @@ REF_KINDS: frozenset[str] = frozenset({"field", "system", "role", "group", "user
 # default.
 _GUARD_TRIGGER_OPERATIONS: list[str] = ["edit"]
 
-# Automation component types, pinned against Atlassian KB rule exports
-# (see notes/automation_api_research.md). Kept as constants so the generator
-# and the tests can never disagree.
+# Automation component types, pinned against Atlassian KB rule exports and
+# live-tenant echoes (see notes/automation_api_research.md). Kept as
+# constants so the generator and the tests can never disagree.
 TRIGGER_FIELD_CHANGED = "jira.issue.field.changed"
 CONDITION_USER = "jira.user.condition"
 CONDITION_IF_BLOCK = "jira.condition.if.block"
@@ -85,12 +87,16 @@ CONDITION_CONTAINER_BLOCK = "jira.condition.container.block"
 ACTION_EDIT_ISSUE = "jira.issue.edit"
 ACTION_COMMENT = "jira.issue.comment"
 
-# jira.user.condition check names. USER_IS_NOT and NOT_IN_GROUP are confirmed
-# from rule exports; the project-role spelling is by symmetry and is the one
-# value a live pass must confirm first (see notes/automation_api_research.md).
+# jira.user.condition: schemaVersion 4 with criteria typed "ID" is the
+# shape this build accepts (schemaVersion 6 / typed "ACCOUNT_ID"/"NAME"
+# entries crash create with a 500 — measured live). Checks: USER_IS_NOT
+# and NOT_IN_GROUP are confirmed from rule exports; NOT_IN_ROLE is
+# confirmed live (echoed verbatim). The `field` value "initiator" (User
+# who triggered the event) is confirmed live.
+CONDITION_USER_SCHEMA_VERSION = 4
 CHECK_USER_IS_NOT = "USER_IS_NOT"
 CHECK_NOT_IN_GROUP = "NOT_IN_GROUP"
-CHECK_NOT_IN_PROJECT_ROLE = "NOT_IN_PROJECT_ROLE"
+CHECK_NOT_IN_ROLE = "NOT_IN_ROLE"
 
 
 def ref_placeholder(kind: str, name: str) -> str:
@@ -166,9 +172,13 @@ def normalized_rule_payload(payload: dict[str, Any], *, is_guard: bool) -> dict[
     component/trigger tree is canonicalized: each component's ``id`` is
     replaced by its position and parent links are remapped through it, so a
     declared payload (id-less) and a reflected one (server ids) compare
-    equal when the structure and values match. For guards the ``actor`` is
-    dropped too — stint omits it (Jira's "Automation for Jira" default),
-    while reflection reports the tenant's resolved actor id.
+    equal when the structure and values match. The trigger value's
+    ``eventFilters`` are dropped too — the server rewrites them to match
+    the scope (measured live: it returns 201 and silently forges filters
+    from ``ruleScopeARIs``), so they are server-owned, never stint's. For
+    guards the ``actor`` is dropped as well — stint omits it (Jira's
+    "Automation for Jira" default), while reflection reports the tenant's
+    resolved actor id.
     """
     import copy
 
@@ -183,6 +193,13 @@ def normalized_rule_payload(payload: dict[str, Any], *, is_guard: bool) -> dict[
             return node
         out: dict[str, Any] = {}
         for key, value in node.items():
+            if key == "eventFilters":
+                continue  # server-owned: rewritten from ruleScopeARIs
+            if key == "schemaVersion":
+                continue  # server-owned: the echo nulls it out
+            if key in ("children", "conditions") and value is None:
+                out[key] = []  # the echo sends null where create sends []
+                continue
             if key == "id" and not isinstance(value, dict):
                 continue  # positional canonicalization: ids map to list order
             if key in ("parentId", "conditionParentId"):
@@ -191,6 +208,11 @@ def normalized_rule_payload(payload: dict[str, Any], *, is_guard: bool) -> dict[
                 out[key] = ids.get(value, value) if value is not None else None
                 continue
             out[key] = _canonical(value, ids)
+        if "component" in out:
+            # Component-like node: the echo omits children/conditions where
+            # create sends []; default both so the diff compares equal.
+            out.setdefault("children", [])
+            out.setdefault("conditions", [])
         return out
 
     def _canonical_components(components: list[Any]) -> list[Any]:
@@ -302,10 +324,14 @@ class AutomationRule:
       name fails validation.
     - ``enabled``: the rule's run state; applied via the state endpoint,
       overriding the payload's ``state``.
+    - ``actor``: "Run rule as" — a User (email or accountId) resolved at
+      apply time. Omitted (``None``) means Jira's "Automation for Jira"
+      app account. Create requires a real, active actor, so stint always
+      sends one (the app account when undeclared).
 
     The payload is the source of truth for everything else (trigger,
-    conditions, actions, actor, labels). The declaration's ``name`` and
-    ``enabled`` win over the payload's.
+    conditions, actions, labels). The declaration's ``name``,
+    ``description``, ``enabled``, and ``actor`` win over the payload's.
     """
 
     alias: str
@@ -314,6 +340,9 @@ class AutomationRule:
     payload: Path | str = ""
     refs: dict[str, Any] = field(default_factory=dict)
     enabled: bool = True
+    # The rule actor ("Run rule as"): resolved to an accountId at apply
+    # time. None uses Jira's "Automation for Jira" app account.
+    actor: User | None = None
     # Declaring module for scoped autogenerate; recorded by the registry.
     _declared_module: str = field(default="", repr=False, compare=False)
     # Loaded rule JSON (placeholders intact), filled by __post_init__.
@@ -383,6 +412,7 @@ class ControlFieldGuard:
     fields: list[CustomField | str] | None = None
     allowed_writers: list[User | Group | Any] = field(default_factory=list)
     on_violation: list[str] = field(default_factory=lambda: ["revert", "comment"])
+    actor: User | None = None  # "Run rule as"; None = Jira's A4J app actor
     enabled: bool = True
     # Declaring module for scoped autogenerate; recorded by the registry.
     _declared_module: str = field(default="", repr=False, compare=False)
@@ -463,21 +493,22 @@ class ControlFieldGuard:
 def guard_restore_value(field_ref: str, kind: str) -> Any:
     """The smart value that restores a field's previous value.
 
-    Per Atlassian's docs ``{{fieldChange}}`` holds only the first changed
-    value, so the generator uses the changelog form per field
-    (``{{#changelog.<id>}}{{from}}{{/}}``): an edit that changes two guarded
-    fields reverts both. The raw ``from`` is restored, not the
-    ``fromString`` display text — select fields restore by option id,
-    multi-value fields as the full previous set, user fields by accountId.
-    The exact shapes are pinned in notes/automation_api_research.md with the
-    per-type live checks still to run.
+    Live-measured (2026-11-25, see notes/automation_api_research.md): on
+    the Field-value-changed trigger the ``changelog`` smart value is EMPTY
+    — the change arrives as ``fieldChange``. ``{{fieldChange.from}}`` is
+    the raw previous value (select: option id; labels: the previous set;
+    user: the accountId), so the request's "restore from the raw from
+    value, not fromString" holds on ``fieldChange.from``. ``fieldChange``
+    holds only the FIRST changed value, so an edit that changes two
+    guarded fields at once reverts only the first — a measured, documented
+    limit of the trigger.
     """
-    changelog = f"{{{{#changelog.{field_ref}}}}}{{{{from}}}}{{{{/}}}}"
+    restore = "{{fieldChange.from}}"
     if kind == "user":
-        return {"accountId": changelog}
+        return {"accountId": restore}
     if kind == "group":
-        return {"name": changelog}
-    return changelog
+        return {"name": restore}
+    return restore
 
 
 def _restore_form_for_field(ref: str, field_obj: Any) -> tuple[str, Any]:
@@ -496,16 +527,24 @@ def _restore_form_for_field(ref: str, field_obj: Any) -> tuple[str, Any]:
 
 
 def _custom_field_restore(cf: CustomField, placeholder: str) -> Any:
-    """Restore form by declared field type (see ``guard_restore_value``)."""
+    """Restore form by declared field type (see ``guard_restore_value``).
+
+    Select-style fields restore by option id via the ``{"id": ...}``
+    object form; labels split the previous space-joined set; other
+    multi-value fields split the comma-joined set.
+    """
+    restore = "{{fieldChange.from}}"
     if cf.type is UserField:
         return guard_restore_value(placeholder, "user")
     if cf.type is GroupField:
         return guard_restore_value(placeholder, "group")
     if cf.type is LabelsField:
-        return f'{{{{#changelog.{placeholder}}}}}{{{{from.split(" ")}}}}{{{{/}}}}'
+        return '{{fieldChange.from.split(" ")}}'
     if cf.type in (MultiSelectField, CheckboxesField, MultiVersionField, MultiGroupField, MultiUserField):
-        return f'{{{{#changelog.{placeholder}}}}}{{{{from.split(", ")}}}}{{{{/}}}}'
-    return guard_restore_value(placeholder, "scalar")
+        return '{{fieldChange.from.split(", ")}}'
+    if cf.type in (SelectField, RadioButtonsField):
+        return {"id": restore}
+    return restore
 
 
 def build_guard_payload(guard: ControlFieldGuard, fields: list[CustomField | str]) -> dict[str, Any]:
@@ -529,39 +568,44 @@ def build_guard_payload(guard: ControlFieldGuard, fields: list[CustomField | str
         trigger_fields.append({"value": field_form, "type": "field"})
         restores.append({field_form: restore})
 
-    conditions: list[dict[str, Any]] = []
+    conditions: dict[str, list[dict[str, Any]]] = {}
     users = [w for w in guard.allowed_writers if isinstance(w, User)]
     groups = [w for w in guard.allowed_writers if isinstance(w, Group)]
     role_names = [w.name for w in _project_roles(guard.allowed_writers)]
     specs = guard.writer_specs()
     if users:
-        criteria = [
-            {"type": "ACCOUNT_ID", "value": ref_placeholder("user", name)} for name, kind, _ in specs if kind == "user"
+        conditions[CHECK_USER_IS_NOT] = [
+            {"type": "ID", "value": ref_placeholder("user", name)} for name, kind, _ in specs if kind == "user"
         ]
-        conditions.append({"field": "initiator", "check": CHECK_USER_IS_NOT, "criteria": criteria})
     if groups:
-        criteria = [
-            {"type": "NAME", "value": ref_placeholder("group", name)} for name, kind, _ in specs if kind == "group"
+        conditions[CHECK_NOT_IN_GROUP] = [
+            {"type": "ID", "value": ref_placeholder("group", name)} for name, kind, _ in specs if kind == "group"
         ]
-        conditions.append({"field": "initiator", "check": CHECK_NOT_IN_GROUP, "criteria": criteria})
     if role_names:
-        criteria = [
-            {"type": "NAME", "value": ref_placeholder("role", name)} for name, kind, _ in specs if kind == "role"
+        conditions[CHECK_NOT_IN_ROLE] = [
+            {"type": "ID", "value": ref_placeholder("role", name)} for name, kind, _ in specs if kind == "role"
         ]
-        conditions.append({"field": "initiator", "check": CHECK_NOT_IN_PROJECT_ROLE, "criteria": criteria})
-    condition_component: dict[str, Any] | None = None
-    if conditions:
-        condition_component = {
-            "component": "CONDITION",
-            "parentId": None,
-            "conditionParentId": None,
-            "schemaVersion": 6,
-            "type": CONDITION_USER,
-            "value": {"conditions": conditions, "operator": "AND"},
-            "children": [],
-            "conditions": [],
-            "connectionId": None,
-        }
+    # One condition component per writer kind: this build 500s when
+    # different checks mix inside one component's conditions list, while
+    # chained components AND implicitly (measured live).
+    condition_components: list[dict[str, Any]] = []
+    for check, criteria in conditions.items():
+        condition_components.append(
+            {
+                "component": "CONDITION",
+                "parentId": None,
+                "conditionParentId": None,
+                "schemaVersion": CONDITION_USER_SCHEMA_VERSION,
+                "type": CONDITION_USER,
+                "value": {
+                    "conditions": [{"field": "initiator", "check": check, "criteria": criteria}],
+                    "operator": "OR",
+                },
+                "children": [],
+                "conditions": [],
+                "connectionId": None,
+            }
+        )
 
     actions: list[dict[str, Any]] = []
     if restores:
@@ -609,7 +653,7 @@ def build_guard_payload(guard: ControlFieldGuard, fields: list[CustomField | str
             }
         )
 
-    components = [condition_component] if condition_component is not None else []
+    components = list(condition_components)
     components.extend(actions)
     return {
         "name": guard.name,
