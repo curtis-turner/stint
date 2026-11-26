@@ -1,0 +1,90 @@
+{
+  "actor": {
+    "actor": "557058:f58131cb-b67d-43c7-b30d-6b58d40bd077",
+    "type": "ACCOUNT_ID"
+  },
+  "authorAccountId": "5ea079020d58350c2bf3e64e",
+  "canOtherRuleTrigger": false,
+  "collaborators": [],
+  "components": [
+    {
+      "children": [],
+      "component": "CONDITION",
+      "conditionParentId": null,
+      "conditions": [],
+      "connectionId": null,
+      "id": "192ee965-cbe0-4ac8-8922-64cc0458868d",
+      "parentId": null,
+      "schemaVersion": 6,
+      "type": "jira.user.condition",
+      "value": {
+        "conditions": [
+          {
+            "check": "USER_IS_NOT",
+            "criteria": [
+              {
+                "type": "ID",
+                "value": "5ea079020d58350c2bf3e64e"
+              }
+            ],
+            "field": "initiator"
+          }
+        ],
+        "operator": "OR"
+      }
+    },
+    {
+      "children": [],
+      "component": "ACTION",
+      "conditionParentId": null,
+      "conditions": [],
+      "connectionId": null,
+      "id": "8fc9da31-9ed2-4a50-80ad-b588c37d1fbe",
+      "parentId": null,
+      "schemaVersion": 2,
+      "type": "jira.issue.comment",
+      "value": {
+        "addCommentOnce": false,
+        "comment": "test ui trigger",
+        "commentVisibility": null,
+        "publicComment": false,
+        "sendNotifications": true
+      }
+    }
+  ],
+  "created": 1795706455.891,
+  "description": "",
+  "labels": [],
+  "name": "TMP Test Automation",
+  "notifyOnError": "FIRSTERROR",
+  "ruleScopeARIs": [
+    "ari:cloud:jira:db4af41e-c12f-4cf7-8619-87223f09d63f:project/10001"
+  ],
+  "state": "ENABLED",
+  "trigger": {
+    "component": "TRIGGER",
+    "conditions": [],
+    "connectionId": null,
+    "id": "03d5e170-4399-4be3-a458-19ab3f2a754e",
+    "schemaVersion": 2,
+    "type": "jira.issue.field.changed",
+    "value": {
+      "actions": [
+        "edit"
+      ],
+      "changeType": "ANY_CHANGE",
+      "eventFilters": [
+        "ari:cloud:jira:db4af41e-c12f-4cf7-8619-87223f09d63f:project/10001"
+      ],
+      "fields": [
+        {
+          "type": "field",
+          "value": "priority"
+        }
+      ]
+    }
+  },
+  "updated": 1795706455.891,
+  "uuid": "01a21872-0753-7485-b2dc-c56da36a5ff4",
+  "writeAccessType": "OWNER_ONLY"
+}

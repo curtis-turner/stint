@@ -238,6 +238,14 @@ rule excludes the primary account, so trips made with it are correctly
 ignored. A silent no-action on an allowed-writer edit is the guard
 WORKING; verify through the audit log's run entry, not the issue.
 
+Team-managed scope ARIs: confirmed live (2026-11-26) — the UI's own
+rule scoped to a team-managed project carries
+`ari:cloud:jira:{cloudId}:project/10001` (the same form stint
+generates for any project id), and a stint-created probe rule scoped
+to that project executed on a Priority edit within ~5s. The rule
+API's trigger accepted the system field in the id form (`"priority"`),
+the same shape stint writes.
+
 ## 4. stint wiring notes
 
 - `cloudId` resolution: `GET /_edge/tenant_info` → `{"cloudId": ...}`
