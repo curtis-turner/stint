@@ -1,0 +1,119 @@
+{
+  "actor": {
+    "actor": "557058:f58131cb-b67d-43c7-b30d-6b58d40bd077",
+    "type": "ACCOUNT_ID"
+  },
+  "authorAccountId": "5ea079020d58350c2bf3e64e",
+  "canOtherRuleTrigger": false,
+  "collaborators": [],
+  "components": [
+    {
+      "children": [],
+      "component": "CONDITION",
+      "conditionParentId": null,
+      "conditions": [],
+      "connectionId": null,
+      "id": "d936f65d-b6fb-4206-8801-e56996bab85b",
+      "parentId": null,
+      "schemaVersion": 6,
+      "type": "jira.user.condition",
+      "value": {
+        "conditions": [
+          {
+            "check": "USER_IS_NOT",
+            "criteria": [
+              {
+                "type": "ID",
+                "value": "5ea079020d58350c2bf3e64e"
+              }
+            ],
+            "field": "initiator"
+          }
+        ],
+        "operator": "OR"
+      }
+    },
+    {
+      "children": [],
+      "component": "ACTION",
+      "conditionParentId": null,
+      "conditions": [],
+      "connectionId": null,
+      "id": "f4be43a7-f439-4cdf-a844-006d61ada89e",
+      "parentId": null,
+      "schemaVersion": 12,
+      "type": "jira.issue.edit",
+      "value": {
+        "advancedFields": null,
+        "operations": [
+          {
+            "field": {
+              "type": "NAME",
+              "value": "Severity"
+            },
+            "fieldType": "com.atlassian.jira.plugin.system.customfieldtypes:select",
+            "type": "SET",
+            "value": {
+              "type": "SMART",
+              "value": "{{fieldChange.from}}"
+            }
+          }
+        ],
+        "sendNotifications": false
+      }
+    },
+    {
+      "children": [],
+      "component": "ACTION",
+      "conditionParentId": null,
+      "conditions": [],
+      "connectionId": null,
+      "id": "b5113c6a-cafa-4faf-a437-51f0d6736067",
+      "parentId": null,
+      "schemaVersion": 2,
+      "type": "jira.issue.comment",
+      "value": {
+        "addCommentOnce": false,
+        "comment": "Reverted by UI Rule",
+        "commentVisibility": null,
+        "publicComment": false,
+        "sendNotifications": true
+      }
+    }
+  ],
+  "created": 1795669619.176,
+  "description": "",
+  "labels": [],
+  "name": "Revert Severity by Non Admin",
+  "notifyOnError": "FIRSTERROR",
+  "ruleScopeARIs": [
+    "ari:cloud:jira:db4af41e-c12f-4cf7-8619-87223f09d63f:project/10100"
+  ],
+  "state": "ENABLED",
+  "trigger": {
+    "component": "TRIGGER",
+    "conditions": [],
+    "connectionId": null,
+    "id": "314b3ccd-25f0-4efb-9d91-d5d55bfd0398",
+    "schemaVersion": 2,
+    "type": "jira.issue.field.changed",
+    "value": {
+      "actions": [
+        "edit"
+      ],
+      "changeType": "ANY_CHANGE",
+      "eventFilters": [
+        "ari:cloud:jira:db4af41e-c12f-4cf7-8619-87223f09d63f:project/10100"
+      ],
+      "fields": [
+        {
+          "type": "fieldName",
+          "value": "Severity"
+        }
+      ]
+    }
+  },
+  "updated": 1795669619.176,
+  "uuid": "01a2163f-f1e8-79d8-b03c-f3583fd2dc6c",
+  "writeAccessType": "OWNER_ONLY"
+}

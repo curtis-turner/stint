@@ -34,10 +34,15 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fields (default: the control fields derived from the bound project's
   screens, create/view minus edit) filtered to edit operations, the native
   user condition (initiator not among the allowed users/groups/project
-  roles, "Allow rule trigger" off), then per-field Edit issue actions
-  restoring the raw previous value with notifications off, then an
-  optional comment. Cross-cutting rule enforced: the authenticated
-  service account must be among `allowed_writers` (`stint validate`
+  roles, "Allow rule trigger" off), then one Edit issue action with one
+  SET operation per guarded field restoring the raw previous value — a
+  SMART-typed value with the field referenced by id (verified live at ~2s
+  per revert; the NAME reference the Automation UI writes is ambiguous
+  on tenants with duplicate field names, and the advancedFields form
+  saves but the action silently never executes on this build) — with
+  notifications off, then an optional comment.
+  Cross-cutting rule enforced: the authenticated service account must be
+  among `allowed_writers` (`stint validate`
   flags it; the ops refuse to apply a guard that would revert the
   service's own writes; `--allow-lockout` forces it). The rule's actor is
   always allowed. The generated shapes are verified against a live tenant

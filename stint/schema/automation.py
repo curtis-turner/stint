@@ -44,15 +44,11 @@ from stint.exceptions import ConfigurationError, RegistryError
 from stint.fields import (
     CheckboxesField,
     CustomField,
-    GroupField,
     LabelsField,
     MultiGroupField,
     MultiSelectField,
     MultiUserField,
     MultiVersionField,
-    RadioButtonsField,
-    SelectField,
-    UserField,
     jira_system_field_id,
 )
 from stint.registry import _declaring_module, registry
@@ -87,12 +83,14 @@ CONDITION_CONTAINER_BLOCK = "jira.condition.container.block"
 ACTION_EDIT_ISSUE = "jira.issue.edit"
 ACTION_COMMENT = "jira.issue.comment"
 
-# jira.user.condition: schemaVersion 4 with criteria typed "ID" is the
-# shape this build accepts (schemaVersion 6 / typed "ACCOUNT_ID"/"NAME"
-# entries crash create with a 500 — measured live). Checks: USER_IS_NOT
-# and NOT_IN_GROUP are confirmed from rule exports; NOT_IN_ROLE is
-# confirmed live (echoed verbatim). The `field` value "initiator" (User
-# who triggered the event) is confirmed live.
+# jira.user.condition: schemaVersion 4 with criteria typed "ID" is a
+# verified shape (schemaVersion 6 with criteria typed "ACCOUNT_ID"/"NAME"
+# crashed create with a 500; 6 with ID criteria also works — the UI writes
+# it, measured in the 2026-11-25 harvest — stint keeps 4, verified in the
+# live gate's echo/idempotence pass). Checks: USER_IS_NOT and NOT_IN_GROUP
+# are confirmed from rule exports; NOT_IN_ROLE is confirmed live (echoed
+# verbatim). The `field` value "initiator" (User who triggered the event)
+# is confirmed live.
 CONDITION_USER_SCHEMA_VERSION = 4
 CHECK_USER_IS_NOT = "USER_IS_NOT"
 CHECK_NOT_IN_GROUP = "NOT_IN_GROUP"
@@ -109,13 +107,12 @@ def ref_placeholder(kind: str, name: str) -> str:
 def substitute_refs(obj: Any, resolved: dict[str, str]) -> Any:
     """Recursively replace ``{{stint.*}}`` placeholders with resolved values.
 
-    Applies to dict keys too (a guard's advancedFields JSON restores by
-    ``{{stint.field.<alias>}}`` as the field key). Placeholders nested
-    inside generated smart values (``{{#changelog.{{stint.field.x}}}}``)
-    resolve because each placeholder is matched literally, wherever it
-    appears. Unknown placeholders are left intact — ``unresolved_refs``
-    reports them so ops can fail loudly instead of writing a rule Jira
-    cannot evaluate.
+    Applies to dict keys too. Placeholders nested inside generated smart
+    values (``{{stint.field.x}}`` inside a trigger field entry or a
+    restore operation's template) resolve because each placeholder is
+    matched literally, wherever it appears. Unknown placeholders are left
+    intact — ``unresolved_refs`` reports them so ops can fail loudly
+    instead of writing a rule Jira cannot evaluate.
     """
     if isinstance(obj, str):
         out = obj
@@ -490,61 +487,100 @@ class ControlFieldGuard:
         return build_guard_payload(self, fields)
 
 
-def guard_restore_value(field_ref: str, kind: str) -> Any:
-    """The smart value that restores a field's previous value.
+# The Edit-issue restore value type: SMART marks the value as a template
+# for the rule runtime to evaluate. The Automation UI itself writes this
+# form for a previous-value restore (harvested 2026-11-25 from a UI-built
+# rule, see notes/automation_api_research.md): advancedFields with a smart
+# value saves but the action silently never executes, and a plain-string
+# smart value inside an operation is rejected at create — only this form
+# runs (verified live: a select restore lands in ~58s and later actions
+# in the rule still fire).
+RESTORE_VALUE_TYPE_SMART = "SMART"
+
+
+def guard_restore_value(kind: str) -> dict[str, Any]:
+    """The Edit-issue restore value for one guarded field.
 
     Live-measured (2026-11-25, see notes/automation_api_research.md): on
     the Field-value-changed trigger the ``changelog`` smart value is EMPTY
     — the change arrives as ``fieldChange``. ``{{fieldChange.from}}`` is
-    the raw previous value (select: option id; labels: the previous set;
-    user: the accountId), so the request's "restore from the raw from
-    value, not fromString" holds on ``fieldChange.from``. ``fieldChange``
-    holds only the FIRST changed value, so an edit that changes two
-    guarded fields at once reverts only the first — a measured, documented
-    limit of the trigger.
+    the raw previous value (select: option id; user: the accountId;
+    labels: the previous space-joined set), so the request's "restore from
+    the raw from value, not fromString" holds on ``fieldChange.from``.
+    ``fieldChange`` holds only the FIRST changed value, so an edit that
+    changes two guarded fields at once reverts only the first — a
+    measured, documented limit of the trigger.
+
+    ``kind`` picks the template: ``labels`` splits the previous
+    space-joined set, ``multi`` splits the comma-joined set, anything
+    else restores the raw value (users and groups included — the old
+    ``{"accountId": ...}`` object forms belonged to the dead
+    advancedFields shape).
     """
     restore = "{{fieldChange.from}}"
-    if kind == "user":
-        return {"accountId": restore}
-    if kind == "group":
-        return {"name": restore}
-    return restore
+    if kind == "labels":
+        restore = '{{fieldChange.from.split(" ")}}'
+    elif kind == "multi":
+        restore = '{{fieldChange.from.split(", ")}}'
+    return {"type": RESTORE_VALUE_TYPE_SMART, "value": restore}
 
 
-def _restore_form_for_field(ref: str, field_obj: Any) -> tuple[str, Any]:
-    """(field id form, restore value form) for one guarded field.
+def _trigger_field_form(ref: str, field_obj: Any) -> str:
+    """The trigger's field reference for one guarded field.
 
     ``ref``/``field_obj`` come from the guard's field list: a CustomField
     keeps its ``{{stint.field.<alias>}}`` placeholder (resolved at apply
     time); a system field name is inlined in Jira's lowercase id form.
+    The id form is verified live (the UI writes a ``fieldName`` form —
+    also functional, but the id survives field renames).
     """
     if isinstance(field_obj, CustomField):
-        placeholder = ref_placeholder("field", field_obj.alias)
-        restore = _custom_field_restore(field_obj, placeholder)
-        return placeholder, restore
-    field_id = jira_system_field_id(ref)
-    return field_id, guard_restore_value(field_id, "system")
+        return ref_placeholder("field", field_obj.alias)
+    return jira_system_field_id(ref)
 
 
-def _custom_field_restore(cf: CustomField, placeholder: str) -> Any:
-    """Restore form by declared field type (see ``guard_restore_value``).
+def _custom_field_restore(cf: CustomField) -> dict[str, Any]:
+    """Restore value by declared field type (see ``guard_restore_value``).
 
-    Select-style fields restore by option id via the ``{"id": ...}``
-    object form; labels split the previous space-joined set; other
-    multi-value fields split the comma-joined set.
+    Labels split the previous space-joined set; other multi-value fields
+    split the comma-joined set; everything else restores the raw previous
+    value. The labels/multi separators and the user/group raw form are
+    the documented-best-known templates — only the scalar select case is
+    live-verified (the smoke tenant has no user/label control field).
     """
-    restore = "{{fieldChange.from}}"
-    if cf.type is UserField:
-        return guard_restore_value(placeholder, "user")
-    if cf.type is GroupField:
-        return guard_restore_value(placeholder, "group")
     if cf.type is LabelsField:
-        return '{{fieldChange.from.split(" ")}}'
+        return guard_restore_value("labels")
     if cf.type in (MultiSelectField, CheckboxesField, MultiVersionField, MultiGroupField, MultiUserField):
-        return '{{fieldChange.from.split(", ")}}'
-    if cf.type in (SelectField, RadioButtonsField):
-        return {"id": restore}
-    return restore
+        return guard_restore_value("multi")
+    return guard_restore_value("scalar")
+
+
+def _restore_operation(ref: str, field_obj: Any) -> dict[str, Any]:
+    """One Edit-issue ``operations`` entry restoring one guarded field.
+
+    The field is referenced by ID — deterministic, unlike the NAME form
+    the Automation UI writes: this tenant carries three select fields all
+    named "Severity", and the UI-built rule's edit fails at runtime with
+    "We encountered multiple fields with the same name and type". The ID
+    form is verified live (2026-11-25): a select restore landed in ~2s,
+    authored by the Automation actor, with later actions still firing.
+    ``fieldType`` is the declared field type's Jira key, known for custom
+    fields and omitted for system fields (their key in this form is
+    unmeasured; custom control fields are the guard's real target).
+    """
+    field_value = (
+        ref_placeholder("field", field_obj.alias) if isinstance(field_obj, CustomField) else jira_system_field_id(ref)
+    )
+    operation: dict[str, Any] = {
+        "field": {"type": "ID", "value": field_value},
+        "type": "SET",
+        "value": _custom_field_restore(field_obj)
+        if isinstance(field_obj, CustomField)
+        else guard_restore_value("scalar"),
+    }
+    if isinstance(field_obj, CustomField):
+        operation["fieldType"] = field_obj.type.jira_type_id
+    return operation
 
 
 def build_guard_payload(guard: ControlFieldGuard, fields: list[CustomField | str]) -> dict[str, Any]:
@@ -555,18 +591,19 @@ def build_guard_payload(guard: ControlFieldGuard, fields: list[CustomField | str
     writers — the native user condition as the AND of negations (is-not the
     allowed users, not-in the allowed groups, not-in the allowed roles),
     which is De Morgan for "not (any allowed writer)". Actions: one Edit
-    issue per guarded field restoring its previous value, then the optional
-    comment. ``canOtherRuleTrigger`` stays off so the revert cannot
-    re-trigger the rule — Automation's loop detection (10 rapid triggers)
-    is not a substitute.
+    issue action with one SET operation per guarded field restoring its
+    previous value (a SMART-typed value, the field referenced by id —
+    verified live; the UI's NAME form is ambiguous when duplicate field
+    names exist), then the optional comment. ``canOtherRuleTrigger`` stays
+    off so the revert cannot re-trigger the rule — Automation's loop
+    detection (10 rapid triggers) is not a substitute.
     """
     trigger_fields: list[dict[str, str]] = []
-    restores: list[dict[str, str]] = []
+    operations: list[dict[str, Any]] = []
     for field_obj in fields:
         ref = field_obj.alias if isinstance(field_obj, CustomField) else str(field_obj)
-        field_form, restore = _restore_form_for_field(ref, field_obj)
-        trigger_fields.append({"value": field_form, "type": "field"})
-        restores.append({field_form: restore})
+        trigger_fields.append({"value": _trigger_field_form(ref, field_obj), "type": "field"})
+        operations.append(_restore_operation(ref, field_obj))
 
     conditions: dict[str, list[dict[str, Any]]] = {}
     users = [w for w in guard.allowed_writers if isinstance(w, User)]
@@ -608,10 +645,7 @@ def build_guard_payload(guard: ControlFieldGuard, fields: list[CustomField | str
         )
 
     actions: list[dict[str, Any]] = []
-    if restores:
-        advanced: dict[str, Any] = {"fields": {}}
-        for restore in restores:
-            advanced["fields"].update(restore)
+    if operations:
         actions.append(
             {
                 "component": "ACTION",
@@ -620,8 +654,8 @@ def build_guard_payload(guard: ControlFieldGuard, fields: list[CustomField | str
                 "schemaVersion": 12,
                 "type": ACTION_EDIT_ISSUE,
                 "value": {
-                    "operations": [],
-                    "advancedFields": json.dumps(advanced, indent=2),
+                    "operations": operations,
+                    "advancedFields": None,
                     "sendNotifications": False,
                 },
                 "children": [],

@@ -388,12 +388,17 @@ How the generated guard works:
   native user condition (users, groups, project roles). "Allow rule
   trigger" stays off, so the revert cannot re-trigger the rule; Jira's
   loop detection (10 rapid triggers) is not a substitute.
-- **Revert**: an Edit issue action per guarded field restoring the raw
-  previous value from the changelog (`{{#changelog.<id>}}{{from}}{{/}}`) —
-  option ids for selects, full previous sets for multi-value fields,
-  accountIds for user fields — with notifications off, so the bad value
-  does not page watchers twice. Then the optional comment, mentioning the
-  initiator.
+- **Revert**: one Edit issue action with one SET operation per guarded
+  field restoring the raw previous value (`{{fieldChange.from}}` — the
+  `changelog` smart value is empty on this trigger; option ids for
+  selects, full previous sets for multi-value fields, accountIds for user
+  fields). The value is a SMART-typed operations entry with the field
+  referenced by id — verified live at ~2s per revert; the NAME reference
+  the Automation UI writes is ambiguous on tenants with duplicate field
+  names (three same-named "Severity" fields break UI-built rules). The
+  `advancedFields` form saves but the action silently never executes on
+  this build. Notifications are off, so the bad value does not page
+  watchers twice. Then the optional comment, mentioning the initiator.
 
 The revert happens after the fact: the bad value exists for seconds, and
 both changes appear in history, webhooks, and notifications. Automation

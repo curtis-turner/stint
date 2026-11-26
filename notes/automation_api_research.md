@@ -173,43 +173,67 @@ Quirks measured live:
   asks: select restore = option id, labels = the previous set,
   user = the accountId.
 
-## 3b. The edit action's smart-value limit (measured live, this build)
+## 3b. The edit action's smart-value forms (harvest + probes, 2026-11-25)
 
-On this build (1001.0.0-SNAPSHOT, Nov 2026) the **Edit issue action
-silently never executes when its `advancedFields` contain any smart
-value** — measured four ways:
+The Edit issue action accepts its field writes through two forms, and on
+this build (1001.0.0-SNAPSHOT) a smart value only runs in one of them —
+measured across seven live rules:
 
-- literal `advancedFields` (`{"fields": {field: {"value": "S1"}}}`) →
-  runs and restores in ~6s;
-- `advancedFields` with `{{fieldChange.from}}` / `{{fieldChange.fromString}}`
-  / `{{issue.summary}}` in any position → the rule saves ENABLED, but the
-  run is silent: the edit does nothing and other actions in the same rule
-  also stop (a marker comment after the edit never fires);
-- the `operations` form with a plain-string smart value for a select →
-  create-time `"Error parsing template: Cannot construct instance of
+- **`advancedFields` (JSON string) with a smart value → silently dead.**
+  `{{fieldChange.from}}` / `{{fieldChange.fromString}}` /
+  `{{issue.summary}}` in any position: the rule saves ENABLED, the edit
+  does nothing, and other actions in the same rule also stop (a marker
+  comment after the edit never fires). Literal `advancedFields`
+  (`{"fields": {field: {"value": "S1"}}}`) runs and restores in ~6s
+  (changelog entries authored by "Automation for Jira").
+- **`operations` with a plain-string smart value → rejected at create**:
+  `"Error parsing template: Cannot construct instance of
   com.codebarrel.automation.api.component.SimpleValue ... no
-  String-argument constructor ... ('{{fieldChange.fromString}}')"` (the
-  operations `value` for a select must be the SimpleValue OBJECT form:
-  `{"type": "ID", "modifier": null, "value": ..., "multiValue": false,
-  "source": null}`);
-- the operations form with a full SimpleValue + smart value → saves, and
-  the rule again never executes.
+  String-argument constructor ... ('{{fieldChange.fromString}}')"`.
+- **`operations` with SimpleValue `{"type": "ID", "value":
+  "{{fieldChange.from}}"}` → silently dead** (Jira reads the string as a
+  literal option id, matches nothing, and the whole run stops).
+- **`operations` with SimpleValue `{"type": "SMART", "value":
+  "{{fieldChange.from}}"}` and the FIELD REFERENCED BY ID
+  (`{"field": {"type": "ID", "value": "customfield_10320"}}`) → WORKS.**
+  Verified live twice-clean (2026-11-25): the select restore landed in
+  ~2s, authored by "Automation for Jira" in the issue changelog, with
+  later actions in the rule (the comment) still firing.
 
-Consequences for stint's generator:
+**The NAME field reference (the form the Automation UI itself writes)
+is a trap**: the harvest tenant carries three select fields all named
+"Severity" (template leftovers `customfield_10108`/`customfield_10041`/
+`customfield_10320`) and two "Root Cause" text fields. NAME-based edits
+fail at runtime with `"We encountered multiple fields with the same
+name and type: Severity (...); No fields or field values to edit for
+work items"` — the rule runs (the comment action fires) but the edit
+never lands. A UI-built guard rule on such a tenant cannot work at all;
+the UI has no way to write the id form. stint references the field id
+everywhere (trigger and operations), so duplicates are irrelevant. The
+UI's trigger uses `{"type": "fieldName", ...}` (fires on any of the
+same-named fields); stint's `{"type": "field", "value": <id>}` form is
+exact.
 
-1. Select-style restores use the SimpleValue `{"type": "ID", ...}` object
-   form (a bare option-id string is not accepted).
-2. The generated revert currently emits `{{fieldChange.from}}` inside
-   `advancedFields` — the documented-best-known shape (the real UI export
-   of a working rule shows smart values in `advancedFields`, schemaVersion
-   12), but on this build such rules save without ever running. Pinning
-   the working form needs the Automation UI's own export of an
-   edit-action rule on this build (build a rule in the UI once, export /
-   GET it, and compare — the shape difference, if any, is the fix).
-3. Until then the guard's live verdict on this tenant is: detect ✓
-   (trigger + condition verified live), comment ✓ (fires), revert —
-   blocked by the build's edit-action behavior, not by stint's payload
-   shape (the literal edit through the same component works).
+Methodology note from the harvest: a concurrent human edit on the same
+issue produced a false-positive revert (the value returned to the
+original while the rule's edit was failing). A revert only counts when
+the issue changelog carries the restore **authored by the Automation
+actor** (`557058:...`); poll value + comments AND verify the author.
+
+Other deltas between the UI-built rule and stint's generated payload
+(stint choices verified live; kept deliberately):
+
+- the UI's user condition is schemaVersion **6** (stint sends 4 — both
+  create and echo cleanly with ID criteria; the earlier 500 was criteria
+  typed ACCOUNT_ID/NAME, not the version);
+- the UI rule is `writeAccessType: "OWNER_ONLY"` and its comment has
+  `sendNotifications: true` (stint sends UNRESTRICTED / false).
+
+Operational lesson from the harvest session: right after a plan change
+(free → standard mid-session), rule execution can stall tenant-wide for
+a window — a known-good comment-only rule stopped running, then ran
+again minutes later. A silent no-run is not always a shape problem;
+probe with a comment-only rule before blaming the payload.
 
 ## 4. stint wiring notes
 
@@ -241,8 +265,8 @@ Consequences for stint's generator:
   payload (trigger + user condition + edit + comment) creates, echoes
   verbatim (user condition: initiator / USER_IS_NOT / criteria type ID),
   and survives a PUT of the same payload with a zero diff after.
-- **Phase 3 (live revert)**: detect ✓ / comment ✓ / revert blocked by the
-  build's edit-action behavior (section 3b) — the same edit action
-  restores in ~6s with a literal value, so stint's payload shape is right
-  and the smart-value execution is the open item (UI-export comparison
-  pending).
+- **Phase 3 (live revert)**: **PASS** (after the id-form fix from the
+  harvest, see section 3b) — the generated guard, ENABLED with an
+  empty allow-list, restored a violating select write in ~2s, the
+  changelog entry authored by "Automation for Jira", and the guard's
+  comment fired. detect ✓ comment ✓ revert ✓.

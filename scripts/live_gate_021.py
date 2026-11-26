@@ -336,7 +336,7 @@ async def phase_guard_shape(smoke: Smoke, *, project_id: str, field_id: str, all
             if c.get("type") == "jira.user.condition":
                 print(f"user condition value echoed: {json.dumps(c.get('value'))[:400]}")
             if c.get("type") == "jira.issue.edit":
-                print(f"edit advancedFields echoed: {c.get('value', {}).get('advancedFields')}")
+                print(f"edit operations echoed: {json.dumps(c.get('value', {}).get('operations'))[:400]}")
         diff = _first_diff(
             normalized_rule_payload(payload, is_guard=True),
             normalized_rule_payload(echoed, is_guard=True),

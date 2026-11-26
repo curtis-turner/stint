@@ -59,6 +59,7 @@ from stint.schema.automation import (
     AutomationRule,
     AutomationRuleScheme,
     ControlFieldGuard,
+    _custom_field_restore,
     normalized_rule_payload,
     ref_placeholder,
     substitute_refs,
@@ -267,14 +268,21 @@ def test_build_guard_payload_trigger_condition_actions():
     assert checks["NOT_IN_GROUP"] == [{"type": "ID", "value": "{{stint.group.writer1}}"}]
     assert checks["NOT_IN_ROLE"] == [{"type": "ID", "value": "{{stint.role.writer2}}"}]
     (edit,) = [c for c in payload["components"] if c["type"] == "jira.issue.edit"]
-    advanced = json.loads(edit["value"]["advancedFields"])
-    # Selects restore by option id ({"id": ...}); user fields by accountId;
-    # labels split the previous space-joined set. `fieldChange.from` is the
-    # raw previous value on this trigger (changelog is empty there — measured).
-    assert advanced["fields"]["{{stint.field.severity}}"] == {"id": "{{fieldChange.from}}"}
-    assert advanced["fields"]["{{stint.field.owner}}"] == {"accountId": "{{fieldChange.from}}"}
-    assert '.split(" ")' in advanced["fields"]["{{stint.field.cve_ids}}"]  # labels restore as a set
-    assert advanced["fields"]["priority"] == "{{fieldChange.from}}"
+    # The restore rides the operations form with a SMART-typed value and
+    # the field referenced by ID — verified live (revert in ~2s, authored
+    # by the Automation actor). The ID reference is deterministic where
+    # the NAME form (the UI's own) is ambiguous: this tenant carries three
+    # select fields named "Severity", and NAME-based edits fail at runtime.
+    assert edit["value"]["advancedFields"] is None
+    severity_op, owner_op, cve_op, priority_op = edit["value"]["operations"]
+    assert severity_op["field"] == {"type": "ID", "value": "{{stint.field.severity}}"}
+    assert severity_op["fieldType"] == "com.atlassian.jira.plugin.system.customfieldtypes:select"
+    assert severity_op["value"] == {"type": "SMART", "value": "{{fieldChange.from}}"}
+    assert owner_op["field"] == {"type": "ID", "value": "{{stint.field.owner}}"}
+    assert owner_op["value"] == {"type": "SMART", "value": "{{fieldChange.from}}"}
+    assert '.split(" ")' in cve_op["value"]["value"]  # labels restore as a set
+    assert priority_op["field"] == {"type": "ID", "value": "priority"}
+    assert "fieldType" not in priority_op  # system-field type key unmeasured in this form
     assert edit["value"]["sendNotifications"] is False  # the bad value must not page watchers twice
     (comment,) = [c for c in payload["components"] if c["type"] == "jira.issue.comment"]
     assert "[~accountid:{{initiator.accountId}}]" in comment["value"]["comment"]
@@ -288,13 +296,9 @@ def test_guard_without_comment_omits_comment_action():
 
 def test_guard_restore_forms_by_field_type():
     number = CustomField(alias="score", name="Score", type=NumberField, options=[])
-    assert guard_restore(number) == "{{fieldChange.from}}"
-
-
-def guard_restore(field: CustomField) -> str:
-    from stint.schema.automation import _custom_field_restore
-
-    return _custom_field_restore(field, ref_placeholder("field", field.alias))
+    labels = CustomField(alias="tags", name="Tags", type=LabelsField, options=[])
+    assert _custom_field_restore(number) == {"type": "SMART", "value": "{{fieldChange.from}}"}
+    assert _custom_field_restore(labels) == {"type": "SMART", "value": '{{fieldChange.from.split(" ")}}'}
 
 
 # ── Desired snapshot ─────────────────────────────────────────────────
