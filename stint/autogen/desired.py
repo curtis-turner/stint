@@ -742,68 +742,87 @@ def build_desired_snapshot(
         for rule in scheme.rules:
             if rule.alias not in scope.automation_rules:
                 continue
-            if getattr(rule, "is_guard", False):
-                from stint.audit import declared_control_fields
-
-                proj_cls = scope.projects.get(bound_projects[0]) if bound_projects else None
-                fields: list[Any]
-                if rule.fields is not None:
-                    if not rule.fields:
-                        raise RegistryError(
-                            f"ControlFieldGuard {rule.alias!r}: fields= is empty — pass at "
-                            f"least one field, or omit fields= to derive the control fields."
-                        )
-                    fields = list(rule.fields)
-                elif proj_cls is not None:
-                    derived = declared_control_fields(proj_cls)
-                    ref_keys = [k for keys in derived.values() for k in keys]
-                    if not ref_keys:
-                        raise RegistryError(
-                            f"ControlFieldGuard {rule.alias!r}: the bound project "
-                            f"{bound_projects[0]!r} derives no control fields (its "
-                            f"declared Edit screen is not narrower than create/view) — "
-                            f"there is nothing for the guard to protect. Pass fields= "
-                            f"or check the screen declarations."
-                        )
-                    fields = [_field_ref_for_key(key) for key in ref_keys]
-                else:
-                    rule.field_refs()  # raises with the actionable error
-                    fields = []  # unreachable
-                payload = rule.build_payload(fields)
-                # Refs cover every placeholder the payload carries: the
-                # guarded custom fields ({{stint.field.<alias>}}) and the
-                # allowed writers ({{stint.user|group|role.writerN}}).
-                # System fields are inlined (no placeholder, no ref).
-                field_ref_specs = [
-                    (f_obj.alias, "field", f_obj.alias) for f_obj in fields if isinstance(f_obj, CustomField)
-                ]
-                desired.automation_rules[rule.alias] = DesiredAutomationRule(
-                    alias=rule.alias,
-                    name=rule.name or rule.alias,
-                    description=rule.description or "",
-                    payload=payload,
-                    refs=tuple(field_ref_specs) + tuple(rule.writer_specs()),
-                    enabled=rule.enabled,
-                    is_guard=True,
-                    allowed_writers=tuple((kind, declared) for _name, kind, declared in rule.writer_specs()),
-                    scope_projects=bound_projects,
-                    actor=rule.actor.value if rule.actor else None,
-                )
-            else:
-                desired.automation_rules[rule.alias] = DesiredAutomationRule(
-                    alias=rule.alias,
-                    name=rule.name or rule.alias,
-                    description=rule.description or "",
-                    payload=dict(rule.payload_data),
-                    refs=tuple(rule.ref_specs()),
-                    enabled=rule.enabled,
-                    is_guard=False,
-                    allowed_writers=(),
-                    scope_projects=bound_projects,
-                    actor=rule.actor.value if rule.actor else None,
-                )
+            desired.automation_rules[rule.alias] = automation_rule_record(
+                rule,
+                bound_projects=bound_projects,
+                proj_cls=(scope.projects.get(bound_projects[0]) if bound_projects else None),
+            )
 
     return desired
+
+
+def automation_rule_record(
+    rule: Any,
+    *,
+    bound_projects: tuple[str, ...],
+    proj_cls: Any = None,
+) -> DesiredAutomationRule:
+    """One declared rule (``AutomationRule`` or ``ControlFieldGuard``) as a
+    desired record: payload with placeholders intact plus the ref specs the
+    ops resolve at apply time.
+
+    A guard's payload is generated here: explicit ``fields=`` win; without
+    them the control fields derive from the bound project's screens
+    (create/view minus edit — the restricted-Edit-screen pattern). The
+    team-managed path passes ``proj_cls=None`` (no screens exist there;
+    declaration validation already required explicit fields).
+    """
+    if getattr(rule, "is_guard", False):
+        from stint.audit import declared_control_fields
+
+        fields: list[Any]
+        if rule.fields is not None:
+            if not rule.fields:
+                raise RegistryError(
+                    f"ControlFieldGuard {rule.alias!r}: fields= is empty — pass at "
+                    f"least one field, or omit fields= to derive the control fields."
+                )
+            fields = list(rule.fields)
+        elif proj_cls is not None:
+            derived = declared_control_fields(proj_cls)
+            ref_keys = [k for keys in derived.values() for k in keys]
+            if not ref_keys:
+                raise RegistryError(
+                    f"ControlFieldGuard {rule.alias!r}: the bound project "
+                    f"{bound_projects[0]!r} derives no control fields (its "
+                    f"declared Edit screen is not narrower than create/view) — "
+                    f"there is nothing for the guard to protect. Pass fields= "
+                    f"or check the screen declarations."
+                )
+            fields = [_field_ref_for_key(key) for key in ref_keys]
+        else:
+            rule.field_refs()  # raises with the actionable error
+            fields = []  # unreachable
+        payload = rule.build_payload(fields)
+        # Refs cover every placeholder the payload carries: the guarded
+        # custom fields ({{stint.field.<alias>}}) and the allowed writers
+        # ({{stint.user|group|role.writerN}}). System fields are inlined
+        # (no placeholder, no ref).
+        field_ref_specs = [(f_obj.alias, "field", f_obj.alias) for f_obj in fields if isinstance(f_obj, CustomField)]
+        return DesiredAutomationRule(
+            alias=rule.alias,
+            name=rule.name or rule.alias,
+            description=rule.description or "",
+            payload=payload,
+            refs=tuple(field_ref_specs) + tuple(rule.writer_specs()),
+            enabled=rule.enabled,
+            is_guard=True,
+            allowed_writers=tuple((kind, declared) for _name, kind, declared in rule.writer_specs()),
+            scope_projects=bound_projects,
+            actor=rule.actor.value if rule.actor else None,
+        )
+    return DesiredAutomationRule(
+        alias=rule.alias,
+        name=rule.name or rule.alias,
+        description=rule.description or "",
+        payload=dict(rule.payload_data),
+        refs=tuple(rule.ref_specs()),
+        enabled=rule.enabled,
+        is_guard=False,
+        allowed_writers=(),
+        scope_projects=bound_projects,
+        actor=rule.actor.value if rule.actor else None,
+    )
 
 
 def _desired_roles(roles: Any) -> tuple[DesiredRoleActors, ...]:

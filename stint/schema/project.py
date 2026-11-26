@@ -169,17 +169,33 @@ class ProjectMeta(StintMeta):
 
         automation_rule_scheme = getattr(cls, "__automation_rule_scheme__", None)
         if automation_rule_scheme is not None:
-            if style == "team-managed":
-                raise ConfigurationError(
-                    f"Project {name!r} is team-managed but references an "
-                    f"AutomationRuleScheme. Automation rule management is a "
-                    f"company-managed surface."
-                )
             if getattr(automation_rule_scheme, "alias", "") == "":
                 raise ConfigurationError(
                     f"Project {name!r} references an AutomationRuleScheme with no "
                     f"alias; give the declaration an explicit alias."
                 )
+            if style == "team-managed":
+                from stint.schema.automation import ControlFieldGuard
+                from stint.schema.permissions import ProjectRole
+
+                for rule in automation_rule_scheme.rules:
+                    if not isinstance(rule, ControlFieldGuard):
+                        continue
+                    if not rule.fields:
+                        raise ConfigurationError(
+                            f"ControlFieldGuard {rule.alias!r} on team-managed project "
+                            f"{name!r} must declare fields=[...] explicitly — team-managed "
+                            f"projects have no company-managed screens to derive the "
+                            f"control fields from."
+                        )
+                    role_writers = [w for w in rule.allowed_writers if isinstance(w, ProjectRole)]
+                    if role_writers:
+                        raise ConfigurationError(
+                            f"ControlFieldGuard {rule.alias!r} on team-managed project "
+                            f"{name!r} declares ProjectRole writers {role_writers!r} — "
+                            f"team-managed projects have no classic project roles. "
+                            f"Allow-list users and groups only."
+                        )
 
         # Track inverse linkage: each issuetype learns which project(s) include
         # it. Used by AsyncSession.add() to infer project when unambiguous.

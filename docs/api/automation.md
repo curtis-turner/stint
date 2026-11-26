@@ -16,6 +16,13 @@ Two declarations:
   cosmetic for API clients since the override-screen-security
   deprecation, JRACLOUD-98054).
 
+Both project styles are supported. The rules are tenant objects scoped by
+project id, so a team-managed project binds the same scheme and reconciles
+through the team-managed apply path (`stint apply --dialect jira_cloud_tmp`)
+with the same cores. Team-managed guards declare `fields=` explicitly (no
+screens to derive control fields from) and allow-list users/groups only
+(team-managed projects have no classic project roles).
+
 See the [Schema guide](../guides/schema.md#automation-rules-and-the-control-field-guard)
 for the full walkthrough and the
 [Locking guide](../guides/locking.md) for the threat model.

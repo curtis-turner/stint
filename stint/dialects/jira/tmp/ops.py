@@ -8,9 +8,14 @@ options array, ``write_layout`` PUTs the entire item list), which doesn't fit
 that per-Change-type model. These functions operate directly against a
 ``TmpDialect`` + ``TmpState`` -- not ``stint.migrations.context.
 MigrationContext`` -- so this stays fully inside ``stint/dialects/jira/tmp/``
-with zero coupling to core migration machinery. Wiring these into real
-migrations/CLI (which needs the ``Engine.dialect`` typing question resolved)
-is deferred to a later phase.
+with zero coupling to core migration machinery for the project-scoped
+surface (fields, work types, layouts).
+
+The one deliberate exception: automation rules. They are tenant objects
+whose wire behavior is identical for both project styles, so the TMP apply
+reuses ``migrations.op``'s context-free cores (create/update/delete) rather
+than forking that logic -- a fix to the shared payload shapes lands on both
+paths at once.
 """
 
 from __future__ import annotations
@@ -18,7 +23,9 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
+from stint.autogen.desired import DesiredAutomationRule
 from stint.dialects.jira.tmp.desired import TmpDesired, TmpDesiredField, TmpDesiredWorkType
 from stint.dialects.jira.tmp.dialect import TmpDialect
 from stint.dialects.jira.tmp.models import (
@@ -30,7 +37,18 @@ from stint.dialects.jira.tmp.models import (
     TmpSnapshot,
 )
 from stint.dialects.jira.tmp.state import TmpState
-from stint.exceptions import NotFoundError, StintError, TmpApiError
+from stint.exceptions import ConfigurationError, NotFoundError, StintError, TmpApiError
+from stint.migrations.op import (
+    _automation_create_core,
+    _automation_delete_core,
+    _automation_update_core,
+    _scope_apis_for_keys,
+)
+from stint.state.file import AutomationRuleMapping, StateFile
+from stint.state.snapshot import AutomationRuleSnapshot
+
+if TYPE_CHECKING:
+    from stint.dialects.jira.tmp.reconcile import UpsertAutomationRule
 
 
 @dataclass
@@ -53,6 +71,10 @@ class TmpApplyContext:
     project: TmpProjectContext
     state: TmpState
     on_state_changed: Callable[[], None] | None = None
+    # The shared state file (not the project-scoped TmpState): automation
+    # rules are tenant objects, so their alias->uuid mappings live at the
+    # file root next to the project ids their scopes resolve from.
+    file_state: StateFile | None = None
 
     def persist(self) -> None:
         """Invoke the checkpoint sink if one was provided. No-op otherwise.
@@ -354,3 +376,75 @@ def _synthesize_template_item(
         operations={},
         provider={},
     )
+
+
+async def tmp_upsert_automation_rule(
+    ctx: TmpApplyContext,
+    change: UpsertAutomationRule,
+    wanted: Mapping[str, DesiredAutomationRule],
+    reflected: Mapping[str, AutomationRuleSnapshot],
+) -> None:
+    """Reconcile one declared automation rule (create / adopt / update).
+
+    Thin delegation to the context-free cores in ``stint.migrations.op`` --
+    the wire behavior (complete create payload, guard lockout check,
+    apply-time ref resolution, scope ARIs, state) is shared with the
+    company-managed path. Requires ``ctx.file_state``: the alias->uuid
+    mappings and the project ids the scope ARIs resolve from live at the
+    state-file root, not in the project-scoped ``TmpState``.
+    """
+    if ctx.file_state is None:
+        raise ConfigurationError(
+            "automation rules need the shared state file on TmpApplyContext (file_state); "
+            "their alias->uuid mappings live there, not in tmp_projects."
+        )
+    want = wanted[change.alias]
+    kwargs: dict[str, Any] = dict(
+        alias=want.alias,
+        name=want.name,
+        description=want.description,
+        payload=want.payload,
+        scope_projects=list(want.scope_projects),
+        refs=[{"ref": ref_name, "kind": kind, "value": declared} for ref_name, kind, declared in want.refs],
+        enabled=want.enabled,
+        is_guard=want.is_guard,
+        allowed_writers=[{"kind": kind, "value": declared} for kind, declared in want.allowed_writers],
+        actor=want.actor,
+        tmp_fields=dict(ctx.state.fields),
+    )
+    if change.action == "create":
+        await _automation_create_core(ctx.dialect, ctx.file_state, ctx.persist, allow_lockout=False, **kwargs)
+        return
+    if change.action == "adopt":
+        live_uuid = await ctx.dialect.find_rule_uuid_by_name(want.name)
+        if live_uuid is None:
+            # Adopted plans are advisory (the reflect snapshot could have
+            # aged a few seconds); a create resolves it just as well.
+            await _automation_create_core(ctx.dialect, ctx.file_state, ctx.persist, allow_lockout=False, **kwargs)
+            return
+        ctx.file_state.automation_rules[change.alias] = AutomationRuleMapping(
+            id=live_uuid,
+            name=want.name,
+            scope_projects=list(want.scope_projects),
+        )
+        ctx.persist()
+        # The adopted (hand-built) rule keeps its content, but the declared
+        # scope still pins it to the bound project, like the CMP adopt.
+        if want.scope_projects:
+            apis = await _scope_apis_for_keys(
+                ctx.dialect, ctx.file_state, ctx.persist, want.scope_projects, op_name="adopt_automation_rule"
+            )
+            await ctx.dialect.set_rule_scope(live_uuid, apis)
+        return
+    # action == "update": the recorded uuid gets the full declared payload.
+    await _automation_update_core(ctx.dialect, ctx.file_state, ctx.persist, allow_lockout=False, **kwargs)
+
+
+async def tmp_delete_automation_rule(ctx: TmpApplyContext, alias: str) -> None:
+    """Disable + delete a state-tracked rule that is no longer declared."""
+    if ctx.file_state is None:
+        raise ConfigurationError(
+            "automation rules need the shared state file on TmpApplyContext (file_state); "
+            "their alias->uuid mappings live there, not in tmp_projects."
+        )
+    await _automation_delete_core(ctx.dialect, ctx.file_state, ctx.persist, alias)

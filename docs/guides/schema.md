@@ -422,6 +422,28 @@ apps cannot call it) and an administrator-level account — stint probes
 that with a read before writing anything and stops on a 403 with a clear
 message.
 
+### Team-managed projects
+
+The rules are tenant objects scoped by project id — nothing in the
+rule-management API distinguishes team-managed from company-managed
+projects — so the guard binds to a team-managed `Project` the same way
+(`__automation_rule_scheme__`) and reconciles through the team-managed
+apply path (`stint apply --dialect jira_cloud_tmp`), reusing the same
+cores. Two differences, enforced at declaration:
+
+- **`fields=` is required.** Team-managed projects have no
+  company-managed screen objects, so the control-field derivation
+  (create/view minus edit) has nothing to derive from — the guard declares
+  its fields explicitly.
+- **Users and groups only in `allowed_writers`.** Team-managed projects
+  have no classic project roles, so `ProjectRole` writers are rejected.
+
+The guard is arguably more valuable there: a team-managed project has no
+field-level lock at all (anyone who can edit an issue can edit every
+editable field, UI and API alike), so detect-and-revert is the only
+control. The runnable version lives in
+[`examples/team_managed/vuln_management.py`](https://github.com/curtis-turner/stint/tree/main/examples/team_managed).
+
 `engine.check` uses the guard to split the cosmetic-lock warning: control
 fields with no enabled guard covering them warn as before, covered fields
 report as info naming the rule, and a drifted guard (disabled in Jira,

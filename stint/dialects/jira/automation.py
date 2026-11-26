@@ -17,11 +17,13 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
+import warnings
 from typing import Any, ClassVar
 
 from stint.client.http import JiraHTTPClient
 from stint.dialects.jira import common
-from stint.exceptions import PermissionError, ReflectionError, StintError
+from stint.exceptions import NotFoundError, PermissionError, ReflectionError, StintError, TransportError
+from stint.state.snapshot import AutomationRuleSnapshot
 
 # Page-loop budget shared with the other reflect loops.
 _MAX_AUTOMATION_PAGES = common._MAX_PAGES
@@ -193,6 +195,41 @@ class AutomationRuleClient:
         )
 
     # ── Actor resolution ──────────────────────────────────────────────
+    async def reflect_automation_rules(self) -> dict[str, AutomationRuleSnapshot]:
+        """Reflect all automation rules (``rule/summary`` + ``GET rule/{uuid}``).
+
+        Rule-management lives on api.atlassian.com, outside the tenant REST
+        root; a tenant that never touches automation (or an account the
+        rule API refuses) must not break the whole reflect, so failures
+        degrade to an empty map. The request's reflect contract is summary
+        then per-rule GET — payloads for every summarized rule, which keeps
+        the diff exact at the cost of one GET per rule (fine at automation
+        rule counts tenants actually have; revisit if that changes).
+        """
+        try:
+            summaries = await self.list_rule_summaries()
+        except (PermissionError, NotFoundError, TransportError) as e:
+            warnings.warn(f"automation rule reflection skipped ({e})", stacklevel=2)
+            return {}
+        rules: dict[str, AutomationRuleSnapshot] = {}
+        for summary in summaries:
+            uuid = str(summary.get("uuid", ""))
+            if not uuid:
+                continue
+            payload: dict[str, Any] = {}
+            try:
+                payload = await self.get_rule(uuid)
+            except (NotFoundError, TransportError):
+                pass  # summary without a readable body: keep the summary shape
+            rules[uuid] = AutomationRuleSnapshot(
+                uuid=uuid,
+                name=str(summary.get("name", payload.get("name", ""))),
+                state=str(summary.get("state", payload.get("state", "")) or ""),
+                scope_apis=tuple(str(a) for a in summary.get("ruleScopeARIs") or []),
+                payload=payload,
+            )
+        return rules
+
     async def find_automation_actor_id(self) -> str:
         """The "Automation for Jira" app account's accountId, cached.
 

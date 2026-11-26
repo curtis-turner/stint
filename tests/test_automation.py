@@ -174,18 +174,49 @@ def test_automation_rule_scheme_registers():
         AutomationRuleScheme(alias="bad", rules=[_guard(), _guard(alias="other_guard")])
 
 
-def test_project_rejects_team_managed_automation_scheme():
+def test_team_managed_guard_requirements():
+    """Team-managed bindings are supported with two requirements: the guard
+    declares its fields explicitly (no screens to derive control fields
+    from) and its writers are users/groups (no classic project roles)."""
+    severity = CustomField(alias="tmp_severity", name="Severity", type=SelectField, options=["Low", "High"])
+
     class Bug(IssueType):
         __alias__ = "bug"
 
     scheme = AutomationRuleScheme(alias="trk_rules", rules=[_guard()])
-    with pytest.raises(ConfigurationError, match="team-managed but references an AutomationRuleScheme"):
+
+    with pytest.raises(ConfigurationError, match="must declare fields="):
 
         class Bad(Project):
             __key__ = "BAD"
             __issuetypes__ = [Bug]
             __style__ = "team-managed"
             __automation_rule_scheme__ = scheme
+
+    role_scheme = AutomationRuleScheme(
+        alias="trk_rules_role",
+        rules=[_guard(fields=[severity], allowed_writers=[User("svc@example.com"), ProjectRole("Administrators")])],
+    )
+    with pytest.raises(ConfigurationError, match="no classic project roles"):
+
+        class AlsoBad(Project):
+            __key__ = "ALSO_BAD"
+            __issuetypes__ = [Bug]
+            __style__ = "team-managed"
+            __automation_rule_scheme__ = role_scheme
+
+    ok_scheme = AutomationRuleScheme(
+        alias="trk_rules_ok",
+        rules=[_guard(fields=[severity], allowed_writers=[User("svc@example.com")])],
+    )
+
+    class Good(Project):
+        __key__ = "GOOD"
+        __issuetypes__ = [Bug]
+        __style__ = "team-managed"
+        __automation_rule_scheme__ = ok_scheme
+
+    assert Good.__automation_rule_scheme__ is ok_scheme
 
 
 def test_validate_flags_undeclared_guard_role():
@@ -866,7 +897,7 @@ async def test_reflect_automation_rules_summaries_then_payloads():
         return_value=httpx.Response(200, json={"rule": {"name": "TRK: revert control-field edits", "components": []}})
     )
     dialect = JiraCloudDialect(_client_of(mock))
-    rules = await dialect._reflect_automation_rules()
+    rules = await dialect.reflect_automation_rules()
     rule = rules["uuid-1"]
     assert rule.name == "TRK: revert control-field edits"
     assert rule.state == "ENABLED"
@@ -882,7 +913,7 @@ async def test_reflect_automation_rules_degrades_on_403():
     mock.get(f"{AUTOMATION_ROOT}/rule/summary").mock(return_value=httpx.Response(403, json={"errors": []}))
     dialect = JiraCloudDialect(_client_of(mock))
     with pytest.warns(UserWarning, match="automation rule reflection skipped"):
-        rules = await dialect._reflect_automation_rules()
+        rules = await dialect.reflect_automation_rules()
     assert rules == {}
 
 

@@ -8,6 +8,19 @@ numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Automation rule schemes on team-managed projects.** The rules are
+  tenant objects scoped by project id — nothing in the rule-management
+  API cares about project style — so `Project.__automation_rule_scheme__`
+  now binds on team-managed projects and the TMP apply path
+  (`stint apply --dialect jira_cloud_tmp`) reconciles the bound rules
+  with the same context-free cores the company-managed ops use (adopt by
+  name, idempotent payload diff via the recorded refs, scope ARIs from
+  the project id, delete behind `--allow-delete`). Two team-managed
+  requirements enforced at declaration: the guard declares `fields=`
+  explicitly (no screens to derive control fields from) and
+  `allowed_writers` are users/groups (no classic project roles). The
+  team-managed example (`examples/team_managed/vuln_management.py`) wires
+  the guard end to end.
 - **Automation rule schemes** (sections 1-2 of the automation-rules
   request). Declare `AutomationRule` (payload from a `GET rule/{uuid}`
   export with tenant ids replaced by `{{stint.<kind>.<name>}}` references,

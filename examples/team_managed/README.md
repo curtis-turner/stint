@@ -112,7 +112,35 @@ Enter a value:
 Type `yes` to proceed. Pass `--auto-approve` instead of confirming
 interactively (for scripts/CI).
 
-## 6. Inspect state
+## 6. The automation guard
+
+The schema also declares a `ControlFieldGuard` bound to the project with
+`__automation_rule_scheme__` — an Automation rule that fires when `Severity`
+changes and puts the previous value back if the writer is not in
+`allowed_writers`. Team-managed projects have no field-level lock at all
+(anyone who can edit an issue can edit every field, UI and API alike), so
+the guard is the enforcement, not a cosmetic screen.
+
+The same `apply` command from step 5 reconciles the rule: the plan shows
+`+ automation_rule (create)` the first time and nothing on re-runs (the
+rule diffs idempotent against what Jira echoes). Before applying, put the
+account you authenticate with into the guard's `allowed_writers` (replace
+`svc-automation@example.com` with your `STINT_USER` email) — stint refuses
+to apply a guard that would revert its own writes.
+
+Two requirements are specific to team-managed projects, and `validate`
+enforces both: the guard declares `fields=[...]` explicitly (there are no
+screens to derive control fields from), and the allow-list uses users and
+groups only (team-managed projects have no classic project roles).
+
+To see the guard work: change `Severity` on any issue as a user *not* in
+`allowed_writers` — the value snaps back in seconds and the issue gains a
+comment ("Reverted an edit to the protected field(s)…"). Your own edits are
+left alone. The rule-management API needs an administrator-level account;
+if reflect's rule listing comes back 403, the guard cannot be managed with
+that token.
+
+## 7. Inspect state
 
 ```bash
 cat examples/team_managed/vm-devel.state
@@ -121,9 +149,11 @@ cat examples/team_managed/vm-devel.state
 There's no `stint current`/`stint history` equivalent here -- there's no
 revision graph to be "at revision X of" (see the design-record link above for
 why). The state file's `tmp_projects.VM` block is the only persisted record:
-field/work-type/layout ids, keyed by alias.
+field/work-type/layout ids, keyed by alias. The automation rule's
+alias→uuid mapping lives at the state file's root (`automation_rules:`) —
+the rules are tenant objects, not project-scoped ones.
 
-## 7. Change the schema and reconcile
+## 8. Change the schema and reconcile
 
 Edit `vuln_management.py` (e.g. add another `CustomField`, or change
 `Severity`'s options), then rerun step 5's `apply` command. The plan will show
@@ -153,3 +183,11 @@ with `--allow-delete` (removes anything no longer declared; still no undo).
   to `--project-key` doesn't match any `Project.__key__` in the schema
   module. Check for typos, or that you edited `__key__` consistently if you
   renamed the example project.
+- **`the authenticated account (...) is not among the guard's allowed
+  writers`** — the `ControlFieldGuard` would revert the account stint
+  authenticates as. Add your `STINT_USER` email to `allowed_writers` (or
+  pass `--allow-lockout` to force it, and enjoy the revert loop).
+- **`NOTE: automation_rule ... state references uuid ... but the rule is
+  not present in Jira`** — the rule was deleted in the Jira UI (or by
+  another tool). Delete the alias from the state file's `automation_rules`
+  block and re-run apply to recreate it.

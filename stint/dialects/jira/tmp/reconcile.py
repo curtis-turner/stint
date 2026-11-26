@@ -15,21 +15,28 @@ design record this implements.
 from __future__ import annotations
 
 import dataclasses
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 
+from stint.autogen.desired import DesiredAutomationRule
 from stint.dialects.jira.tmp.desired import TmpDesired, TmpDesiredField, TmpDesiredWorkType
 from stint.dialects.jira.tmp.models import TmpLayout, TmpSnapshot
 from stint.dialects.jira.tmp.ops import (
     TmpApplyContext,
+    tmp_delete_automation_rule,
     tmp_delete_field,
     tmp_delete_worktype,
     tmp_set_layout,
+    tmp_upsert_automation_rule,
     tmp_upsert_field,
     tmp_upsert_worktype,
 )
 from stint.dialects.jira.tmp.state import TmpState
 from stint.exceptions import ConfigurationError
-from stint.state.snapshot import CustomFieldSnapshot
+from stint.schema.automation import normalized_rule_payload, ref_placeholder, substitute_refs, unresolved_refs
+from stint.state.file import StateFile
+from stint.state.snapshot import AutomationRuleSnapshot, CustomFieldSnapshot
 
 
 @dataclass(frozen=True)
@@ -90,6 +97,28 @@ class SetLayout:
     alias: str  # work-type alias
 
 
+@dataclass(frozen=True)
+class UpsertAutomationRule:
+    """Reconcile one declared automation rule in place.
+
+    ``action`` says what the plan decided: ``create`` (nothing in state),
+    ``adopt`` (an existing rule matches the declared name — recorded, then
+    scoped), or ``update`` (the recorded rule drifted from the declared
+    payload/enabled/scope). The wire calls happen in
+    ``tmp_upsert_automation_rule``; the rule payloads carry the scope and
+    enabled state, so no separate state/scope kinds exist."""
+
+    alias: str
+    action: str
+
+
+@dataclass(frozen=True)
+class DeleteAutomationRule:
+    """Remove a state-tracked rule no longer declared (``--allow-delete``)."""
+
+    alias: str
+
+
 TmpChange = (
     CreateField
     | AdoptField
@@ -99,6 +128,8 @@ TmpChange = (
     | CreateWorkType
     | DeleteWorkType
     | SetLayout
+    | UpsertAutomationRule
+    | DeleteAutomationRule
 )
 
 
@@ -129,14 +160,18 @@ class TmpAmbiguousFieldError(ConfigurationError):
 # worktypes before their layouts, deletes last (mirrors autogen/emit.py's
 # phase-sort convention, adapted to TMP's smaller op set). AdoptField shares
 # CreateField's phase and, when emitted, precedes that alias's UpdateField so
-# the update sees the newly-adopted id in state.
+# the update sees the newly-adopted id in state. Automation rules come after
+# the layouts: their payloads reference the project's field ids, which only
+# exist once the field ops (phase 0) have persisted the alias->id map.
 _APPLY_PHASE: dict[type, int] = {
     CreateField: 0,
     AdoptField: 0,
     UpdateField: 0,
     CreateWorkType: 1,
     SetLayout: 2,
+    UpsertAutomationRule: 3,
     DeleteWorkType: 3,
+    DeleteAutomationRule: 4,
     DeleteField: 4,
     DropFieldMapping: 4,
 }
@@ -144,6 +179,111 @@ _APPLY_PHASE: dict[type, int] = {
 
 def sort_tmp_changes(changes: list[TmpChange]) -> list[TmpChange]:
     return sorted(changes, key=lambda c: _APPLY_PHASE[type(c)])
+
+
+def plan_tmp_automation(
+    desired_rules: dict[str, DesiredAutomationRule],
+    reflected: dict[str, AutomationRuleSnapshot],
+    file_state: StateFile,
+    tmp_fields: Mapping[str, str],
+    *,
+    allow_delete: bool = False,
+) -> tuple[list[TmpChange], list[str]]:
+    """Pure: reconcile plan for the declared automation rules.
+
+    Mirrors the CMP automation diff (``autogen.diff._diff_automation_rules``)
+    on the same shared state mapping (``StateFile.automation_rules``):
+    adoption matches an existing rule by exact name on first application,
+    the payload comparison normalizes both sides and resolves refs offline
+    from the TMP field map plus the refs a previous apply recorded, and
+    undeclared rules are left unmanaged unless ``--allow-delete`` removes
+    state-tracked ones. Returns (changes, warnings).
+    """
+    changes: list[TmpChange] = []
+    warnings: list[str] = []
+    for alias, want in desired_rules.items():
+        if alias not in file_state.automation_rules:
+            existing = next(
+                (rule for rule in reflected.values() if rule.name.lower() == want.name.lower()),
+                None,
+            )
+            if existing is not None:
+                changes.append(UpsertAutomationRule(alias=alias, action="adopt"))
+            else:
+                changes.append(UpsertAutomationRule(alias=alias, action="create"))
+            continue
+
+        mapping = file_state.automation_rules[alias]
+        actual = reflected.get(mapping.id)
+        if actual is None:
+            warnings.append(
+                f"automation_rule {alias!r}: state references uuid {mapping.id!r} but the rule "
+                f"is not present in Jira (out-of-band delete?)"
+            )
+            continue
+
+        comparison = _tmp_rule_payload_comparable(want, actual, file_state, tmp_fields)
+        payload_drift = comparison is False
+        state_drift = mapping.enabled != want.enabled
+        scope_drift = list(mapping.scope_projects or ()) != list(want.scope_projects)
+        if payload_drift or state_drift or scope_drift:
+            changes.append(UpsertAutomationRule(alias=alias, action="update"))
+        elif comparison is None:
+            warnings.append(
+                f"automation_rule {alias!r}: payload not comparable offline (a ref is "
+                f"unresolved and no previous apply recorded its value); the next apply "
+                f"rewrites the rule."
+            )
+            changes.append(UpsertAutomationRule(alias=alias, action="update"))
+
+    if allow_delete:
+        for alias in file_state.automation_rules:
+            if alias not in desired_rules:
+                changes.append(DeleteAutomationRule(alias))
+
+    return sort_tmp_changes(changes), warnings
+
+
+def _tmp_rule_payload_comparable(
+    want: DesiredAutomationRule,
+    actual: AutomationRuleSnapshot,
+    file_state: StateFile,
+    tmp_fields: Mapping[str, str],
+) -> bool | None:
+    """Three-way payload comparison (True equal / False drift / None unknown).
+
+    Mirrors ``autogen.diff._rule_payload_comparable`` with the field refs
+    resolved through the team-managed project's alias→fieldId map; anything
+    else (users, groups, roles) falls back to the refs a previous apply
+    recorded in state. None when neither source resolves every ref: the
+    apply-time resolution is authoritative, the plan degrades to a rewrite.
+    """
+    resolved: dict[str, str] = {}
+    for ref_name, kind, declared in want.refs:
+        placeholder = ref_placeholder(kind, ref_name)
+        if kind == "field":
+            field_mapping = file_state.custom_fields.get(declared)
+            if field_mapping is not None:
+                resolved[placeholder] = field_mapping.id
+            elif declared in tmp_fields:
+                resolved[placeholder] = tmp_fields[declared]
+        elif kind == "system":
+            resolved[placeholder] = declared
+    mapping_refs = file_state.automation_rules[want.alias].refs if want.alias in file_state.automation_rules else {}
+    for ref_name, kind, _declared in want.refs:
+        placeholder = ref_placeholder(kind, ref_name)
+        if placeholder not in resolved and mapping_refs.get(ref_name):
+            resolved[placeholder] = mapping_refs[ref_name]
+    if any(ref_placeholder(kind, ref_name) not in resolved for ref_name, kind, _declared in want.refs):
+        return None
+    declared = substitute_refs(json.loads(json.dumps(want.payload)), resolved)
+    if unresolved_refs(declared):
+        return None
+    if normalized_rule_payload(declared, is_guard=want.is_guard) != normalized_rule_payload(
+        actual.payload, is_guard=want.is_guard
+    ):
+        return False
+    return True
 
 
 def _field_drifted(
@@ -378,7 +518,11 @@ def plan_tmp(
 
 
 async def apply_tmp_plan(
-    ctx: TmpApplyContext, changes: list[TmpChange], desired: TmpDesired, snapshot: TmpSnapshot
+    ctx: TmpApplyContext,
+    changes: list[TmpChange],
+    desired: TmpDesired,
+    snapshot: TmpSnapshot,
+    reflected_rules: Mapping[str, AutomationRuleSnapshot] | None = None,
 ) -> None:
     """Execute a plan produced by ``plan_tmp``, in a safe (already-sorted) order."""
     renamed: dict[str, str] = {}  # field_id -> post-rename name (L26)
@@ -415,6 +559,10 @@ async def apply_tmp_plan(
             await tmp_upsert_worktype(ctx, desired.worktypes[change.alias])
         elif isinstance(change, DeleteWorkType):
             await tmp_delete_worktype(ctx, change.alias)
+        elif isinstance(change, UpsertAutomationRule):
+            await tmp_upsert_automation_rule(ctx, change, desired.automation_rules, reflected_rules or {})
+        elif isinstance(change, DeleteAutomationRule):
+            await tmp_delete_automation_rule(ctx, change.alias)
         elif isinstance(change, SetLayout):
             worktype_id = ctx.state.worktypes[change.alias]
             current_layout = snapshot.layouts.get(worktype_id)
