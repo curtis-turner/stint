@@ -229,11 +229,14 @@ Other deltas between the UI-built rule and stint's generated payload
 - the UI rule is `writeAccessType: "OWNER_ONLY"` and its comment has
   `sendNotifications: true` (stint sends UNRESTRICTED / false).
 
-Operational lesson from the harvest session: right after a plan change
-(free → standard mid-session), rule execution can stall tenant-wide for
-a window — a known-good comment-only rule stopped running, then ran
-again minutes later. A silent no-run is not always a shape problem;
-probe with a comment-only rule before blaming the payload.
+Condition semantics (pinned 2026-11-26, from the harvest's audit log):
+the user condition STOPS the rule before any action — an edit by an
+allowed writer produces no comment, no revert, and (in the UI audit
+log) a run that ends at the condition. The harvest's early confusion
+("the rule didn't trigger") was this working by design: the UI-built
+rule excludes the primary account, so trips made with it are correctly
+ignored. A silent no-action on an allowed-writer edit is the guard
+WORKING; verify through the audit log's run entry, not the issue.
 
 ## 4. stint wiring notes
 
