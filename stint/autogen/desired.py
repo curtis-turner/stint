@@ -233,6 +233,33 @@ class DesiredWorkflowScheme:
 
 
 @dataclass(frozen=True)
+class DesiredAutomationRule:
+    """One declared automation rule (``AutomationRule`` or the generated
+    ``ControlFieldGuard`` payload).
+
+    ``payload`` is the rule JSON with ``{{stint.*}}`` placeholders intact.
+    ``refs`` are (name, kind, declared value) triples — ops resolve them at
+    apply time (custom-field aliases from state, emails to accountIds,
+    role/group names to ids). ``scope_projects`` comes from the scheme's
+    bound projects (project keys); create and the scope op resolve ids at
+    apply. Guards carry ``allowed_writers`` (kind, declared value) so apply
+    can enforce the never-fight-the-service rule. ``actor`` is the declared
+    "Run rule as" email/accountId, None = Jira's A4J app actor.
+    """
+
+    alias: str
+    name: str
+    description: str
+    payload: dict[str, Any]
+    refs: tuple[tuple[str, str, str], ...] = ()
+    enabled: bool = True
+    is_guard: bool = False
+    allowed_writers: tuple[tuple[str, str], ...] = ()
+    scope_projects: tuple[str, ...] = ()
+    actor: str | None = None
+
+
+@dataclass(frozen=True)
 class DesiredProject:
     alias: str  # uses project key
     key: str
@@ -249,6 +276,7 @@ class DesiredProject:
     workflow_scheme: str | None = None  # alias
     lead_role: str | None = None  # project role name the lead is added to (CMP only)
     roles: tuple[DesiredRoleActors, ...] = ()  # declared __roles__, declaration order
+    automation_rule_scheme: str | None = None  # alias
 
 
 @dataclass
@@ -271,6 +299,7 @@ class DesiredSnapshot:
     permission_schemes: dict[str, DesiredPermissionScheme] = field(default_factory=dict)
     workflows: dict[str, DesiredWorkflow] = field(default_factory=dict)
     workflow_schemes: dict[str, DesiredWorkflowScheme] = field(default_factory=dict)
+    automation_rules: dict[str, DesiredAutomationRule] = field(default_factory=dict)
     projects: dict[str, DesiredProject] = field(default_factory=dict)
 
 
@@ -308,6 +337,8 @@ class _Scope:
     permission_schemes: frozenset[str]  # aliases
     workflows: frozenset[str]  # aliases
     workflow_schemes: frozenset[str]  # aliases
+    automation_rules: frozenset[str]  # aliases
+    automation_rule_schemes: frozenset[str]  # aliases
 
 
 def _scope_registry(reg: Registry, project_module: str | None) -> _Scope:
@@ -339,6 +370,8 @@ def _scope_registry(reg: Registry, project_module: str | None) -> _Scope:
             permission_schemes=frozenset(reg.permission_schemes),
             workflows=frozenset(reg.workflows),
             workflow_schemes=frozenset(reg.workflow_schemes),
+            automation_rules=frozenset(reg.automation_rules),
+            automation_rule_schemes=frozenset(reg.automation_rule_schemes),
         )
     projects = {k: cls for k, cls in reg.projects.items() if cls.__module__ == project_module}
     it_classes = [it for cls in projects.values() for it in getattr(cls, "__issuetypes__", [])]
@@ -414,6 +447,22 @@ def _scope_registry(reg: Registry, project_module: str | None) -> _Scope:
             workflows.add(scheme.default.alias)
         workflows.update(w.alias for w in (scheme.mappings or {}).values())
     workflows |= {alias for alias, workflow in reg.workflows.items() if _declared_in_module(workflow)}
+    # Automation rule schemes reach the scope like the other scheme families:
+    # referenced by a scoped Project's __automation_rule_scheme__, plus
+    # declared-but-not-yet-wired in the schema module (M5 rule). The rules a
+    # scoped scheme carries come along with it.
+    automation_rule_schemes = {
+        scheme.alias
+        for proj_cls in projects.values()
+        if (scheme := getattr(proj_cls, "__automation_rule_scheme__", None)) is not None
+    }
+    automation_rule_schemes |= {
+        alias for alias, scheme in reg.automation_rule_schemes.items() if _declared_in_module(scheme)
+    }
+    automation_rules: set[str] = set()
+    for alias in automation_rule_schemes:
+        automation_rules.update(rule.alias for rule in reg.automation_rule_schemes[alias].rules)
+    automation_rules |= {alias for alias, rule in reg.automation_rules.items() if _declared_in_module(rule)}
     return _Scope(
         projects=projects,
         issuetypes=frozenset(getattr(it, "__alias__", "") for it in it_classes),
@@ -425,6 +474,8 @@ def _scope_registry(reg: Registry, project_module: str | None) -> _Scope:
         permission_schemes=frozenset(permission_schemes),
         workflows=frozenset(workflows),
         workflow_schemes=frozenset(workflow_schemes),
+        automation_rules=frozenset(automation_rules),
+        automation_rule_schemes=frozenset(automation_rule_schemes),
     )
 
 
@@ -538,6 +589,7 @@ def build_desired_snapshot(
     security_scheme_of_project: dict[str, str] = {}
     permission_scheme_of_project: dict[str, str] = {}
     workflow_scheme_of_project: dict[str, str] = {}
+    automation_scheme_of_project: dict[str, str] = {}
     for project_key, proj_cls in scope.projects.items():
         if (linked := getattr(proj_cls, "__security_scheme__", None)) is not None:
             security_scheme_of_project[project_key] = linked.alias
@@ -545,6 +597,8 @@ def build_desired_snapshot(
             permission_scheme_of_project[project_key] = linked_perm.alias
         if (linked_flow := getattr(proj_cls, "__workflow_scheme__", None)) is not None:
             workflow_scheme_of_project[project_key] = linked_flow.alias
+        if (linked_auto := getattr(proj_cls, "__automation_rule_scheme__", None)) is not None:
+            automation_scheme_of_project[project_key] = linked_auto.alias
     for project_key, proj_cls in scope.projects.items():
         issuetypes = list(getattr(proj_cls, "__issuetypes__", []))
         its_alias = _derive_its(desired, project_key, issuetypes)
@@ -564,6 +618,7 @@ def build_desired_snapshot(
             security_scheme=security_scheme_of_project.get(project_key),
             permission_scheme=permission_scheme_of_project.get(project_key),
             workflow_scheme=workflow_scheme_of_project.get(project_key),
+            automation_rule_scheme=automation_scheme_of_project.get(project_key),
             lead_role=getattr(proj_cls, "__lead_role__", None),
             roles=_desired_roles(getattr(proj_cls, "__roles__", None)),
         )
@@ -679,7 +734,95 @@ def build_desired_snapshot(
             ),
         )
 
+    # ── Automation rules ─────────────────────────────────────────────
+    for alias, scheme in reg.automation_rule_schemes.items():
+        if alias not in scope.automation_rule_schemes:
+            continue
+        bound_projects = tuple(pk for pk, scheme_alias in automation_scheme_of_project.items() if scheme_alias == alias)
+        for rule in scheme.rules:
+            if rule.alias not in scope.automation_rules:
+                continue
+            desired.automation_rules[rule.alias] = automation_rule_record(
+                rule,
+                bound_projects=bound_projects,
+                proj_cls=(scope.projects.get(bound_projects[0]) if bound_projects else None),
+            )
+
     return desired
+
+
+def automation_rule_record(
+    rule: Any,
+    *,
+    bound_projects: tuple[str, ...],
+    proj_cls: Any = None,
+) -> DesiredAutomationRule:
+    """One declared rule (``AutomationRule`` or ``ControlFieldGuard``) as a
+    desired record: payload with placeholders intact plus the ref specs the
+    ops resolve at apply time.
+
+    A guard's payload is generated here: explicit ``fields=`` win; without
+    them the control fields derive from the bound project's screens
+    (create/view minus edit — the restricted-Edit-screen pattern). The
+    team-managed path passes ``proj_cls=None`` (no screens exist there;
+    declaration validation already required explicit fields).
+    """
+    if getattr(rule, "is_guard", False):
+        from stint.audit import declared_control_fields
+
+        fields: list[Any]
+        if rule.fields is not None:
+            if not rule.fields:
+                raise RegistryError(
+                    f"ControlFieldGuard {rule.alias!r}: fields= is empty — pass at "
+                    f"least one field, or omit fields= to derive the control fields."
+                )
+            fields = list(rule.fields)
+        elif proj_cls is not None:
+            derived = declared_control_fields(proj_cls)
+            ref_keys = [k for keys in derived.values() for k in keys]
+            if not ref_keys:
+                raise RegistryError(
+                    f"ControlFieldGuard {rule.alias!r}: the bound project "
+                    f"{bound_projects[0]!r} derives no control fields (its "
+                    f"declared Edit screen is not narrower than create/view) — "
+                    f"there is nothing for the guard to protect. Pass fields= "
+                    f"or check the screen declarations."
+                )
+            fields = [_field_ref_for_key(key) for key in ref_keys]
+        else:
+            rule.field_refs()  # raises with the actionable error
+            fields = []  # unreachable
+        payload = rule.build_payload(fields)
+        # Refs cover every placeholder the payload carries: the guarded
+        # custom fields ({{stint.field.<alias>}}) and the allowed writers
+        # ({{stint.user|group|role.writerN}}). System fields are inlined
+        # (no placeholder, no ref).
+        field_ref_specs = [(f_obj.alias, "field", f_obj.alias) for f_obj in fields if isinstance(f_obj, CustomField)]
+        return DesiredAutomationRule(
+            alias=rule.alias,
+            name=rule.name or rule.alias,
+            description=rule.description or "",
+            payload=payload,
+            refs=tuple(field_ref_specs) + tuple(rule.writer_specs()),
+            enabled=rule.enabled,
+            is_guard=True,
+            allowed_writers=tuple((kind, declared) for _name, kind, declared in rule.writer_specs()),
+            scope_projects=bound_projects,
+            actor=rule.actor.value if rule.actor else None,
+        )
+    return DesiredAutomationRule(
+        alias=rule.alias,
+        name=rule.name or rule.alias,
+        description=rule.description or "",
+        payload=dict(rule.payload_data),
+        refs=tuple(rule.ref_specs()),
+        enabled=rule.enabled,
+        is_guard=False,
+        allowed_writers=(),
+        scope_projects=bound_projects,
+        actor=rule.actor.value if rule.actor else None,
+    )
 
 
 def _desired_roles(roles: Any) -> tuple[DesiredRoleActors, ...]:
@@ -698,6 +841,16 @@ def _desired_roles(roles: Any) -> tuple[DesiredRoleActors, ...]:
                 pairs.append(("group", actor.name))
         out.append(DesiredRoleActors(role_name=role_name, actors=tuple(pairs)))
     return tuple(out)
+
+
+def _field_ref_for_key(key: str) -> Any:
+    """A derived control-field reference key -> the declared object.
+
+    Derived keys are custom-field aliases or system field names; resolve the
+    alias back to its CustomField so the guard payload keeps the
+    ``{{stint.field.<alias>}}`` placeholder (system names inline directly).
+    """
+    return default_registry.custom_fields.get(key, key)
 
 
 def _derive_its(

@@ -14,7 +14,9 @@ What's in scope here:
 """
 
 import sys
+import warnings
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 import httpx
 import pytest
@@ -24,12 +26,18 @@ from stint import PATAuth, StateFile, create_engine, op
 from stint.autogen.desired import build_desired_snapshot
 from stint.autogen.diff import UpdateProject, diff
 from stint.autogen.stamp import stamp
+from stint.dialects.jira.tmp.dialect import TmpDialect
+from stint.dialects.jira.tmp.models import TmpProjectContext
+from stint.dialects.jira.tmp.ops import TmpApplyContext, tmp_upsert_automation_rule
+from stint.dialects.jira.tmp.reconcile import UpsertAutomationRule
+from stint.dialects.jira.tmp.state import TmpState
 from stint.engine import Engine
 from stint.exceptions import ConfigurationError, UnsupportedTMPOpError
 from stint.migrations.context import MigrationContext, reset_context, set_context
 from stint.registry import registry
-from stint.state.file import ProjectMapping, SimpleMapping
+from stint.state.file import AutomationRuleMapping, ProjectMapping, SimpleMapping
 from stint.state.snapshot import (
+    AutomationRuleSnapshot,
     ProjectSnapshot,
     ServerInfoSnapshot,
     Snapshot,
@@ -37,6 +45,8 @@ from stint.state.snapshot import (
 
 BASE = "https://jira.example.com"
 CLOUD_ROOT = f"{BASE}/rest/api/3"
+CLOUD_ID_TMP = "1a2b3c4d-0000-4000-8000-000000000009"
+AUTOMATION_ROOT = f"https://api.atlassian.com/automation/public/jira/{CLOUD_ID_TMP}/rest/v1"
 
 
 @pytest.fixture(autouse=True)
@@ -515,3 +525,220 @@ def test_project_metaclass_rejects_tmp_with_field_configuration():
             __key__ = "BAD"
             __style__ = "team-managed"
             __issuetypes__ = [_Bug]
+
+
+# ── Automation rules on team-managed projects ─────────────────────────
+# Rules are tenant objects: the scope ARI takes a team-managed project id
+# like any other, so the bound scheme is reconciled by the TMP apply path
+# with the same context-free cores the company-managed ops use.
+def _tmp_guard_rule(**overrides: Any) -> Any:
+    from stint.schema.automation import ControlFieldGuard
+    from stint.schema.permissions import ProjectRole  # noqa: F401  (role writers are rejected for TMP)
+    from stint.schema.roles import User
+
+    kwargs: dict[str, Any] = {
+        "alias": "vuln_control_guard",
+        "name": "VULN: revert control-field edits",
+        "fields": [_tmp_severity_field()],
+        # The authenticated account (acct-me = me@example.com in the mocked
+        # tenant) must be an allowed writer — stint refuses a guard that
+        # would revert the service's own writes.
+        "allowed_writers": [User("me@example.com")],
+        "on_violation": ["revert", "comment"],
+    }
+    kwargs.update(overrides)
+    return ControlFieldGuard(**kwargs)
+
+
+def _tmp_severity_field() -> Any:
+    from stint import CustomField, SelectField
+
+    return CustomField(alias="vuln_severity", name="Severity", type=SelectField, options=["Low", "High"])
+
+
+def _tmp_schema_project(**guard_overrides: Any) -> Any:
+    """A team-managed Project with the guard bound (fresh classes per test)."""
+    from stint import IssueType, Project
+    from stint.schema.automation import AutomationRuleScheme
+
+    guard = _tmp_guard_rule(**guard_overrides)
+    scheme = AutomationRuleScheme(alias="vuln_rules", name="VULN Automation", rules=[guard])
+
+    class Vuln(IssueType):
+        __alias__ = "vuln"
+
+    class VulnProject(Project):
+        __key__ = "VULN"
+        __style__ = "team-managed"
+        __issuetypes__ = [Vuln]
+        __automation_rule_scheme__ = scheme
+
+    return VulnProject
+
+
+def test_tmp_desired_carries_automation_rules():
+    from stint.dialects.jira.tmp.desired import build_tmp_desired
+
+    project_cls = _tmp_schema_project()
+    desired = build_tmp_desired(project_cls)
+    (record,) = desired.automation_rules.values()
+    assert record.is_guard is True
+    assert record.scope_projects == ("VULN",)
+    assert record.payload["components"]  # trigger + condition + edit + comment
+    assert ("tmp_severity", "field", "tmp_severity") in record.refs or (
+        "vuln_severity",
+        "field",
+        "vuln_severity",
+    ) in record.refs
+    # The field ref resolves through the TMP field map at apply time, so the
+    # ref's declared value is the field alias the TmpState records.
+    field_refs = [r for r in record.refs if r[1] == "field"]
+    assert field_refs, "the guard payload must reference the declared field"
+
+
+def test_plan_tmp_automation_create_adopt_update_delete():
+    import json
+
+    from stint.autogen.desired import automation_rule_record
+    from stint.dialects.jira.tmp.reconcile import (
+        DeleteAutomationRule,
+        UpsertAutomationRule,
+        plan_tmp_automation,
+    )
+
+    project_cls = _tmp_schema_project()
+    from stint.dialects.jira.tmp.desired import build_tmp_desired
+
+    desired = build_tmp_desired(project_cls)
+    rules = desired.automation_rules
+    state = StateFile(env="devel", jira_url=BASE)
+
+    # Nothing in state, nothing in Jira: create.
+    changes, warnings = plan_tmp_automation(rules, {}, state, {})
+    assert [(c.alias, c.action) for c in changes if isinstance(c, UpsertAutomationRule)] == [
+        ("vuln_control_guard", "create")
+    ]
+    assert not warnings
+
+    # A rule with the declared name already exists: adopt.
+    reflected = {"uuid-live": AutomationRuleSnapshot(uuid="uuid-live", name="VULN: revert control-field edits")}
+    changes, _ = plan_tmp_automation(rules, reflected, state, {})
+    assert [(c.alias, c.action) for c in changes if isinstance(c, UpsertAutomationRule)] == [
+        ("vuln_control_guard", "adopt")
+    ]
+
+    # Tracked and identical (refs from a previous apply recorded in state):
+    # no change at all — the idempotence the apply path depends on. The
+    # reflected payload is what a previous apply produced: the declared
+    # payload with the recorded refs substituted.
+    record = rules["vuln_control_guard"]
+    recorded_refs = {name: f"resolved-{name}" for name, _kind, _declared in record.refs}
+    from stint.schema.automation import ref_placeholder, substitute_refs
+
+    reflected_payload = substitute_refs(
+        json.loads(json.dumps(record.payload)),
+        {
+            ref_placeholder(kind, name): value
+            for (name, kind, _d), value in zip(record.refs, recorded_refs.values(), strict=True)
+        },
+    )
+    reflected = {"uuid-live": AutomationRuleSnapshot(uuid="uuid-live", name=record.name, payload=reflected_payload)}
+    state.automation_rules["vuln_control_guard"] = AutomationRuleMapping(
+        id="uuid-live",
+        name=record.name,
+        enabled=record.enabled,
+        scope_projects=list(record.scope_projects),
+        refs=recorded_refs,
+    )
+    changes, warnings = plan_tmp_automation(rules, reflected, state, {})
+    assert not [c for c in changes if isinstance(c, UpsertAutomationRule)]
+    assert not warnings
+
+    # Payload drift (a real structural change: the comment action dropped —
+    # a description-only change is invisible to the diff by design, the op
+    # parameters own it): the recorded refs make the comparison decisive.
+    changed_rule = automation_rule_record(
+        _tmp_guard_rule(on_violation=["revert"]),
+        bound_projects=("VULN",),
+        proj_cls=None,
+    )
+    changed_rules = {"vuln_control_guard": changed_rule}
+    changes, _ = plan_tmp_automation(changed_rules, reflected, state, {})
+    assert [(c.alias, c.action) for c in changes if isinstance(c, UpsertAutomationRule)] == [
+        ("vuln_control_guard", "update")
+    ]
+
+    # allow_delete removes a state-tracked rule no longer declared.
+    changes, _ = plan_tmp_automation({}, reflected, state, {}, allow_delete=True)
+    assert [c for c in changes if isinstance(c, DeleteAutomationRule)][0].alias == "vuln_control_guard"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_apply_tmp_automation_creates_guard_rule():
+    """The end-to-end TMP create: plan -> apply -> the complete payload on
+    the wire (guard check, resolved refs, scope ARI, actor) -> state."""
+    import json
+
+    mock = respx.mock
+    mock.get(f"{BASE}/_edge/tenant_info").mock(return_value=httpx.Response(200, json={"cloudId": CLOUD_ID_TMP}))
+    mock.get(f"{CLOUD_ROOT}/myself").mock(return_value=httpx.Response(200, json={"accountId": "acct-me"}))
+    mock.get(f"{CLOUD_ROOT}/users/search").mock(
+        return_value=httpx.Response(
+            200, json=[{"accountType": "app", "displayName": "Automation for Jira", "accountId": "557058:app"}]
+        )
+    )
+    mock.get(f"{CLOUD_ROOT}/user/search").mock(
+        return_value=httpx.Response(200, json=[{"accountId": "acct-me", "emailAddress": "me@example.com"}])
+    )
+    mock.get(f"{CLOUD_ROOT}/user", params={"accountId": "acct-me", "expand": "groups"}).mock(
+        return_value=httpx.Response(200, json={"groups": {"items": []}})
+    )
+    mock.get(f"{AUTOMATION_ROOT}/rule/summary").mock(return_value=httpx.Response(200, json={"links": {}, "data": []}))
+    posted = mock.post(f"{AUTOMATION_ROOT}/rule").mock(return_value=httpx.Response(201, json={"ruleUuid": "uuid-new"}))
+
+    project_cls = _tmp_schema_project()
+    from stint.dialects.jira.tmp.desired import build_tmp_desired
+
+    desired = build_tmp_desired(project_cls)
+
+    state = StateFile(env="devel", jira_url=BASE)
+    state.projects["VULN"] = ProjectMapping(id="10001", style="team-managed", key="VULN")
+    tmp_state = TmpState(fields={"vuln_severity": "customfield_10001"})
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)  # the dialect's experimental notice
+        dialect = TmpDialect(_tmp_client_of(mock))
+        ctx = TmpApplyContext(
+            dialect=dialect,
+            project=TmpProjectContext(
+                cloud_id=CLOUD_ID_TMP, project_id="10001", project_uuid="p-uuid", key="VULN", name="Vuln"
+            ),
+            state=tmp_state,
+            file_state=state,
+        )
+        await tmp_upsert_automation_rule(
+            ctx,
+            UpsertAutomationRule(alias="vuln_control_guard", action="create"),
+            desired.automation_rules,
+            {},
+        )
+    body = json.loads(posted.calls[0].request.read())
+    rule = body["rule"]
+    assert rule["uuid"]
+    assert rule["actor"] == {"type": "ACCOUNT_ID", "actor": "557058:app"}
+    assert rule["authorAccountId"] == "acct-me"
+    assert rule["ruleScopeARIs"] == [f"ari:cloud:jira:{CLOUD_ID_TMP}:project/10001"]
+    # The guarded field id resolved through the TMP field map, and the
+    # restore value is the verified SMART operations form.
+    edit = next(c for c in rule["components"] if c["type"] == "jira.issue.edit")
+    assert edit["value"]["operations"][0]["field"] == {"type": "ID", "value": "customfield_10001"}
+    assert edit["value"]["operations"][0]["value"] == {"type": "SMART", "value": "{{fieldChange.from}}"}
+    assert state.automation_rules["vuln_control_guard"].id == "uuid-new"
+
+
+def _tmp_client_of(mock: respx.MockRouter) -> Any:
+    """A real client whose calls route through the respx mock."""
+    from stint.client.http import JiraHTTPClient
+
+    return JiraHTTPClient(BASE, PATAuth("tok"))

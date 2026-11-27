@@ -14,14 +14,22 @@ this into a final phase-ordered list for emission.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from stint.autogen.desired import (
+    DesiredAutomationRule,
     DesiredSnapshot,
 )
 from stint.fields import jira_system_field_id
 from stint.lockout import restrict_rule_parameters
+from stint.schema.automation import (
+    normalized_rule_payload,
+    ref_placeholder,
+    substitute_refs,
+    unresolved_refs,
+)
 
 if TYPE_CHECKING:
     from stint.state.file import StateFile
@@ -407,6 +415,68 @@ class SetProjectWorkflowScheme(Change):
     status_mappings: tuple[tuple[str, str], ...] = ()  # (old status name, new status name)
 
 
+# Automation rules
+@dataclass
+class CreateAutomationRule(Change):
+    alias: str
+    name: str
+    description: str
+    payload: dict[str, Any]  # rule JSON, {{stint.*}} placeholders intact
+    scope_projects: tuple[str, ...] = ()  # bound project keys (ARIs resolved at apply)
+    refs: tuple[tuple[str, str, str], ...] = ()  # (ref name, kind, declared value)
+    enabled: bool = True
+    is_guard: bool = False
+    allowed_writers: tuple[tuple[str, str], ...] = ()  # guards: (kind, declared value)
+    actor: str | None = None  # declared actor email/accountId (None = A4J app actor)
+
+
+@dataclass
+class AdoptAutomationRule(Change):
+    """Record an existing (reflected, exact-name match) rule into state
+    without rewriting it; drift is reported by engine.check."""
+
+    alias: str
+    name: str
+
+
+@dataclass
+class UpdateAutomationRule(Change):
+    alias: str
+    name: str
+    description: str  # the op's description param overrides the payload's
+    payload: dict[str, Any]  # declared payload, placeholders intact
+    scope_projects: tuple[str, str] | tuple[str, ...] = ()
+    refs: tuple[tuple[str, str, str], ...] = ()
+    enabled: bool = True
+    is_guard: bool = False
+    allowed_writers: tuple[tuple[str, str], ...] = ()
+    actor: str | None = None
+
+
+@dataclass
+class SetAutomationRuleState(Change):
+    alias: str
+    enabled: bool
+
+
+@dataclass
+class SetAutomationRuleScope(Change):
+    """Pin a rule's project scope to the scheme's bound projects (one
+    multi-project scope, never copies). Project ids resolve at apply."""
+
+    alias: str
+    scope_projects: tuple[str, ...] = ()  # project keys
+
+
+@dataclass
+class DeleteAutomationRule(Change):
+    """Delete an undeclared rule: disable first (the API refuses enabled
+    rules), then delete. Behind ``--allow-delete`` like every destructive
+    op."""
+
+    alias: str
+
+
 # Project role actors
 @dataclass
 class AddProjectRoleActor(Change):
@@ -577,6 +647,7 @@ def diff(
     _diff_project_roles(r, desired, snapshot, state, allow_delete, member_params=member_params)
     _diff_workflows(r, desired, snapshot, state, allow_delete, member_params=member_params)
     _diff_workflow_schemes(r, desired, snapshot, state, allow_delete)
+    _diff_automation_rules(r, desired, snapshot, state, allow_delete, member_params=member_params)
     return r
 
 
@@ -1914,6 +1985,211 @@ def _maybe_emit_set_workflow_scheme(
             live=project_in_state,
         )
     )
+
+
+def _diff_automation_rules(
+    r: DiffResult,
+    desired: DesiredSnapshot,
+    snapshot: Snapshot,
+    state: StateFile,
+    allow_delete: bool,
+    member_params: dict[str, str] | None = None,
+) -> None:
+    """Diff declared automation rules against reflection (keyed by uuid from
+    state; adoption matches an existing rule by exact name on first
+    application).
+
+    The payload comparison normalizes both sides (server-generated ids,
+    timestamps, tags, and rule metadata dropped) and substitutes declared
+    refs into the declared payload — a re-run with no schema change
+    compares equal and reports no changes. Scope and enabled state diff
+    separately (they have their own endpoints). Undeclared rules are left
+    unmanaged, so adopting stint on a project with hand-built rules never
+    touches them.
+    """
+    for alias, want in desired.automation_rules.items():
+        desired_scope = _desired_scope_projects(want)
+        if alias not in state.automation_rules:
+            existing = next(
+                (rule for rule in snapshot.automation_rules.values() if rule.name.lower() == want.name.lower()),
+                None,
+            )
+            if existing is not None:
+                r.changes.append(AdoptAutomationRule(alias=alias, name=want.name))
+                if desired_scope:
+                    r.changes.append(SetAutomationRuleScope(alias=alias, scope_projects=desired_scope))
+                continue
+            r.changes.append(
+                CreateAutomationRule(
+                    alias=alias,
+                    name=want.name,
+                    description=want.description,
+                    payload=want.payload,
+                    scope_projects=desired_scope,
+                    refs=want.refs,
+                    enabled=want.enabled,
+                    is_guard=want.is_guard,
+                    allowed_writers=want.allowed_writers,
+                    actor=want.actor,
+                )
+            )
+            if desired_scope:
+                r.changes.append(SetAutomationRuleScope(alias=alias, scope_projects=desired_scope))
+            else:
+                r.warnings.append(
+                    f"automation_rule {alias!r}: no project is bound to the scheme, so the "
+                    f"rule is created site-scoped — bind projects to narrow it."
+                )
+            continue
+
+        mapping = state.automation_rules[alias]
+        actual = snapshot.automation_rules.get(mapping.id)
+        if actual is None:
+            r.warnings.append(
+                f"automation_rule {alias!r}: state references uuid {mapping.id!r} but the rule "
+                f"is not present in Jira (out-of-band delete?)"
+            )
+            continue
+
+        comparison = _rule_payload_comparable(want, actual, state, member_params, snapshot)
+        # The payload's name is dropped by the normalization (the op's name
+        # parameter owns it), so a declared rename is detected here.
+        name_drift = mapping.name != want.name
+        if comparison is False or name_drift:
+            r.changes.append(
+                UpdateAutomationRule(
+                    alias=alias,
+                    name=want.name,
+                    description=want.description,
+                    payload=want.payload,
+                    scope_projects=desired_scope or (),
+                    refs=want.refs,
+                    is_guard=want.is_guard,
+                    allowed_writers=want.allowed_writers,
+                    actor=want.actor,
+                )
+            )
+        elif comparison is None:
+            r.warnings.append(
+                f"automation_rule {alias!r}: payload comparison skipped — a ref or the "
+                f"cloudId needed to resolve the declared payload is not resolvable yet "
+                f"(created in this same migration?); engine.check reports drift once it is."
+            )
+        if want.enabled != (actual.state != "DISABLED"):
+            r.changes.append(SetAutomationRuleState(alias=alias, enabled=want.enabled))
+        if desired_scope and sorted(actual.scope_apis) != _scope_apis(desired_scope, state):
+            r.changes.append(SetAutomationRuleScope(alias=alias, scope_projects=desired_scope))
+
+    if allow_delete:
+        for alias in sorted(state.automation_rules):
+            if alias not in desired.automation_rules:
+                r.changes.append(DeleteAutomationRule(alias=alias))
+    else:
+        _warn_orphans(r, "automation_rule", state.automation_rules, desired.automation_rules)
+
+
+def _desired_scope_projects(want: DesiredAutomationRule) -> tuple[str, ...]:
+    """The declared scope as project keys (empty = site-scoped default).
+
+    The scheme's bound projects come through ``want.scope_projects``; the
+    create/scope ops resolve their Jira ids at apply, after project
+    creates run. Create carries the scope too — the API refuses a create
+    without it.
+    """
+    return tuple(want.scope_projects)
+
+
+def _scope_apis(scope_projects: tuple[str, ...], state: StateFile) -> list[str]:
+    """Project keys → ruleScopeARIs, from the state file's ids + cloudId.
+
+    Callers only compare scopes when every project id and the cloudId are
+    recorded (``_desired_scope_projects`` gates the greenfield path; the
+    comparison path checks state coverage before calling).
+    """
+    cloud_id = state.cloud_id
+    apis: list[str] = []
+    for key in scope_projects:
+        project_id = state.projects[key].id if key in state.projects else ""
+        if project_id and cloud_id:
+            apis.append(f"ari:cloud:jira:{cloud_id}:project/{project_id}")
+    return sorted(apis)
+
+
+def _rule_payload_comparable(
+    want: DesiredAutomationRule,
+    actual: Any,
+    state: StateFile,
+    member_params: dict[str, str] | None,
+    snapshot: Snapshot,
+) -> bool | None:
+    """Three-way payload comparison (True equal / False drift / None unknown).
+
+    None when a ref cannot be resolved offline (a custom-field alias not yet
+    in state, an email absent from ``member_params``, a group name — group
+    ids need a live lookup): the apply-time resolution is authoritative, the
+    diff degrades to a skip warning like the workflow restrict comparison.
+    """
+    resolved = _diff_resolve_refs(want.refs, state, member_params, snapshot)
+    mapping_refs = state.automation_rules[want.alias].refs if want.alias in state.automation_rules else {}
+    if resolved is None and mapping_refs:
+        # Fall back to the refs a previous apply resolved (recorded in
+        # state, like role actors): a re-diff stays idempotent without
+        # re-resolving emails/roles.
+        resolved = {
+            ref_placeholder(kind, ref_name): mapping_refs[ref_name]
+            for ref_name, kind, _declared in want.refs
+            if mapping_refs.get(ref_name)
+        }
+    if resolved is None:
+        return None
+    declared = substitute_refs(json.loads(json.dumps(want.payload)), resolved)
+    if unresolved_refs(declared):
+        return None
+    if normalized_rule_payload(declared, is_guard=want.is_guard) != normalized_rule_payload(
+        actual.payload, is_guard=want.is_guard
+    ):
+        return False
+    return True
+
+
+def _diff_resolve_refs(
+    refs: tuple[tuple[str, str, str], ...],
+    state: StateFile,
+    member_params: dict[str, str] | None,
+    snapshot: Snapshot,
+) -> dict[str, str] | None:
+    """Resolve declared refs to substitution values for the diff, or None.
+
+    Fields resolve through state (aliases -> customfield ids), users through
+    ``member_params`` (pre-resolved emails; raw accountIds pass through),
+    roles through the reflected global role map. Groups are not resolvable
+    offline (ids come from a live lookup) and force the None verdict.
+    """
+    out: dict[str, str] = {}
+    for ref_name, kind, declared in refs:
+        placeholder = ref_placeholder(kind, ref_name)
+        if kind == "field":
+            field_mapping = state.custom_fields.get(declared)
+            if field_mapping is None:
+                return None
+            out[placeholder] = field_mapping.id
+        elif kind == "system":
+            out[placeholder] = declared
+        elif kind == "user":
+            resolved = (member_params or {}).get(declared)
+            if resolved is None and "@" not in declared:
+                resolved = declared
+            if resolved is None:
+                return None
+            out[placeholder] = resolved
+        elif kind == "role":
+            resolved = (snapshot.project_roles or {}).get(declared)
+            if resolved is None:
+                return None
+            out[placeholder] = resolved
+        else:  # group: ids need a live lookup
+            return None
+    return out
 
 
 def _maybe_emit_set_scheme(

@@ -138,3 +138,48 @@ see — a project it owns. stint evaluates every planned role-actor removal
 and grant change against the account's verifiable memberships (its roles in
 the project, its groups) and refuses the plan when a required permission
 would be lost. See [Schema as code](schema.md#lockout-guard-never-lock-out-the-owning-account).
+
+## The guard: revert what the lock cannot stop
+
+The screen lock hides the field in the UI; the REST API still accepts the
+write, and `engine.check` says so. The enforcement layer that actually
+works is an automation rule: fire on Field value changed for the control
+fields, check who edited, and put the old value back when the writer is
+not allowed. stint generates that rule from the schema — the control
+fields it derives, the field types it knows, the service account and roles
+it should allow:
+
+```python
+from stint import AutomationRuleScheme, ControlFieldGuard, ProjectRole, User
+
+trk_guard = ControlFieldGuard(
+    alias="trk_control_guard",
+    name="TRK: revert control-field edits",
+    allowed_writers=[User("svc-automation@example.com"), ProjectRole("Administrators")],
+    on_violation=["revert", "comment"],
+)
+tracker_rules = AutomationRuleScheme(alias="trk_rules", name="TRK Automation", rules=[trk_guard])
+
+
+class Tracker(Project):
+    # ... permission scheme, roles, screens as above ...
+    __automation_rule_scheme__ = tracker_rules
+```
+
+The service account is always an allowed writer — stint refuses to apply a
+guard that would revert its own writes (`--allow-lockout` forces it, but
+the fix is declaring the writer). `engine.check` reports which control
+fields a guard covers (info), and warns when the guard is disabled, no
+longer matches the derived fields, or excludes the authenticated account.
+`engine.audit_control_fields` shares the guard's allow-list and separates
+reverted writes from unreverted ones — the unreverted set is what a
+service should page on, as a backstop for the rule failing, being
+disabled, or hitting usage limits.
+
+Known limits, to document rather than solve: the revert happens after the
+fact, so the bad value exists for seconds and both changes appear in
+history and webhooks; rule runs that perform actions are billed, so a
+busy project pays one run per blocked edit; and the generated revert
+shapes (option ids, multi-value sets, accountIds, ADF) deserve a live
+acceptance pass per field type on your own tenant —
+`scripts/verify_screen_lock.py` is the template for that verification.

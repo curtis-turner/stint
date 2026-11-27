@@ -55,7 +55,7 @@ def _platform_state() -> StateFile:
     )
     state.custom_fields["bug_root_cause"] = CustomFieldMapping(id="customfield_10043")
     state.issuetypes["bug"] = SimpleMapping(id="10010")
-    state.projects["PLAT"] = ProjectMapping(id="proj-1", key="PLAT")
+    state.projects["SEC"] = ProjectMapping(id="proj-1", key="SEC")
     return state
 
 

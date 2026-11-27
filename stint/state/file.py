@@ -321,6 +321,46 @@ class WorkflowSchemeMapping:
 
 
 @dataclass
+class AutomationRuleMapping:
+    """One alias -> Jira automation-rule binding (uuid keyed).
+
+    ``scope_projects`` records the project keys the rule was last scoped to
+    (the rule-scope op re-derives the ARIs from the project ids). ``refs``
+    records the *resolved* substitution values each apply used
+    (``{"severity": "customfield_10056", "owner": "<accountId>"}``) so
+    re-runs stay idempotent after email → accountId / alias → field-id
+    resolution, and so audits can show the ids a payload was sent with.
+    """
+
+    id: str  # rule UUID
+    name: str = ""
+    enabled: bool = True
+    scope_projects: list[str] = field(default_factory=list)  # project keys
+    refs: dict[str, str] = field(default_factory=dict)  # ref name -> resolved value
+
+    def to_dict(self) -> dict[str, Any]:
+        return _drop_empty(
+            {
+                "id": self.id,
+                "name": self.name,
+                "enabled": self.enabled,
+                "scope_projects": sorted(self.scope_projects),
+                "refs": dict(self.refs),
+            }
+        )
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any], *, where: str = "<automation rule mapping>") -> AutomationRuleMapping:
+        return cls(
+            id=_required(raw, "id", where),
+            name=raw.get("name", ""),
+            enabled=bool(raw.get("enabled", True)),
+            scope_projects=[str(k) for k in (raw.get("scope_projects") or [])],
+            refs={str(k): str(v) for k, v in (raw.get("refs") or {}).items()},
+        )
+
+
+@dataclass
 class TmpProjectState:
     """One team-managed project's alias -> Jira ID mappings.
 
@@ -364,6 +404,10 @@ class StateFile:
     jira_url: str
     jira_version: str = ""
     deployment_type: str = ""
+    # The tenant's cloudId (GET /_edge/tenant_info), resolved once and kept:
+    # the automation rule-management API addresses rules under
+    # api.atlassian.com/automation/public/jira/{cloudId}/rest/v1.
+    cloud_id: str = ""
     last_applied: str | None = None
     schema_version: int = SCHEMA_VERSION
     revision: str | None = None  # current migration revision id, None = base
@@ -380,6 +424,7 @@ class StateFile:
     permission_schemes: dict[str, PermissionSchemeMapping] = field(default_factory=dict)
     workflows: dict[str, WorkflowMapping] = field(default_factory=dict)
     workflow_schemes: dict[str, WorkflowSchemeMapping] = field(default_factory=dict)
+    automation_rules: dict[str, AutomationRuleMapping] = field(default_factory=dict)
     tmp_projects: dict[str, TmpProjectState] = field(default_factory=dict)  # project alias -> TMP state
 
     def to_yaml(self) -> str:
@@ -401,6 +446,7 @@ class StateFile:
                 "permission_schemes": {a: m.to_dict() for a, m in self.permission_schemes.items()},
                 "workflows": {a: m.to_dict() for a, m in self.workflows.items()},
                 "workflow_schemes": {a: m.to_dict() for a, m in self.workflow_schemes.items()},
+                "automation_rules": {a: m.to_dict() for a, m in self.automation_rules.items()},
                 "tmp_projects": {a: m.to_dict() for a, m in self.tmp_projects.items()},
             }
         )
@@ -410,6 +456,7 @@ class StateFile:
             "jira_url": self.jira_url,
             "jira_version": self.jira_version,
             "deployment_type": self.deployment_type,
+            "cloud_id": self.cloud_id,
             "revision": self.revision,
             "last_applied": self.last_applied,
             "mappings": mappings,
@@ -432,6 +479,7 @@ class StateFile:
             jira_url=_required(raw, "jira_url", "state file root"),
             jira_version=raw.get("jira_version", ""),
             deployment_type=raw.get("deployment_type", ""),
+            cloud_id=raw.get("cloud_id", ""),
             last_applied=raw.get("last_applied"),
             revision=raw.get("revision"),
             schema_version=sv,
@@ -486,6 +534,10 @@ class StateFile:
             workflow_schemes={
                 a: WorkflowSchemeMapping.from_dict(d, where=f"mappings.workflow_schemes[{a!r}]")
                 for a, d in (m.get("workflow_schemes") or {}).items()
+            },
+            automation_rules={
+                a: AutomationRuleMapping.from_dict(d, where=f"mappings.automation_rules[{a!r}]")
+                for a, d in (m.get("automation_rules") or {}).items()
             },
             tmp_projects={
                 a: TmpProjectState.from_dict(d, where=f"mappings.tmp_projects[{a!r}]")

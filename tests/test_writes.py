@@ -64,7 +64,7 @@ def _platform_state() -> StateFile:
         "customfield_10044", options={"S1": "100", "S2": "101", "S3": "102", "S4": "103"}
     )
     state.issuetypes["bug"] = SimpleMapping(id="10010")
-    state.projects["PLAT"] = ProjectMapping(id="proj-1", key="PLAT")
+    state.projects["SEC"] = ProjectMapping(id="proj-1", key="SEC")
     return state
 
 
@@ -228,8 +228,8 @@ def test_insert_payload_includes_project_and_issuetype():
 
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="alice", severity="S1")
-    body = build_insert_payload(bug, state, is_cloud=False, project_key="PLAT")
-    assert body["fields"]["project"] == {"key": "PLAT"}
+    body = build_insert_payload(bug, state, is_cloud=False, project_key="SEC")
+    assert body["fields"]["project"] == {"key": "SEC"}
     assert body["fields"]["issuetype"] == {"id": "10010"}
 
 
@@ -243,7 +243,7 @@ def test_insert_payload_strips_reporter():
 
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="5b10ac8b86e24b0016d46e0f", severity="S1")
-    body = build_insert_payload(bug, state, is_cloud=True, project_key="PLAT")
+    body = build_insert_payload(bug, state, is_cloud=True, project_key="SEC")
     assert "reporter" not in body["fields"]
     # The attribute survives on the instance (hydration path fills it on read):
     assert bug.reporter == "5b10ac8b86e24b0016d46e0f"
@@ -291,7 +291,7 @@ def test_update_payload_null_for_optional_custom_field_clear():
 def test_project_meta_sets_projects_on_issuetype():
     import examples.company_managed.platform_schema as p
 
-    assert "PLAT" in p.Bug.__projects__
+    assert "SEC" in p.Bug.__projects__
 
 
 # ── Typed system fields: duedate and parent (#45) ────────────────────
@@ -326,7 +326,7 @@ def test_insert_payload_sends_duedate_isoformat():
     model = _workitem_model()
     state = _workitem_state()
     item = model(summary="x", duedate=date(2026, 12, 1))
-    body = build_insert_payload(item, state, is_cloud=True, project_key="PLAT")
+    body = build_insert_payload(item, state, is_cloud=True, project_key="SEC")
     assert body["fields"]["duedate"] == "2026-12-01"
 
 
@@ -354,7 +354,7 @@ def test_insert_payload_wraps_parent_key():
     model = _workitem_model()
     state = _workitem_state()
     item = model(summary="x", parent="PLAT-9")
-    body = build_insert_payload(item, state, is_cloud=True, project_key="PLAT")
+    body = build_insert_payload(item, state, is_cloud=True, project_key="SEC")
     assert body["fields"]["parent"] == {"key": "PLAT-9"}
 
 
@@ -394,7 +394,7 @@ def test_subtask_insert_without_parent_raises_before_request():
     state.issuetypes["followup"] = SimpleMapping(id="10011")
     subtask = FollowUp(summary="x")
     with pytest.raises(ConfigurationError) as e:
-        build_insert_payload(subtask, state, is_cloud=True, project_key="PLAT")
+        build_insert_payload(subtask, state, is_cloud=True, project_key="SEC")
     message = str(e.value)
     assert "parent" in message
     assert "__subtask__" in message
@@ -410,7 +410,7 @@ def test_subtask_insert_with_parent_passes_guard():
     state = _workitem_state()
     state.issuetypes["followup"] = SimpleMapping(id="10011")
     subtask = FollowUp(summary="x", parent="PLAT-9")
-    body = build_insert_payload(subtask, state, is_cloud=True, project_key="PLAT")
+    body = build_insert_payload(subtask, state, is_cloud=True, project_key="SEC")
     assert body["fields"]["parent"] == {"key": "PLAT-9"}
 
 
@@ -422,7 +422,7 @@ def test_non_subtask_type_has_no_parent_guard():
     state = _platform_state()
     bug = p.Bug(summary="x", reporter="alice", severity="S1")
     assert p.Bug.__subtask__ is False
-    body = build_insert_payload(bug, state, is_cloud=True, project_key="PLAT")
+    body = build_insert_payload(bug, state, is_cloud=True, project_key="SEC")
     assert "parent" not in body["fields"]
 
 
@@ -444,7 +444,7 @@ async def test_subtask_guard_surfaces_through_partial_commit():
 
     engine = _cloud_engine()
     session = AsyncSession(engine, state)
-    session.add(FollowUp(summary="x"), project="PLAT")
+    session.add(FollowUp(summary="x"), project="SEC")
     with pytest.raises(PartialCommitError) as exc_info:
         await session.commit()
     failed = [r for r in exc_info.value.results if not r.success]
@@ -472,9 +472,9 @@ def test_add_with_explicit_project_overrides_inferred():
     engine = _cloud_engine()
     session = AsyncSession(engine, _platform_state())
     bug = p.Bug(summary="x", reporter="a", severity="S1")
-    session.add(bug, project="PLAT")
+    session.add(bug, project="SEC")
     assert len(session._pending_inserts) == 1
-    assert session._pending_inserts[0][1] == "PLAT"
+    assert session._pending_inserts[0][1] == "SEC"
 
 
 def test_delete_requires_key():

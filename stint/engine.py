@@ -82,18 +82,23 @@ class Engine:
         *,
         since: Any,
         allowed_writers: list[str] | tuple[str, ...] = (),
+        guard: Any = None,
     ) -> Any:
         """Scan recent changelog entries for out-of-band writes to declared
         control fields (see ``stint.audit``).
 
         Control fields are the fields the schema keeps off a declared Edit
         screen. The REST API no longer enforces screens on edit
-        (JRACLOUD-98054), so this audit reports every writer outside
-        ``allowed_writers`` that touched one since ``since``. Read-only.
+        (JRACLOUD-98054), so this audit reports every writer outside the
+        allow-list that touched one since ``since``. Pass the declared
+        ``ControlFieldGuard`` as ``guard`` to share its allow-list and get
+        each write classified reverted/unreverted. Read-only.
         """
         from stint.audit import audit_control_fields
 
-        return await audit_control_fields(self, project, state, since=since, allowed_writers=allowed_writers)
+        return await audit_control_fields(
+            self, project, state, since=since, allowed_writers=allowed_writers, guard=guard
+        )
 
     async def close(self) -> None:
         await self.client.close()

@@ -11,7 +11,7 @@ per-engine registry once multi-tenant setups are real.
 from __future__ import annotations
 
 import inspect
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from stint.exceptions import RegistryError
 
@@ -90,6 +90,11 @@ class Registry:
         self.permission_schemes: dict[str, PermissionScheme] = {}
         self.workflows: dict[str, Workflow] = {}
         self.workflow_schemes: dict[str, WorkflowSchemeDeclaration] = {}
+        # Automation rules and their schemes. Rule values are AutomationRule /
+        # ControlFieldGuard declarations (a union; the diff/emit layers branch
+        # on the declaration's is_guard flag).
+        self.automation_rules: dict[str, Any] = {}
+        self.automation_rule_schemes: dict[str, Any] = {}
 
     def register_issuetype(self, cls: type[IssueType]) -> None:
         alias = getattr(cls, "__alias__", None)
@@ -186,6 +191,34 @@ class Registry:
         self.workflows[alias] = workflow
         workflow._declared_module = module  # ty: ignore[unresolved-attribute]
 
+    def register_automation_rule(self, rule: Any) -> None:
+        """Register a schema-declared ``AutomationRule``/``ControlFieldGuard``
+        (from its ``__post_init__``; reflection-built snapshots never touch
+        the registry)."""
+        kind = type(rule).__name__
+        alias = getattr(rule, "alias", "")
+        if not alias:
+            raise RegistryError(f"{kind} declaration requires a non-empty alias")
+        module = _declaring_module()
+        known = self.automation_rules.get(alias)
+        if known is not None and known is not rule:
+            _check_replace_on_reload(kind=kind, alias=alias, known=known, incoming_module=module)
+        self.automation_rules[alias] = rule
+        rule._declared_module = module
+
+    def register_automation_rule_scheme(self, scheme: Any) -> None:
+        """Register a schema-declared ``AutomationRuleScheme`` (from its
+        ``__post_init__``; reflection-built snapshots never touch the registry)."""
+        alias = getattr(scheme, "alias", "")
+        if not alias:
+            raise RegistryError("AutomationRuleScheme declaration requires a non-empty alias")
+        module = _declaring_module()
+        known = self.automation_rule_schemes.get(alias)
+        if known is not None and known is not scheme:
+            _check_replace_on_reload(kind="AutomationRuleScheme", alias=alias, known=known, incoming_module=module)
+        self.automation_rule_schemes[alias] = scheme
+        scheme._declared_module = module
+
     def register_workflow_scheme(self, scheme: WorkflowSchemeDeclaration) -> None:
         """Register a schema-declared ``WorkflowScheme`` (from its
         ``__post_init__``; reflection-built snapshots never touch the registry)."""
@@ -211,6 +244,8 @@ class Registry:
         self.permission_schemes.clear()
         self.workflows.clear()
         self.workflow_schemes.clear()
+        self.automation_rules.clear()
+        self.automation_rule_schemes.clear()
 
 
 registry = Registry()

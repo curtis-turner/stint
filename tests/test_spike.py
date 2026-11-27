@@ -59,7 +59,7 @@ def test_example_module_parses():
     """examples/company_managed/platform.py imports cleanly and populates the registry."""
     _load_example()
     assert "bug" in registry.issuetypes
-    assert "PLAT" in registry.projects
+    assert "SEC" in registry.projects
     assert "bug_severity" in registry.custom_fields
     assert "bug_screens" in registry.screen_schemes
     assert "bug_fields" in registry.field_configurations

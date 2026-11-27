@@ -12,6 +12,8 @@ from stint.registry import registry
 
 BASE = "https://jira.example.com"
 CLOUD_ROOT = f"{BASE}/rest/api/3"
+CLOUD_ID = "1a2b3c4d-0000-4000-8000-000000000009"
+AUTOMATION_ROOT = f"https://api.atlassian.com/automation/public/jira/{CLOUD_ID}/rest/v1"
 
 
 @pytest.fixture(autouse=True)
@@ -63,6 +65,10 @@ def _stub_empty_jira(mock, *, roles: bool = True):
     mock.get(f"{CLOUD_ROOT}/issuesecurityschemes").mock(
         return_value=httpx.Response(200, json={"issueSecuritySchemes": []})
     )
+    # The automation reflect (fires when the schema declares rules): the
+    # rule-management host + its cheapest read, empty.
+    mock.get(f"{BASE}/_edge/tenant_info").mock(return_value=httpx.Response(200, json={"cloudId": CLOUD_ID}))
+    mock.get(f"{AUTOMATION_ROOT}/rule/summary").mock(return_value=httpx.Response(200, json={"links": {}, "data": []}))
     if roles:
         from tests._stubs import stub_project_roles_and_permission_schemes, stub_workflows
 
@@ -446,7 +452,7 @@ def test_autogenerate_lockout_guard_refuses_role_removal(tmp_path, monkeypatch, 
                 [
                     {
                         "id": "10010",
-                        "key": "PLAT",
+                        "key": "SEC",
                         "name": "Platform",
                         "projectTypeKey": "software",
                         "style": "classic",
@@ -506,7 +512,7 @@ def test_autogenerate_lockout_guard_refuses_role_removal(tmp_path, monkeypatch, 
     state = StateFile(env="dev", jira_url=BASE)
     from stint.state.file import ProjectMapping
 
-    state.projects["PLAT"] = ProjectMapping(id="10010", style="company-managed", key="PLAT")
+    state.projects["SEC"] = ProjectMapping(id="10010", style="company-managed", key="SEC")
     state.save(state_path)
 
     schema_path = tmp_path / "roles_schema.py"
@@ -514,7 +520,7 @@ def test_autogenerate_lockout_guard_refuses_role_removal(tmp_path, monkeypatch, 
         "from stint import IssueType, Project, Group\n\n"
         "class Bug(IssueType):\n    __alias__ = 'bug'\n\n"
         "class Tracker(Project):\n"
-        "    __key__ = 'PLAT'\n"
+        "    __key__ = 'SEC'\n"
         "    __issuetypes__ = [Bug]\n"
         "    __roles__ = {'Administrators': [Group('contractors')]}\n",
         encoding="utf-8",

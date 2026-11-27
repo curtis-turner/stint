@@ -26,10 +26,12 @@ from stint.autogen.diff import (
     AddScreenTabField,
     AddSecurityLevel,
     AddSecurityLevelMember,
+    AdoptAutomationRule,
     AdoptWorkflow,
     AdoptWorkflowScheme,
     Change,
     ClearDefaultSecurityLevel,
+    CreateAutomationRule,
     CreateCustomField,
     CreateFieldConfiguration,
     CreateFieldConfigurationScheme,
@@ -43,6 +45,7 @@ from stint.autogen.diff import (
     CreateScreenScheme,
     CreateWorkflow,
     CreateWorkflowScheme,
+    DeleteAutomationRule,
     DeleteCustomField,
     DeleteFieldConfiguration,
     DeleteFieldConfigurationScheme,
@@ -59,6 +62,8 @@ from stint.autogen.diff import (
     RemoveCustomFieldOption,
     RemovePermissionGrant,
     RemoveProjectRoleActor,
+    SetAutomationRuleScope,
+    SetAutomationRuleState,
     SetDefaultSecurityLevel,
     SetFieldConfigurationItem,
     SetProjectFieldConfigurationScheme,
@@ -67,6 +72,7 @@ from stint.autogen.diff import (
     SetProjectIssueTypeScreenScheme,
     SetProjectPermissionScheme,
     SetProjectWorkflowScheme,
+    UpdateAutomationRule,
     UpdateCustomField,
     UpdateFieldConfiguration,
     UpdateFieldConfigurationScheme,
@@ -284,6 +290,16 @@ _PHASE: dict[type, int] = {
     UpdateWorkflowScheme: 76,
     DeleteWorkflowScheme: 88,
     DeleteWorkflow: 89,
+    # Automation rules: create/adopt after the scheme families (their refs
+    # resolve custom fields and schemes from state at apply time, so those
+    # ops must have run and recorded ids); scope runs late, after project
+    # creates, because the ARIs need the bound projects' ids.
+    CreateAutomationRule: 48,
+    AdoptAutomationRule: 48,
+    UpdateAutomationRule: 76,
+    SetAutomationRuleState: 77,
+    SetAutomationRuleScope: 78,
+    DeleteAutomationRule: 86,
     AddPermissionGrant: 46,
     UpdatePermissionScheme: 76,
     SetProjectPermissionScheme: 63,
@@ -881,6 +897,34 @@ def _render_one(change: Change, allow_lockout: bool = False) -> str:
     if isinstance(change, DeleteWorkflowScheme):
         return f"    await op.delete_workflow_scheme(alias={change.alias!r})"
 
+    if isinstance(change, CreateAutomationRule):
+        return _render_automation_rule_call("op.create_automation_rule", change, allow_lockout=allow_lockout)
+
+    if isinstance(change, AdoptAutomationRule):
+        return f"    await op.adopt_automation_rule(alias={change.alias!r}, name={change.name!r})"
+
+    if isinstance(change, UpdateAutomationRule):
+        return _render_automation_rule_call("op.update_automation_rule", change, allow_lockout=allow_lockout)
+
+    if isinstance(change, SetAutomationRuleState):
+        return (
+            f"    await op.set_automation_rule_state(\n"
+            f"        alias={change.alias!r},\n"
+            f"        enabled={change.enabled!r},\n"
+            f"    )"
+        )
+
+    if isinstance(change, SetAutomationRuleScope):
+        return (
+            f"    await op.set_automation_rule_scope(\n"
+            f"        alias={change.alias!r},\n"
+            f"        scope_projects={list(change.scope_projects)!r},\n"
+            f"    )"
+        )
+
+    if isinstance(change, DeleteAutomationRule):
+        return f"    await op.delete_automation_rule(alias={change.alias!r})"
+
     if isinstance(change, SetProjectWorkflowScheme):
         kwargs = [
             f"project_alias={change.project_alias!r}",
@@ -1003,6 +1047,44 @@ def _render_raw_payloads(payloads: Any) -> str:
 
     blob = _json.dumps(list(payloads), sort_keys=True, separators=(",", ":"))
     return f"__import__('json').loads({blob!r})"
+
+
+def _render_automation_rule_call(op_name: str, change: Any, allow_lockout: bool = False) -> str:
+    """Render a create/update automation-rule op call.
+
+    The payload rides inline (a JSON blob, placeholders intact) so the
+    migration is self-contained: applying never needs the payload file the
+    declaration loaded. Refs carry the *declared* values (custom-field
+    aliases, emails, role/group names); the op resolves them at apply time
+    and records the resolved ids in state. ``allow_lockout`` (baked from
+    the CLI flag) is the guard's escape hatch: without it the op refuses to
+    apply a guard whose allowed_writers exclude the authenticated account.
+    """
+    import json as _json
+
+    payload_blob = _json.dumps(change.payload, sort_keys=True, separators=(",", ":"))
+    kwargs = [
+        f"alias={change.alias!r}",
+        f"name={change.name!r}",
+        f"description={change.description!r}",
+        f"payload=__import__('json').loads({payload_blob!r})",
+    ]
+    if change.refs:
+        entries = ", ".join(f"dict(ref={n!r}, kind={k!r}, value={v!r})" for n, k, v in change.refs)
+        kwargs.append(f"refs=[{entries}]")
+    if change.scope_projects:
+        kwargs.append(f"scope_projects={list(change.scope_projects)!r}")
+    kwargs.append(f"enabled={change.enabled!r}")
+    if change.actor is not None:
+        kwargs.append(f"actor={change.actor!r}")
+    if change.is_guard:
+        kwargs.append("is_guard=True")
+        if change.allowed_writers:
+            entries = ", ".join(f"dict(kind={k!r}, value={v!r})" for k, v in change.allowed_writers)
+            kwargs.append(f"allowed_writers=[{entries}]")
+    if allow_lockout and change.is_guard:
+        kwargs.append("allow_lockout=True")
+    return _kwargs_call(op_name, kwargs)
 
 
 def _render_dict(d: dict[str, str]) -> str:

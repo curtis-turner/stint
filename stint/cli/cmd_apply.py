@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from cyclopts import Parameter
 
@@ -95,7 +95,13 @@ async def apply(
     """Reflect a team-managed project, diff it against schema, and apply."""
     from stint.dialects.jira.tmp.desired import build_tmp_desired
     from stint.dialects.jira.tmp.ops import TmpApplyContext
-    from stint.dialects.jira.tmp.reconcile import apply_tmp_plan, find_untracked_fields, plan_tmp
+    from stint.dialects.jira.tmp.reconcile import (
+        apply_tmp_plan,
+        find_untracked_fields,
+        plan_tmp,
+        plan_tmp_automation,
+        sort_tmp_changes,
+    )
     from stint.dialects.jira.tmp.state import TmpState, from_project_state, to_project_state
 
     url, auth, dialect, token_env, user_env, no_verify_ssl = resolve_connection(
@@ -151,7 +157,31 @@ async def apply(
             )
             project_ctx = await tmp_eng.dialect.resolve_project(project_key=project_key)
             snapshot = await tmp_eng.dialect.reflect(project_key=project_key)
-            changes = plan_tmp(desired, snapshot, tmp_state, allow_delete=allow_delete)
+            # The automation ops resolve scope ARIs from state.projects —
+            # record the mapping before any rule applies (idempotent; the
+            # end-of-apply write below just refreshes it).
+            state_file.projects[project_key] = ProjectMapping(
+                id=project_ctx.project_id, style="team-managed", key=project_ctx.key
+            )
+            automation_changes: list[TmpChange] = []
+            automation_warnings: list[str] = []
+            reflected_rules: dict[str, Any] = {}
+            if desired.automation_rules:
+                # Only when the schema declares rules: no extra HTTP for
+                # existing TMP users/tests (the same laziness as CMP).
+                reflected_rules = await tmp_eng.dialect.reflect_automation_rules()
+                automation_changes, automation_warnings = plan_tmp_automation(
+                    desired.automation_rules,
+                    reflected_rules,
+                    state_file,
+                    tmp_state.fields,
+                    allow_delete=allow_delete,
+                )
+                for warning in automation_warnings:
+                    print(f"NOTE: {warning}")
+            changes = sort_tmp_changes(
+                plan_tmp(desired, snapshot, tmp_state, allow_delete=allow_delete) + automation_changes
+            )
             untracked = find_untracked_fields(desired, snapshot, tmp_state)
             _print_untracked_fields(untracked)
 
@@ -172,8 +202,9 @@ async def apply(
                 project=project_ctx,
                 state=tmp_state,
                 on_state_changed=_make_persist(state_file, state_path, tmp_state, project_key, to_project_state),
+                file_state=state_file,
             )
-            await apply_tmp_plan(ctx, changes, desired, snapshot)
+            await apply_tmp_plan(ctx, changes, desired, snapshot, reflected_rules=reflected_rules)
 
             # Final snapshot keeps ``project.projects`` (the CMP-style mapping)
             # in sync even though per-op persist already wrote ``tmp_projects``.
@@ -253,10 +284,12 @@ def _describe_change(change: TmpChange) -> tuple[str, str]:
         AdoptField,
         CreateField,
         CreateWorkType,
+        DeleteAutomationRule,
         DeleteField,
         DeleteWorkType,
         SetLayout,
         UpdateField,
+        UpsertAutomationRule,
     )
 
     if isinstance(change, CreateField):
@@ -273,6 +306,10 @@ def _describe_change(change: TmpChange) -> tuple[str, str]:
         return "-", "delete_worktype"
     if isinstance(change, SetLayout):
         return "~", "set_layout"
+    if isinstance(change, UpsertAutomationRule):
+        return "~" if change.action == "update" else "+", f"automation_rule ({change.action})"
+    if isinstance(change, DeleteAutomationRule):
+        return "-", "delete_automation_rule"
     raise AssertionError(f"unhandled TmpChange type: {type(change)!r}")
 
 

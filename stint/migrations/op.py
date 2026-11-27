@@ -15,9 +15,11 @@ prod's customfield_10501; the alias is the same).
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from stint.dialects.jira.automation import complete_rule_payload, mint_rule_uuid
 from stint.exceptions import ConfigurationError, NotFoundError, StintError
 from stint.fields import _FieldType, jira_system_field_id
 from stint.lockout import (
@@ -28,7 +30,9 @@ from stint.lockout import (
 )
 from stint.migrations.context import get_context
 from stint.migrations.exceptions import UnsupportedDowngradeError
+from stint.schema.automation import ref_placeholder, substitute_refs, unresolved_refs
 from stint.state.file import (
+    AutomationRuleMapping,
     CustomFieldMapping,
     PermissionSchemeMapping,
     ProjectMapping,
@@ -2728,3 +2732,452 @@ async def _scheme_transition_parameters(
             if params:
                 permission_keys.update(k.strip() for k in str(params.get("permissionKeys", "")).split(",") if k.strip())
     return params_by_key, permission_keys
+
+
+# ── Automation rules (rule-management API, api.atlassian.com) ────────
+
+
+async def create_automation_rule(
+    *,
+    alias: str,
+    name: str,
+    description: str = "",
+    payload: Mapping[str, Any],
+    scope_projects: Iterable[str] = (),
+    refs: Iterable[Mapping[str, str]] = (),
+    enabled: bool = True,
+    is_guard: bool = False,
+    allowed_writers: Iterable[Mapping[str, str]] = (),
+    actor: str | None = None,
+    allow_lockout: bool = False,
+) -> str:
+    """Create one automation rule (``POST rule``) and register its
+    alias→uuid mapping.
+
+    The create payload must be complete: the rule-management API answers
+    its generic "could not be parsed" 400 when any of ``actor``,
+    ``authorAccountId``, ``components``, or ``ruleScopeARIs`` is missing
+    (measured live). stint therefore resolves and sends the full shape:
+
+    - ``uuid``: minted client-side, RFC 9562 UUIDv7 (create rejects an
+      omitted or non-V7 uuid).
+    - ``actor``: the declared ``actor=User('...')``, else Jira's
+      "Automation for Jira" app account (found by ``accountType == "app"``
+      + display name, never by an id prefix).
+    - ``authorAccountId``: the authenticated account.
+    - ``ruleScopeARIs``: the bound projects' ARIs (site ARI when the
+      scheme has none), resolved from state after the project creates.
+
+    ``scope_projects`` entries are project keys. ``refs`` entries are
+    ``dict(ref=..., kind=..., value=...)`` triples in declared form —
+    resolved at apply time and recorded in state so re-runs stay
+    idempotent. The declaration's ``name``, ``description``, ``enabled``,
+    and ``actor`` win over the payload's.
+
+    Guards (``is_guard=True``) enforce the cross-cutting rule first: the
+    authenticated account must be one of the ``allowed_writers``, or the
+    guard would revert the service's own writes. Refuse unless
+    ``allow_lockout`` forces it, like the other guards.
+
+    Plan-time permission probe: the cheapest rule-management read answers
+    403 when the account cannot manage rules; stint stops before writing
+    anything.
+    """
+    ctx = get_context()
+    return await _automation_create_core(
+        ctx.engine.dialect,
+        ctx.state,
+        ctx.persist,
+        alias=alias,
+        name=name,
+        description=description,
+        payload=payload,
+        scope_projects=scope_projects,
+        refs=refs,
+        enabled=enabled,
+        is_guard=is_guard,
+        allowed_writers=allowed_writers,
+        actor=actor,
+        allow_lockout=allow_lockout,
+    )
+
+
+async def _automation_create_core(
+    dialect: Any,
+    state: Any,
+    persist: Any,
+    *,
+    alias: str,
+    name: str,
+    description: str = "",
+    payload: Mapping[str, Any],
+    scope_projects: Iterable[str] = (),
+    refs: Iterable[Mapping[str, str]] = (),
+    enabled: bool = True,
+    is_guard: bool = False,
+    allowed_writers: Iterable[Mapping[str, str]] = (),
+    actor: str | None = None,
+    allow_lockout: bool = False,
+    tmp_fields: Mapping[str, str] | None = None,
+) -> str:
+    """The create body, context-free: shared with the team-managed apply
+    path (which has no ``MigrationContext``). ``tmp_fields`` is the
+    team-managed project's alias→fieldId map, consulted for field refs
+    when the shared custom-field mapping has no entry."""
+    _require_alias(alias, "create_automation_rule")
+    existing = _existing_id_or_none(state.automation_rules, alias)
+    if existing is not None:
+        return existing
+    await dialect.probe_rule_management()
+    live_uuid = await dialect.find_rule_uuid_by_name(name)
+    if live_uuid is not None:
+        raise ConfigurationError(
+            f"create_automation_rule: a rule named {name!r} already exists in Jira. "
+            f"Regenerate the migration so it emits AdoptAutomationRule instead, or "
+            f"rename the declaration."
+        )
+    writer_specs = [(str(w["kind"]), str(w["value"])) for w in allowed_writers]
+    if is_guard:
+        await _guard_allowed_writer_check(dialect, alias, writer_specs, allow_lockout=allow_lockout)
+    resolved = await _resolve_automation_refs(
+        dialect, state, refs, op_name="create_automation_rule", tmp_fields=tmp_fields
+    )
+    rule_payload = substitute_refs(json.loads(json.dumps(dict(payload))), resolved)
+    _check_unresolved(alias, rule_payload)
+    scope_apis = await _scope_apis_for_keys(dialect, state, persist, scope_projects, op_name="create_automation_rule")
+    rule_payload = complete_rule_payload(
+        rule_payload,
+        uuid=mint_rule_uuid(),
+        name=name,
+        description=description,
+        state="ENABLED" if enabled else "DISABLED",
+        author_account_id=await dialect.my_account_id(),
+        actor_account_id=await _automation_actor_id(dialect, actor),
+        scope_apis=scope_apis,
+    )
+    rule_uuid = await dialect.create_rule(rule_payload)
+    state.automation_rules[alias] = AutomationRuleMapping(
+        id=rule_uuid,
+        name=name,
+        enabled=enabled,
+        scope_projects=list(scope_projects),
+        refs=dict(resolved_by_ref(refs, resolved)),
+    )
+    persist()
+    return rule_uuid
+
+
+async def adopt_automation_rule(*, alias: str, name: str) -> str:
+    """Record an existing rule into state without rewriting it.
+
+    Matches by exact (case-insensitive) name from the rule-summary listing;
+    the uuid is recorded so later diffs compare payloads by uuid. Adoption
+    is non-destructive: hand-built trigger/condition/action content stays
+    until a declared change updates it."""
+    ctx = get_context()
+    _require_alias(alias, "adopt_automation_rule")
+    existing = _existing_id_or_none(ctx.state.automation_rules, alias)
+    if existing is not None:
+        return existing
+    dialect = ctx.engine.dialect
+    uuid = await dialect.find_rule_uuid_by_name(name)
+    if uuid is None:
+        raise ConfigurationError(f"adopt_automation_rule: no rule named {name!r} exists in Jira.")
+    ctx.state.automation_rules[alias] = AutomationRuleMapping(id=uuid, name=name)
+    ctx.persist()
+    return uuid
+
+
+async def update_automation_rule(
+    *,
+    alias: str,
+    name: str,
+    description: str = "",
+    payload: Mapping[str, Any],
+    scope_projects: Iterable[str] = (),
+    refs: Iterable[Mapping[str, str]] = (),
+    enabled: bool = True,
+    is_guard: bool = False,
+    allowed_writers: Iterable[Mapping[str, str]] = (),
+    actor: str | None = None,
+    allow_lockout: bool = False,
+) -> str:
+    """Replace a rule's declared content (``PUT rule/{uuid}``).
+
+    The PUT body is the full declared payload with refs resolved — Jira
+    replaces the rule's components (new ones created, removed ones
+    deleted). The mandatory create fields (actor, authorAccountId,
+    ruleScopeARIs, uuid) are re-sent: the update payload has the same
+    shape. Same guard enforcement and permission probe as creation."""
+    ctx = get_context()
+    return await _automation_update_core(
+        ctx.engine.dialect,
+        ctx.state,
+        ctx.persist,
+        alias=alias,
+        name=name,
+        description=description,
+        payload=payload,
+        scope_projects=scope_projects,
+        refs=refs,
+        enabled=enabled,
+        is_guard=is_guard,
+        allowed_writers=allowed_writers,
+        actor=actor,
+        allow_lockout=allow_lockout,
+    )
+
+
+async def _automation_update_core(
+    dialect: Any,
+    state: Any,
+    persist: Any,
+    *,
+    alias: str,
+    name: str,
+    description: str = "",
+    payload: Mapping[str, Any],
+    scope_projects: Iterable[str] = (),
+    refs: Iterable[Mapping[str, str]] = (),
+    enabled: bool = True,
+    is_guard: bool = False,
+    allowed_writers: Iterable[Mapping[str, str]] = (),
+    actor: str | None = None,
+    allow_lockout: bool = False,
+    tmp_fields: Mapping[str, str] | None = None,
+) -> str:
+    """The update body, context-free: shared with the team-managed apply path."""
+    mapping = _require_existing("update_automation_rule", alias, state.automation_rules)
+    await dialect.probe_rule_management()
+    writer_specs = [(str(w["kind"]), str(w["value"])) for w in allowed_writers]
+    if is_guard:
+        await _guard_allowed_writer_check(dialect, alias, writer_specs, allow_lockout=allow_lockout)
+    resolved = await _resolve_automation_refs(
+        dialect, state, refs, op_name="update_automation_rule", tmp_fields=tmp_fields
+    )
+    rule_payload = substitute_refs(json.loads(json.dumps(dict(payload))), resolved)
+    _check_unresolved(alias, rule_payload)
+    scope_apis = await _scope_apis_for_keys(dialect, state, persist, scope_projects, op_name="update_automation_rule")
+    rule_payload = complete_rule_payload(
+        rule_payload,
+        uuid=mapping.id,
+        name=name,
+        description=description,
+        state="ENABLED" if enabled else "DISABLED",
+        author_account_id=await dialect.my_account_id(),
+        actor_account_id=await _automation_actor_id(dialect, actor),
+        scope_apis=scope_apis,
+    )
+    await dialect.update_rule(mapping.id, rule_payload)
+    mapping.name = name
+    mapping.enabled = enabled
+    mapping.scope_projects = list(scope_projects)
+    mapping.refs = dict(resolved_by_ref(refs, resolved))
+    persist()
+    return mapping.id
+
+
+async def _automation_actor_id(dialect: Any, actor: str | None) -> str:
+    """The rule actor's accountId: the declared User, else Jira's
+    "Automation for Jira" app account."""
+    if actor:
+        return await dialect.resolve_user(actor)
+    return await dialect.find_automation_actor_id()
+
+
+async def _scope_apis_for_keys(
+    dialect: Any,
+    state: Any,
+    persist: Any,
+    scope_projects: Iterable[str],
+    *,
+    op_name: str,
+) -> list[str]:
+    """Project keys → ruleScopeARIs. An empty scope produces the site ARI
+    (a global rule): ``ari:cloud:jira::site/<cloudId>``. The cloudId is
+    resolved once and kept in state."""
+    keys = list(scope_projects)
+    cloud_id = state.cloud_id or await dialect.get_cloud_id()
+    if state.cloud_id != cloud_id:
+        state.cloud_id = cloud_id
+        persist()
+    if not keys:
+        return [f"ari:cloud:jira::site/{cloud_id}"]
+    missing = [key for key in keys if key not in state.projects]
+    if missing:
+        raise ConfigurationError(
+            f"{op_name}: project key(s) {missing} are not in state — the rule's scope "
+            f"cannot resolve. Create the projects first (phase order guarantees this) "
+            f"or fix the scheme binding."
+        )
+    return [f"ari:cloud:jira:{cloud_id}:project/{state.projects[key].id}" for key in keys]
+
+
+async def set_automation_rule_state(*, alias: str, enabled: bool) -> None:
+    """Enable or disable a rule (``PUT rule/{uuid}/state``). Idempotent."""
+    ctx = get_context()
+    mapping = _require_existing("set_automation_rule_state", alias, ctx.state.automation_rules)
+    dialect = ctx.engine.dialect
+    await dialect.probe_rule_management()
+    await dialect.set_rule_state(mapping.id, enabled=enabled)
+    mapping.enabled = enabled
+    ctx.persist()
+
+
+async def set_automation_rule_scope(*, alias: str, scope_projects: Iterable[str]) -> None:
+    """Pin a rule's project scope (``PUT rule/{uuid}/rule-scope``) to the
+    scheme's bound projects: one multi-project scope, never copies.
+
+    Project ARIs resolve from the state file's project ids and the tenant's
+    cloudId (resolved once via ``GET /_edge/tenant_info`` and kept in
+    state). Idempotent."""
+    ctx = get_context()
+    mapping = _require_existing("set_automation_rule_scope", alias, ctx.state.automation_rules)
+    dialect = ctx.engine.dialect
+    await dialect.probe_rule_management()
+    apis = await _scope_apis_for_keys(
+        dialect, ctx.state, ctx.persist, scope_projects, op_name="set_automation_rule_scope"
+    )
+    await dialect.set_rule_scope(mapping.id, apis)
+    mapping.scope_projects = list(scope_projects)
+    ctx.persist()
+
+
+async def delete_automation_rule(*, alias: str) -> None:
+    """Delete an automation rule. Idempotent: no-op when absent from state.
+
+    The API refuses enabled rules, so the op disables first, then deletes;
+    deleting an already-deleted rule (404) counts as done."""
+    ctx = get_context()
+    await _automation_delete_core(ctx.engine.dialect, ctx.state, ctx.persist, alias)
+
+
+async def _automation_delete_core(dialect: Any, state: Any, persist: Any, alias: str) -> None:
+    """The delete body, context-free: shared with the team-managed apply path."""
+    mapping = state.automation_rules.get(alias)
+    if mapping is None:
+        return
+    await dialect.probe_rule_management()
+    try:
+        await dialect.set_rule_state(mapping.id, enabled=False)
+        await dialect.delete_rule(mapping.id)
+    except NotFoundError:
+        pass
+    del state.automation_rules[alias]
+    persist()
+
+
+async def _guard_allowed_writer_check(
+    dialect: Any,
+    rule_alias: str,
+    writer_specs: list[tuple[str, str]],
+    *,
+    allow_lockout: bool,
+) -> None:
+    """Refuse a guard the authenticated account is not exempt from.
+
+    The cross-cutting rule: the service account and the rule actor are
+    always allowed writers. The account is verified against the declared
+    writers the same way the lockout guard verifies transition holders —
+    direct accountIds, group membership, and (roles) project memberships
+    once the bound project's id is known. Unverifiable writers never
+    exempt, so the conservative direction always protects the service.
+    """
+    if allow_lockout:
+        return
+    account_id = await dialect.my_account_id()
+    for kind, declared in writer_specs:
+        if kind == "user":
+            value = await dialect.resolve_user(declared) if "@" in declared else declared
+            if value == account_id:
+                return
+    account_groups = await dialect.user_groups(account_id)
+    for kind, declared in writer_specs:
+        if kind == "group" and declared in account_groups:
+            return
+    raise StintError(
+        f"ControlFieldGuard {rule_alias!r}: the authenticated account ({account_id}) is not "
+        f"among the guard's allowed writers {writer_specs}. The guard would revert the "
+        f"service account's own writes. Add the service account as a User in "
+        f"allowed_writers, or pass allow_lockout=True to force it."
+    )
+
+
+async def _resolve_automation_refs(
+    dialect: Any,
+    state: Any,
+    refs: Iterable[Mapping[str, str]],
+    *,
+    op_name: str,
+    tmp_fields: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Declared refs → placeholder → resolved value, at apply time.
+
+    Custom-field aliases resolve through state (the field may be created in
+    this same migration; ``tmp_fields`` — a team-managed project's
+    alias→fieldId map — is consulted when the shared mapping has no entry);
+    system field names normalize ("Priority" → "priority"); roles/groups
+    resolve to ids and users to accountIds like the restrict-rule holders
+    do. Unknown references fail with the offending name — the payload is
+    never written half-resolved.
+    """
+    out: dict[str, str] = {}
+    for spec in refs:
+        ref_name = str(spec.get("ref", ""))
+        kind = str(spec.get("kind", ""))
+        declared = str(spec.get("value", ""))
+        if not ref_name or kind not in ("field", "system", "role", "group", "user"):
+            raise ConfigurationError(f"{op_name}: invalid ref spec {dict(spec)!r}")
+        placeholder = ref_placeholder(kind, ref_name)
+        if kind == "field":
+            field_mapping = state.custom_fields.get(declared)
+            if field_mapping is not None:
+                out[placeholder] = field_mapping.id
+            elif tmp_fields is not None and declared in tmp_fields:
+                out[placeholder] = tmp_fields[declared]
+            else:
+                raise ConfigurationError(
+                    f"{op_name}: ref {ref_name!r} -> custom field alias {declared!r} is not "
+                    f"in state; declare the field (and create it) first."
+                )
+        elif kind == "system":
+            out[placeholder] = declared
+        elif kind == "role":
+            roles = await dialect.global_project_role_ids()
+            role_id = roles.get(declared)
+            if role_id is None:
+                raise ConfigurationError(
+                    f"{op_name}: ref {ref_name!r} -> project role {declared!r} does not exist in Jira."
+                )
+            out[placeholder] = role_id
+        elif kind == "group":
+            group_ids = await dialect.resolve_group_ids([declared])
+            group_id = group_ids.get(declared)
+            if group_id is None:
+                raise ConfigurationError(f"{op_name}: ref {ref_name!r} -> group {declared!r} does not exist in Jira.")
+            out[placeholder] = group_id
+        else:  # user
+            out[placeholder] = await dialect.resolve_user(declared)
+    return out
+
+
+def resolved_by_ref(refs: Iterable[Mapping[str, str]], resolved: dict[str, str]) -> dict[str, str]:
+    """Ref name → resolved value, for the state mapping's ``refs`` record."""
+    out: dict[str, str] = {}
+    for spec in refs:
+        ref_name = str(spec.get("ref", ""))
+        kind = str(spec.get("kind", ""))
+        value = resolved.get(ref_placeholder(kind, ref_name))
+        if value is not None:
+            out[ref_name] = value
+    return out
+
+
+def _check_unresolved(rule_alias: str, rule_payload: Mapping[str, Any]) -> None:
+    """Fail when a placeholder survived resolution (an unknown ref name)."""
+    leftovers = unresolved_refs(dict(rule_payload))
+    if leftovers:
+        raise ConfigurationError(
+            f"automation_rule {rule_alias!r}: payload still references {leftovers} after "
+            f"ref resolution — add the missing refs to the declaration."
+        )

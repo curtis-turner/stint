@@ -13,6 +13,7 @@ from typing import Any, ClassVar
 
 from stint.client.http import JiraHTTPClient
 from stint.dialects.jira import common
+from stint.dialects.jira.automation import AutomationRuleClient
 from stint.exceptions import (
     ConfigurationError,
     NotFoundError,
@@ -20,7 +21,9 @@ from stint.exceptions import (
     ReflectionError,
     TransportError,
 )
+from stint.registry import registry
 from stint.state.snapshot import (
+    AutomationRuleSnapshot,
     CustomFieldSnapshot,
     FieldConfigurationItemSnapshot,
     FieldConfigurationSchemeSnapshot,
@@ -46,10 +49,11 @@ from stint.state.snapshot import (
 )
 
 
-class JiraCloudDialect:
+class JiraCloudDialect(AutomationRuleClient):
     """Jira Cloud dialect. Company-managed and team-managed projects alike
     share this surface; team-managed writes live in a separate dialect
-    (see ``stint.dialects.jira.tmp``).
+    (see ``stint.dialects.jira.tmp``). Automation rule-management endpoints
+    (a different host) come from the ``AutomationRuleClient`` mixin.
     """
 
     name: ClassVar[str] = "jira_cloud"
@@ -88,6 +92,9 @@ class JiraCloudDialect:
         self._user_groups_cache: dict[str, frozenset[str]] = {}
         self._role_membership_cache: dict[tuple[str, str], set[str]] = {}
         self._global_roles_cache: dict[str, str] | None = None
+        # Automation rule-management client state (mixin attributes).
+        self._cloud_id_cache: str | None = None
+        self._automation_actor_cache: str | None = None
 
     # ── Detection ────────────────────────────────────────────────────
     async def detect(self) -> bool:
@@ -195,6 +202,13 @@ class JiraCloudDialect:
         project_roles = await self._reflect_global_project_roles()
         statuses, workflows = await self._reflect_workflows()
         workflow_schemes = await self._reflect_workflow_schemes()
+        # Automation rules reflect only when the schema declares any: the
+        # rule-management API lives on another host and costs one GET per
+        # rule, and a schema without rules never reads them (undeclared
+        # rules are unmanaged either way).
+        automation_rules: dict[str, AutomationRuleSnapshot] = {}
+        if registry.automation_rules or registry.automation_rule_schemes:
+            automation_rules = await self.reflect_automation_rules()
         return Snapshot(
             server_info=info,
             custom_fields=custom_fields,
@@ -212,6 +226,7 @@ class JiraCloudDialect:
             statuses=statuses,
             workflows=workflows,
             workflow_schemes=workflow_schemes,
+            automation_rules=automation_rules,
         )
 
     # ── Custom fields ────────────────────────────────────────────────

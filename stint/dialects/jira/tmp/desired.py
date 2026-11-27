@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from stint.autogen.desired import DesiredAutomationRule, automation_rule_record
 from stint.dialects.jira.tmp.types import tmp_type_key_for
 from stint.fields import CustomField
 from stint.registry import registry as default_registry
@@ -60,6 +61,11 @@ class TmpDesired:
     project_key: str
     fields: dict[str, TmpDesiredField] = field(default_factory=dict)
     worktypes: dict[str, TmpDesiredWorkType] = field(default_factory=dict)
+    # The bound AutomationRuleScheme's rules (tenant objects; scope ARIs
+    # point at this project). Guards declare their fields explicitly —
+    # team-managed projects have no screens to derive control fields from
+    # (enforced by ProjectMeta validation).
+    automation_rules: dict[str, DesiredAutomationRule] = field(default_factory=dict)
 
 
 def _wired_field_aliases() -> set[str]:
@@ -130,4 +136,9 @@ def build_tmp_desired(project_cls: type[Project]) -> TmpDesired:
             options=tuple(cf.options),
         )
     project_key = getattr(project_cls, "__key__", "")
-    return TmpDesired(project_key=project_key, fields=fields, worktypes=worktypes)
+    automation_rules: dict[str, DesiredAutomationRule] = {}
+    scheme = getattr(project_cls, "__automation_rule_scheme__", None)
+    if scheme is not None:
+        for rule in scheme.rules:
+            automation_rules[rule.alias] = automation_rule_record(rule, bound_projects=(project_key,), proj_cls=None)
+    return TmpDesired(project_key=project_key, fields=fields, worktypes=worktypes, automation_rules=automation_rules)

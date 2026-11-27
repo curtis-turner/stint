@@ -58,6 +58,7 @@ from stint.migrations import Migration, MigrationContext, get_context, load_migr
 from stint.query import AsyncSession, CommitResult, Session, and_, not_, or_, select
 from stint.registry import registry
 from stint.schema import FieldConfiguration, IssueType, Project, Screen, ScreenScheme
+from stint.schema.automation import AutomationRule, AutomationRuleScheme, ControlFieldGuard
 from stint.schema.permissions import (
     ApplicationRole,
     Assignee,
@@ -80,7 +81,7 @@ from stint.state import (
 )
 from stint.validate import validate, validate_or_raise
 
-__version__ = "0.20.0"
+__version__ = "0.21.0"
 
 __all__ = [
     "APITokenAuth",
@@ -88,11 +89,14 @@ __all__ = [
     "Assignee",
     "AsyncSession",
     "AuthenticationError",
+    "AutomationRule",
+    "AutomationRuleScheme",
     "BasicAuth",
     "CheckboxesField",
     "CommitResult",
     "ConfigurationError",
     "ControlFieldAuditReport",
+    "ControlFieldGuard",
     "ControlFieldWrite",
     "CustomField",
     "CustomFieldSnapshot",

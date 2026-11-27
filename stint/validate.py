@@ -8,6 +8,7 @@ that module's registrations.
 from __future__ import annotations
 
 from stint.exceptions import ConfigurationError
+from stint.fields import CustomField
 from stint.registry import registry
 
 
@@ -144,6 +145,39 @@ def validate() -> list[str]:
                             f"in any project's __roles__; the role must exist in Jira (or be "
                             f"declared here) for the restrict to hold anyone."
                         )
+
+    # 12. Automation rule schemes: registered bindings, guard allow-lists
+    # cross-checked against __roles__, and guard field references
+    # resolvable to declared custom fields.
+    for scheme_alias, scheme in registry.automation_rule_schemes.items():
+        for rule in getattr(scheme, "rules", ()) or ():
+            if getattr(rule, "alias", "") not in registry.automation_rules:
+                problems.append(
+                    f"AutomationRuleScheme {scheme_alias!r} references rule {getattr(rule, 'alias', None)!r} "
+                    f"which is not registered."
+                )
+        if getattr(scheme, "project", None) is not None and scheme.project not in registry.projects:
+            problems.append(
+                f"AutomationRuleScheme {scheme_alias!r} has project hint {scheme.project!r}, "
+                f"which is not a declared Project key."
+            )
+    for guard_alias, guard in registry.automation_rules.items():
+        if not getattr(guard, "is_guard", False):
+            continue
+        for _name, kind, declared in guard.writer_specs():
+            if kind == "role" and declared.lower() not in declared_role_names:
+                problems.append(
+                    f"ControlFieldGuard {guard_alias!r} allows ProjectRole {declared!r}, which "
+                    f"the schema does not declare in any project's __roles__; the role must "
+                    f"exist in Jira (or be declared here) for the allow-list to hold anyone."
+                )
+        if guard.fields is not None:
+            for field_ref in guard.fields:
+                if isinstance(field_ref, CustomField) and field_ref.alias not in registry.custom_fields:
+                    problems.append(
+                        f"ControlFieldGuard {guard_alias!r} guards CustomField {field_ref.alias!r} "
+                        f"which is not registered."
+                    )
 
     return problems
 

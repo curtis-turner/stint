@@ -4,6 +4,85 @@ All notable changes to stint are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version
 numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0] - 2026-11-25
+
+### Added
+
+- **Automation rule schemes on team-managed projects.** The rules are
+  tenant objects scoped by project id — nothing in the rule-management
+  API cares about project style — so `Project.__automation_rule_scheme__`
+  now binds on team-managed projects and the TMP apply path
+  (`stint apply --dialect jira_cloud_tmp`) reconciles the bound rules
+  with the same context-free cores the company-managed ops use (adopt by
+  name, idempotent payload diff via the recorded refs, scope ARIs from
+  the project id, delete behind `--allow-delete`). Two team-managed
+  requirements enforced at declaration: the guard declares `fields=`
+  explicitly (no screens to derive control fields from) and
+  `allowed_writers` are users/groups (no classic project roles). The
+  team-managed example (`examples/team_managed/vuln_management.py`) wires
+  the guard end to end.
+- **Automation rule schemes** (sections 1-2 of the automation-rules
+  request). Declare `AutomationRule` (payload from a `GET rule/{uuid}`
+  export with tenant ids replaced by `{{stint.<kind>.<name>}}` references,
+  substituted at apply time — customfield ids from state, emails to
+  accountIds, role/group names to ids — and `refs` failing validation on
+  an unknown name) and `AutomationRuleScheme` with
+  `Project.__automation_rule_scheme__`. Rules reflect via the rule-management
+  API (`GET rule/summary` + `GET rule/{uuid}` on
+  `api.atlassian.com/automation/public/jira/{cloudId}/rest/v1`; cloudId
+  resolved once via `/_edge/tenant_info` and kept in state), match
+  declared rules by uuid from state or by exact name on first adoption,
+  and diff a normalized payload (server-generated ids, timestamps, tags,
+  and billing metadata dropped) so a re-run with no schema change reports
+  no changes. Ops: create (`POST rule`), update (`PUT rule/{uuid}`),
+  enable/disable (`PUT rule/{uuid}/state`), scope (`PUT
+  rule/{uuid}/rule-scope`; a scheme bound to several projects produces one
+  multi-project scope, not copies), and delete behind `--allow-delete`
+  (disable first). Undeclared rules are left unmanaged. The API needs an
+  API token (Forge/OAuth cannot call it) and an administrator-level
+  account — stint probes with a read and fails before writing anything on
+  a 403.
+- **ControlFieldGuard** (section 2): the detect-and-revert rule generated
+  from the schema — trigger "Field value changed" on exactly the guarded
+  fields (default: the control fields derived from the bound project's
+  screens, create/view minus edit) filtered to edit operations, the native
+  user condition (initiator not among the allowed users/groups/project
+  roles, "Allow rule trigger" off), then one Edit issue action with one
+  SET operation per guarded field restoring the raw previous value — a
+  SMART-typed value with the field referenced by id (verified live at ~2s
+  per revert; the NAME reference the Automation UI writes is ambiguous
+  on tenants with duplicate field names, and the advancedFields form
+  saves but the action silently never executes on this build) — with
+  notifications off, then an optional comment.
+  Cross-cutting rule enforced: the authenticated service account must be
+  among `allowed_writers` (`stint validate`
+  flags it; the ops refuse to apply a guard that would revert the
+  service's own writes; `--allow-lockout` forces it). The rule's actor is
+  always allowed. The generated shapes are verified against a live tenant
+  (create → echo → update → revert → delete; see
+  `notes/automation_api_research.md`): the trigger carries `fieldChange`
+  (the `changelog` smart value is empty on this trigger — measured), and
+  an edit that changes two guarded fields at once restores only the first
+  (the trigger's own limit).
+
+### Changed
+
+- **`engine.check` splits the cosmetic-lock warning by guard coverage**
+  (section 3): control fields covered by an enabled guard report as info
+  naming the rule; drift (guard disabled in Jira, its fields no longer
+  matching the derived control fields, or its allow-list no longer
+  including the authenticated account) warns; uncovered fields keep the
+  original warning. `CheckReport` gains `infos`, printed by
+  `stint check` without affecting the exit code.
+- **`engine.audit_control_fields` accepts a declared guard** as the
+  source of `allowed_writers` (one shared allow-list with the check, via
+  `stint.audit.allowed_writer_checker`: users, group membership, project
+  role membership) and classifies each out-of-band write as **reverted**
+  (a later changelog entry restored the value — the guard's signature) or
+  **unreverted**. `raise_for_writes()` now alerts on the unreverted
+  writes only; reverted ones stay visible on the report. Plain-string
+  `allowed_writers` keeps its previous semantics.
+
 ## [0.20.0] - 2026-11-24
 
 ### Added

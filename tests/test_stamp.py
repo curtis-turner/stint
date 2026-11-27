@@ -133,16 +133,16 @@ def test_stamp_matches_project_by_key():
 
     state = StateFile(env="dev", jira_url="x")
     snap = _empty_snapshot()
-    snap.projects["PLAT"] = ProjectSnapshot(
+    snap.projects["SEC"] = ProjectSnapshot(
         id="p-1",
-        key="PLAT",
+        key="SEC",
         name="Platform",
     )
     # Add the rest of the platform's expected objects so stamp doesn't choke;
     # but we only assert the project match here.
     report = stamp(state, snap)
-    assert ("project", "PLAT", "p-1") in report.matched
-    assert state.projects["PLAT"].id == "p-1"
+    assert ("project", "SEC", "p-1") in report.matched
+    assert state.projects["SEC"].id == "p-1"
 
 
 # ── Unmatched ────────────────────────────────────────────────────────
@@ -190,10 +190,10 @@ def test_stamp_matches_derived_itss_by_synthesized_name():
 
     snap.issuetype_screen_schemes["itss-1"] = IssueTypeScreenSchemeSnapshot(
         id="itss-1",
-        name="PLAT Issue Type Screen Scheme",
+        name="SEC Issue Type Screen Scheme",
     )
     report = stamp(state, snap)
-    assert ("issuetype_screen_scheme", "PLAT_itss", "itss-1") in report.matched
+    assert ("issuetype_screen_scheme", "SEC_itss", "itss-1") in report.matched
 
 
 def test_stamp_issuetype_ignores_project_scoped_same_name():
@@ -227,16 +227,18 @@ def test_stamp_matches_derived_issuetype_scheme_by_synthesized_name():
 
     snap.issuetype_schemes["its-1"] = IssueTypeSchemeSnapshot(
         id="its-1",
-        name="PLAT Issue Type Scheme",
+        name="SEC Issue Type Scheme",
     )
     report = stamp(state, snap)
-    assert ("issuetype_scheme", "PLAT_its", "its-1") in report.matched
-    assert state.issuetype_schemes["PLAT_its"].id == "its-1"
+    assert ("issuetype_scheme", "SEC_its", "its-1") in report.matched
+    assert state.issuetype_schemes["SEC_its"].id == "its-1"
 
 
 # ── CLI smoke ────────────────────────────────────────────────────────
 BASE = "https://jira.example.com"
 CLOUD_ROOT = f"{BASE}/rest/api/3"
+CLOUD_ID = "1a2b3c4d-0000-4000-8000-000000000009"
+AUTOMATION_ROOT = f"https://api.atlassian.com/automation/public/jira/{CLOUD_ID}/rest/v1"
 
 
 def _paginated(values):
@@ -296,7 +298,7 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
             200,
             json=_paginated(
                 [
-                    {"id": "p-1", "key": "PLAT", "name": "Platform"},
+                    {"id": "p-1", "key": "SEC", "name": "Platform"},
                 ]
             ),
         )
@@ -306,9 +308,9 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
             200,
             json=_paginated(
                 [
-                    {"id": "scr-1", "name": "Bug Create Screen"},
-                    {"id": "scr-2", "name": "Bug Edit Screen"},
-                    {"id": "scr-3", "name": "Bug View Screen"},
+                    {"id": "scr-1", "name": "SEC Create Screen"},
+                    {"id": "scr-2", "name": "SEC Edit Screen"},
+                    {"id": "scr-3", "name": "SEC View Screen"},
                 ]
             ),
         )
@@ -325,7 +327,7 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
                 [
                     {
                         "id": "ss-1",
-                        "name": "Bug Screen Scheme",
+                        "name": "SEC Screen Scheme",
                         "screens": {"default": "scr-3", "create": "scr-1", "edit": "scr-2"},
                     },
                 ]
@@ -342,7 +344,7 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
             200,
             json=_paginated(
                 [
-                    {"id": "fc-1", "name": "Bug Field Configuration"},
+                    {"id": "fc-1", "name": "SEC Field Configuration"},
                 ]
             ),
         )
@@ -357,6 +359,9 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
     respx.get(f"{CLOUD_ROOT}/issuesecurityschemes").mock(
         return_value=httpx.Response(200, json={"issueSecuritySchemes": []})
     )
+    # The automation reflect (fires when the schema declares rules).
+    respx.get(f"{BASE}/_edge/tenant_info").mock(return_value=httpx.Response(200, json={"cloudId": CLOUD_ID}))
+    respx.get(f"{AUTOMATION_ROOT}/rule/summary").mock(return_value=httpx.Response(200, json={"links": {}, "data": []}))
     respx.get(f"{CLOUD_ROOT}/issuesecurityschemes/project").mock(return_value=httpx.Response(200, json=_paginated([])))
     from tests._stubs import stub_project_roles_and_permission_schemes, stub_workflows
 
@@ -392,7 +397,7 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
         "S4": "103",
     }
     assert on_disk.issuetypes["bug"].id == "10010"
-    assert on_disk.projects["PLAT"].id == "p-1"
+    assert on_disk.projects["SEC"].id == "p-1"
     assert on_disk.screens["bug_view"].id == "scr-3"
     assert not (tmp_path / "state.yaml.lock").exists()
 
@@ -724,6 +729,6 @@ def test_cli_stamp_jira_cloud_tmp_requires_tmp_project(tmp_path, monkeypatch):
                 "--auth",
                 "api-token",
                 "--project-key",
-                "PLAT",
+                "SEC",
             ]
         )

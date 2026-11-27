@@ -59,6 +59,7 @@ import warnings
 from typing import Any
 
 from stint.client.http import JiraHTTPClient
+from stint.dialects.jira.automation import AutomationRuleClient
 from stint.dialects.jira.tmp.graphql import FIELDS_GATEWAY_PATH, LAYOUT_READ_PATH, GraphQLClient
 from stint.dialects.jira.tmp.internal_rest import ISSUE_LAYOUTS_PATH, SIMPLIFIED_PATH, InternalRestClient
 from stint.dialects.jira.tmp.models import (
@@ -74,7 +75,7 @@ from stint.dialects.jira.tmp.models import (
     TmpSnapshot,
     TmpWorkType,
 )
-from stint.exceptions import StintError, TmpApiError
+from stint.exceptions import ConfigurationError, ReflectionError, StintError, TmpApiError
 from stint.state.snapshot import CustomFieldSnapshot, IssueTypeSnapshot, ProjectSnapshot, ServerInfoSnapshot, Snapshot
 
 _EXPERIMENTAL_NOTICE = (
@@ -269,17 +270,90 @@ def _parse_written_layout(layout_id: str, body: dict[str, Any]) -> TmpLayout:
     return TmpLayout(layout_id=layout_id, owner=owner, items=items)
 
 
-class TmpDialect:
-    """Team-managed-project write surface. See module docstring for phase scope."""
+class TmpDialect(AutomationRuleClient):
+    """Team-managed-project write surface. See module docstring for phase scope.
+
+    Automation rules are tenant objects (not project-scoped), so the
+    rule-management mixin works unchanged here: the scope ARI takes any
+    project id, team- or company-managed. The identity helpers
+    (``my_account_id``/``resolve_user``/``user_groups``) are local
+    implementations of the same REST reads ``JiraCloudDialect`` uses --
+    the automation guard's lockout check and ref resolution need them."""
 
     name = "jira_cloud_tmp"
 
     def __init__(self, client: JiraHTTPClient) -> None:
         warnings.warn(_EXPERIMENTAL_NOTICE, stacklevel=2)
         self._client = client
+        # The rule-management mixin (and the identity helpers) read `client`
+        # and `api_root` by attribute.
+        self.client = client
+        self.api_root = "/rest/api/3"
         self._graphql = GraphQLClient(client)
         self._internal_rest = InternalRestClient(client)
         self._cloud_id: str | None = None
+        # The automation mixin's caches (instance-level: two dialects on the
+        # same client must not share unresolved state).
+        self._cloud_id_cache: str | None = None
+        self._automation_actor_cache: str | None = None
+        self._my_account_id_cache: str | None = None
+        self._user_cache: dict[str, str] = {}
+        self._user_groups_cache: dict[str, frozenset[str]] = {}
+
+    # ── Identity (the reads the automation guard + refs need) ─────────
+    async def my_account_id(self) -> str:
+        """The accountId stint authenticates as (``GET /myself``). Cached."""
+        if self._my_account_id_cache is None:
+            payload = await self._client.get_json(f"{self.api_root}/myself")
+            account_id = (payload or {}).get("accountId") if isinstance(payload, dict) else None
+            if not account_id:
+                raise ReflectionError("GET /myself returned no accountId")
+            self._my_account_id_cache = str(account_id)
+        return self._my_account_id_cache
+
+    async def resolve_user(self, value: str) -> str:
+        """Resolve an email to an accountId (``GET /user/search``). Cached.
+
+        A value without an ``@`` is assumed already-resolved and passed
+        through unchanged."""
+        if "@" not in value:
+            return value
+        cached = self._user_cache.get(value)
+        if cached is not None:
+            return cached
+        users = await self._client.get_json(
+            f"{self.api_root}/user/search",
+            params={"query": value},
+        )
+        if not isinstance(users, list) or not users:
+            raise ConfigurationError(f"No Jira user found for email {value!r}.")
+        matches = [u for u in users if str(u.get("emailAddress", "")).lower() == value.lower()]
+        chosen = matches[0] if matches else (users[0] if len(users) == 1 else None)
+        if chosen is None or not chosen.get("accountId"):
+            raise ConfigurationError(
+                f"Email {value!r} matched {len(users)} users but none by exact email; cannot disambiguate."
+            )
+        resolved = str(chosen["accountId"])
+        self._user_cache[value] = resolved
+        return resolved
+
+    async def user_groups(self, account_id: str) -> frozenset[str]:
+        """Group names the user belongs to (``GET /user?expand=groups``). Cached."""
+        cached = self._user_groups_cache.get(account_id)
+        if cached is not None:
+            return cached
+        payload = await self._client.get_json(
+            f"{self.api_root}/user",
+            params={"accountId": account_id, "expand": "groups"},
+        )
+        groups = (payload or {}).get("groups") or {}
+        names = frozenset(
+            str(item.get("name", ""))
+            for item in (groups.get("items") or [])
+            if isinstance(item, dict) and item.get("name")
+        )
+        self._user_groups_cache[account_id] = names
+        return names
 
     # ── Fields: create / edit / delete ───────────────────────────────
     async def create_field(
