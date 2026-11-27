@@ -362,8 +362,10 @@ guard = ControlFieldGuard(
 )
 
 # Escape hatch: a rule exported from the Automation UI, with tenant ids
-# replaced by stint references. stint substitutes them at apply time and
-# fails validation on an unknown one.
+# replaced by stint references. stint validates the refs and manages the
+# lifecycle; the component internals are NOT typed — edit an export, never
+# write a payload from scratch (a malformed component can save and
+# silently never run). Prefer the guard for the detect-and-revert case.
 notify_on_close = AutomationRule(
     alias="trk_notify_on_close",
     name="TRK: notify owner on close",
@@ -421,6 +423,18 @@ unmanaged. The rule-management API requires an API token (Forge and OAuth
 apps cannot call it) and an administrator-level account — stint probes
 that with a read before writing anything and stops on a 403 with a clear
 message.
+
+One typing caveat: the escape-hatch `AutomationRule` is **capture, not
+authoring** — its payload is an export of a rule the Automation UI built
+and you verified by running it (trip it once, read the audit log). stint
+validates the refs and manages the lifecycle, but the component internals
+are not typed or validated: a malformed component either fails at create
+with a 400 or saves ENABLED and silently never executes (measured on this
+build: the `advancedFields` form carrying a smart value). The generated
+`ControlFieldGuard` is the typed path — use the escape hatch only for
+rules outside its reach. Typed builders for the common component shapes
+are tracked in
+[#65](https://github.com/curtis-turner/stint/issues/65).
 
 ### Team-managed projects
 
