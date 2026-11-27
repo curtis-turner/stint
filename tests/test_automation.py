@@ -575,10 +575,16 @@ def test_normalized_rule_payload_ignores_server_noise():
         "components": [{"id": "151", "type": "t", "value": "v"}],
     }
     assert normalized_rule_payload(declared, is_guard=False) == normalized_rule_payload(reflected, is_guard=False)
-    # Guards drop the actor (stint omits it; Jira reports the A4J id).
+    # The actor is dropped for every rule: stint declares it through the op's
+    # parameter, and the echo reports the server's resolved accountId.
     with_actor = dict(declared, actor={"type": "ACCOUNT_ID", "value": "557058:x"})
     assert normalized_rule_payload(with_actor, is_guard=True) == normalized_rule_payload(declared, is_guard=True)
-    assert normalized_rule_payload(with_actor, is_guard=False) != normalized_rule_payload(declared, is_guard=False)
+    assert normalized_rule_payload(with_actor, is_guard=False) == normalized_rule_payload(declared, is_guard=False)
+    # name/description ride the op's parameters too (the declaration wins);
+    # a payload carrying the declaration-overridden placeholder compares
+    # equal against the echo.
+    overridden = dict(declared, name="will be overridden by the declaration", description="")
+    assert normalized_rule_payload(overridden, is_guard=False) == normalized_rule_payload(declared, is_guard=False)
 
 
 # ── Emit ─────────────────────────────────────────────────────────────

@@ -654,11 +654,11 @@ def test_plan_tmp_automation_create_adopt_update_delete():
     assert not [c for c in changes if isinstance(c, UpsertAutomationRule)]
     assert not warnings
 
-    # Payload drift: the recorded refs make the comparison decisive.
-    drifted = dict(record.payload)
-    drifted["description"] = ""
+    # Payload drift (a real structural change: the comment action dropped —
+    # a description-only change is invisible to the diff by design, the op
+    # parameters own it): the recorded refs make the comparison decisive.
     changed_rule = automation_rule_record(
-        _tmp_guard_rule(name="VULN: revert control-field edits", description="changed"),
+        _tmp_guard_rule(on_violation=["revert"]),
         bound_projects=("VULN",),
         proj_cls=None,
     )

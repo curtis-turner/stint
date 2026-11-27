@@ -86,14 +86,14 @@ def test_desired_snapshot_derives_itss_and_fcs_per_project():
     desired = build_desired_snapshot()
     assert "bug_severity" in desired.custom_fields
     assert "bug" in desired.issuetypes
-    assert "PLAT" in desired.projects
+    assert "SEC" in desired.projects
     # Derived schemes:
-    assert "PLAT_itss" in desired.issuetype_screen_schemes
-    assert "PLAT_fcs" in desired.field_configuration_schemes
-    itss = desired.issuetype_screen_schemes["PLAT_itss"]
+    assert "SEC_itss" in desired.issuetype_screen_schemes
+    assert "SEC_fcs" in desired.field_configuration_schemes
+    itss = desired.issuetype_screen_schemes["SEC_itss"]
     assert itss.mappings["default"] == "bug_screens"
     assert itss.mappings["bug"] == "bug_screens"
-    fcs = desired.field_configuration_schemes["PLAT_fcs"]
+    fcs = desired.field_configuration_schemes["SEC_fcs"]
     assert fcs.mappings["default"] == "bug_fields"
 
 
@@ -104,12 +104,12 @@ def test_desired_snapshot_derives_issuetype_scheme_per_project():
     import examples.company_managed.platform_schema  # noqa: F401
 
     desired = build_desired_snapshot()
-    assert "PLAT_its" in desired.issuetype_schemes
-    its = desired.issuetype_schemes["PLAT_its"]
-    assert its.name == "PLAT Issue Type Scheme"
+    assert "SEC_its" in desired.issuetype_schemes
+    its = desired.issuetype_schemes["SEC_its"]
+    assert its.name == "SEC Issue Type Scheme"
     assert its.issuetypes == ("bug",)
     assert its.default_issuetype == "bug"
-    assert desired.projects["PLAT"].issuetype_scheme == "PLAT_its"
+    assert desired.projects["SEC"].issuetype_scheme == "SEC_its"
 
 
 def test_desired_screen_carries_one_tab_with_field_refs():
@@ -122,7 +122,11 @@ def test_desired_screen_carries_one_tab_with_field_refs():
     assert tab.name == "Fields"
     # CustomField refs resolve to aliases; system names pass through.
     assert "Summary" in tab.field_refs
-    assert "bug_severity" in tab.field_refs
+    # Severity is a control field: on create/view, OFF the edit screen (the
+    # restricted-Edit-screen pattern the control-field guard enforces).
+    assert "bug_severity" not in tab.field_refs
+    view = desired.screens["bug_view"]
+    assert "bug_severity" in view.tabs[0].field_refs
 
 
 # ── Desired snapshot: per-module scoping (CMP-B) ─────────────────────
@@ -545,17 +549,17 @@ def test_diff_emits_set_scheme_for_existing_project_with_drifted_binding():
     # Project + schemes all already in state. ITSS matches what's on Jira,
     # so it should NOT be re-bound. IssueTypeScheme + FCS are in state but
     # the snapshot shows the project bound to *different* scheme ids.
-    state.projects["PLAT"] = ProjectMapping(id="p-1", key="PLAT")
-    state.issuetype_schemes["PLAT_its"] = SimpleMapping(id="its-want")
-    state.issuetype_screen_schemes["PLAT_itss"] = SimpleMapping(id="itss-want")
-    state.field_configuration_schemes["PLAT_fcs"] = SimpleMapping(id="fcs-want")
+    state.projects["SEC"] = ProjectMapping(id="p-1", key="SEC")
+    state.issuetype_schemes["SEC_its"] = SimpleMapping(id="its-want")
+    state.issuetype_screen_schemes["SEC_itss"] = SimpleMapping(id="itss-want")
+    state.field_configuration_schemes["SEC_fcs"] = SimpleMapping(id="fcs-want")
     snapshot = Snapshot(
         server_info=ServerInfoSnapshot(deployment_type="Cloud", version="9", base_url="x"),
         projects={
-            "PLAT": ProjectSnapshot(
+            "SEC": ProjectSnapshot(
                 id="p-1",
-                key="PLAT",
-                name="Platform",
+                key="SEC",
+                name="SecurityPlatform",
                 lead="cturner",
                 project_type_key="software",
                 style="classic",
@@ -574,9 +578,9 @@ def test_diff_emits_set_scheme_for_existing_project_with_drifted_binding():
     assert set_itss == []
     # The two emitted rebinds reference the right project + scheme aliases.
     its_change = next(c for c in result.changes if isinstance(c, SetProjectIssueTypeScheme))
-    assert its_change.project_alias == "PLAT" and its_change.scheme_alias == "PLAT_its"
+    assert its_change.project_alias == "SEC" and its_change.scheme_alias == "SEC_its"
     fcs_change = next(c for c in result.changes if isinstance(c, SetProjectFieldConfigurationScheme))
-    assert fcs_change.project_alias == "PLAT" and fcs_change.scheme_alias == "PLAT_fcs"
+    assert fcs_change.project_alias == "SEC" and fcs_change.scheme_alias == "SEC_fcs"
 
 
 def test_diff_set_scheme_fires_for_existing_project_even_when_scheme_pending():
@@ -595,15 +599,15 @@ def test_diff_set_scheme_fires_for_existing_project_even_when_scheme_pending():
 
     desired = build_desired_snapshot()
     state = StateFile(env="dev", jira_url="x")
-    state.projects["PLAT"] = ProjectMapping(id="p-1", key="PLAT")
+    state.projects["SEC"] = ProjectMapping(id="p-1", key="SEC")
     # Note: state.issuetype_schemes etc. are intentionally empty.
     snapshot = Snapshot(
         server_info=ServerInfoSnapshot(deployment_type="Cloud", version="9", base_url="x"),
         projects={
-            "PLAT": ProjectSnapshot(
+            "SEC": ProjectSnapshot(
                 id="p-1",
-                key="PLAT",
-                name="Platform",
+                key="SEC",
+                name="SecurityPlatform",
                 lead="cturner",
                 project_type_key="software",
                 style="classic",
@@ -612,7 +616,7 @@ def test_diff_set_scheme_fires_for_existing_project_even_when_scheme_pending():
     )
     result = diff(desired=desired, snapshot=snapshot, state=state, allow_delete=False)
     associates = [c for c in result.changes if isinstance(c, SetProjectIssueTypeScheme)]
-    assert [(c.project_alias, c.scheme_alias) for c in associates] == [("PLAT", "PLAT_its")]
+    assert [(c.project_alias, c.scheme_alias) for c in associates] == [("SEC", "SEC_its")]
 
 
 def test_diff_does_not_emit_lead_update_for_existing_project():
@@ -625,17 +629,17 @@ def test_diff_does_not_emit_lead_update_for_existing_project():
 
     desired = build_desired_snapshot()
     state = StateFile(env="dev", jira_url="x")
-    state.projects["PLAT"] = ProjectMapping(id="p-1", key="PLAT")
-    state.issuetype_schemes["PLAT_its"] = SimpleMapping(id="its-1")
-    state.issuetype_screen_schemes["PLAT_itss"] = SimpleMapping(id="itss-1")
-    state.field_configuration_schemes["PLAT_fcs"] = SimpleMapping(id="fcs-1")
+    state.projects["SEC"] = ProjectMapping(id="p-1", key="SEC")
+    state.issuetype_schemes["SEC_its"] = SimpleMapping(id="its-1")
+    state.issuetype_screen_schemes["SEC_itss"] = SimpleMapping(id="itss-1")
+    state.field_configuration_schemes["SEC_fcs"] = SimpleMapping(id="fcs-1")
     snapshot = Snapshot(
         server_info=ServerInfoSnapshot(deployment_type="Cloud", version="9", base_url="x"),
         projects={
-            "PLAT": ProjectSnapshot(
+            "SEC": ProjectSnapshot(
                 id="p-1",
-                key="PLAT",
-                name="Platform",
+                key="SEC",
+                name="SecurityPlatform",
                 lead="557058:0000-aaaa",  # accountId, not the schema's email
                 project_type_key="software",
                 style="classic",
@@ -705,8 +709,8 @@ def test_delete_project_sorts_before_scheme_deletes():
     changes: list[Change] = [
         # Deliberately listed scheme-first: the old phase tie let input
         # order (the tie-breaker) keep this wrong order.
-        DeleteIssueTypeScheme(alias="PLAT_its"),
-        DeleteProject(alias="PLAT", key="PLAT"),
+        DeleteIssueTypeScheme(alias="SEC_its"),
+        DeleteProject(alias="SEC", key="SEC"),
     ]
     order = [type(c).__name__ for c in sort_changes(changes)]
     assert order == ["DeleteProject", "DeleteIssueTypeScheme"]
@@ -787,7 +791,7 @@ def test_render_autogenerated_hostile_message_loads(tmp_path):
         'config "drift" reader: docstrings """like this""" end with \\',
         parents=None,
         revision="abcdef012345",
-        changes=[DeleteIssueTypeScheme(alias="PLAT_its")],
+        changes=[DeleteIssueTypeScheme(alias="SEC_its")],
     )
     p = tmp_path / "2026_05_20_1200_hostile_message.py"
     p.write_text(source, encoding="utf-8")
@@ -942,15 +946,15 @@ def _its_scenario(issuetype_ids: tuple[str, ...]):
     from stint.state.snapshot import IssueTypeSchemeSnapshot
 
     desired = DesiredSnapshot()
-    desired.issuetype_schemes["PLAT_its"] = DesiredIssueTypeScheme(
-        alias="PLAT_its",
+    desired.issuetype_schemes["SEC_its"] = DesiredIssueTypeScheme(
+        alias="SEC_its",
         name="PLAT Issue Type Scheme",
         description="",
         issuetypes=("bugs", "tasks"),
         default_issuetype="bugs",
     )
     state = StateFile(env="dev", jira_url="x")
-    state.issuetype_schemes["PLAT_its"] = SimpleMapping(id="its-1")
+    state.issuetype_schemes["SEC_its"] = SimpleMapping(id="its-1")
     state.issuetypes["bugs"] = SimpleMapping(id="10010")
     state.issuetypes["tasks"] = SimpleMapping(id="10011")
     snapshot = _empty_snapshot()
@@ -1009,7 +1013,7 @@ def test_emit_renders_issuetype_membership_update():
         "membership drift",
         parents=None,
         revision="r",
-        changes=[UpdateIssueTypeScheme(alias="PLAT_its", issuetypes=("bugs", "tasks"))],
+        changes=[UpdateIssueTypeScheme(alias="SEC_its", issuetypes=("bugs", "tasks"))],
     )
     assert "op.update_issuetype_scheme(" in src
     assert "issuetypes=['bugs', 'tasks']" in src

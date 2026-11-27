@@ -31,6 +31,8 @@ from stint.state.lock import StateLock, StateLockError
 
 BASE = "https://jira.example.com"
 CLOUD_ROOT = f"{BASE}/rest/api/3"
+CLOUD_ID = "1a2b3c4d-0000-4000-8000-000000000009"
+AUTOMATION_ROOT = f"https://api.atlassian.com/automation/public/jira/{CLOUD_ID}/rest/v1"
 
 
 @pytest.fixture(autouse=True)
@@ -866,7 +868,7 @@ def test_diff_emits_update_project_on_rename():
 
     desired = build_desired_snapshot()
     state = StateFile(env="dev", jira_url=BASE)
-    state.projects["PLAT"] = ProjectMapping(id="p-1", key="PLAT")
+    state.projects["SEC"] = ProjectMapping(id="p-1", key="SEC")
 
     snapshot = Snapshot(
         server_info=ServerInfoSnapshot(
@@ -875,9 +877,9 @@ def test_diff_emits_update_project_on_rename():
             base_url="x",
         )
     )
-    snapshot.projects["PLAT"] = ProjectSnapshot(
+    snapshot.projects["SEC"] = ProjectSnapshot(
         id="p-1",
-        key="PLAT",
+        key="SEC",
         name="Platform (Old Name)",
     )
     result = diff(
@@ -888,8 +890,8 @@ def test_diff_emits_update_project_on_rename():
     )
     updates = [c for c in result.changes if isinstance(c, UpdateProject)]
     assert len(updates) == 1
-    assert updates[0].alias == "PLAT"
-    assert updates[0].name == "Platform"  # __title__ defaults to class name
+    assert updates[0].alias == "SEC"
+    assert updates[0].name == "SecurityPlatform"  # the schema's __title__
 
 
 # ──────────────────────────────────────────────────────────────────────

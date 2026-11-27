@@ -105,7 +105,30 @@ Each op is idempotent and records its Jira id in
 `examples/company_managed/devel.state`. A failed run is safe to re-run; it
 resumes where it stopped.
 
-## 9. Inspect
+## 9. The control-field guard (automation)
+
+The schema also declares a `ControlFieldGuard` bound to the project with
+`__automation_rule_scheme__`. Because `Severity` is on the create/view
+screens but off the edit screen, it derives as the guard's control field:
+an Automation rule fires when `Severity` changes and puts the previous
+value back if the writer is not in `allowed_writers` — the enforcement the
+cosmetic screen lock needs (the REST API ignores screens on edit).
+
+Before the guard can apply, the account stint authenticates as must be
+exempt from it. The example allow-lists the group `stint-service-accounts`:
+create that group in Jira (**Admin → User management → Groups**) and add
+your `STINT_USER` account — or edit the guard's `allowed_writers` to
+`User("you@example.com")` directly. Either way, applying a guard that would
+revert the service's own writes refuses (the lockout guard).
+
+The flow is unchanged from steps 6-8: `revision --autogenerate` picks the
+guard up as `create_automation_rule` ops (plus the edit-screen change),
+`upgrade` creates the real rule scoped to the project, and state records
+its uuid. Re-runs diff clean. To see the guard work: change `Severity` on
+any issue as a user *not* in `allowed_writers` — the value snaps back in
+seconds and the issue gains a comment. Your own edits are left alone.
+
+## 10. Inspect
 
 ```bash
 uv run stint current --state examples/company_managed/devel.state
@@ -114,7 +137,7 @@ uv run stint history --migrations-dir examples/company_managed/migrations
 
 `current` prints the applied revision; `history` lists the chain.
 
-## 10. Create issues and query them (data plane)
+## 11. Create issues and query them (data plane)
 
 The migration path manages the *structure*; the data plane (ORM) manages the
 *content*. [`create_and_query_issues.py`](create_and_query_issues.py) proves

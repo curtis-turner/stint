@@ -443,6 +443,7 @@ class AdoptAutomationRule(Change):
 class UpdateAutomationRule(Change):
     alias: str
     name: str
+    description: str  # the op's description param overrides the payload's
     payload: dict[str, Any]  # declared payload, placeholders intact
     scope_projects: tuple[str, str] | tuple[str, ...] = ()
     refs: tuple[tuple[str, str, str], ...] = ()
@@ -2051,11 +2052,15 @@ def _diff_automation_rules(
             continue
 
         comparison = _rule_payload_comparable(want, actual, state, member_params, snapshot)
-        if comparison is False:
+        # The payload's name is dropped by the normalization (the op's name
+        # parameter owns it), so a declared rename is detected here.
+        name_drift = mapping.name != want.name
+        if comparison is False or name_drift:
             r.changes.append(
                 UpdateAutomationRule(
                     alias=alias,
                     name=want.name,
+                    description=want.description,
                     payload=want.payload,
                     scope_projects=desired_scope or (),
                     refs=want.refs,

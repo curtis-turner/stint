@@ -158,30 +158,35 @@ _PLACEHOLDER_RE = re.compile(r"\{\{stint\.[a-z]+\.[^{}]+?\}\}")
 _SERVER_NOISE_KEYS = frozenset(
     {"created", "updated", "uuid", "id", "tags", "ruleHome", "billingType", "authorAccountId", "collaborators"}
 )
-_PAYLOAD_LEVEL_KEYS = _SERVER_NOISE_KEYS | {"state", "ruleScopeARIs", "projects"}
+# ``name``/``description``/``actor``: the create/update ops' parameters own
+# them (the ops override whatever the payload carried — the declaration wins
+# — and the echo reports the server's resolved values: the description param
+# replaces the payload's, and the actor comes back as the resolved
+# accountId). A declared description-only change is invisible to the diff
+# (state records no description); any other drift re-sends it.
+_PAYLOAD_LEVEL_KEYS = _SERVER_NOISE_KEYS | {"state", "ruleScopeARIs", "projects", "name", "description", "actor"}
 
 
 def normalized_rule_payload(payload: dict[str, Any], *, is_guard: bool) -> dict[str, Any]:
     """A canonical form of a rule payload for idempotent diffs.
 
     Drops server-generated noise (ids, timestamps, tags, rule metadata) and
-    everything managed by its own op (state, ruleScopeARIs). The
-    component/trigger tree is canonicalized: each component's ``id`` is
-    replaced by its position and parent links are remapped through it, so a
-    declared payload (id-less) and a reflected one (server ids) compare
-    equal when the structure and values match. The trigger value's
-    ``eventFilters`` are dropped too — the server rewrites them to match
-    the scope (measured live: it returns 201 and silently forges filters
-    from ``ruleScopeARIs``), so they are server-owned, never stint's. For
-    guards the ``actor`` is dropped as well — stint omits it (Jira's
-    "Automation for Jira" default), while reflection reports the tenant's
-    resolved actor id.
+    everything managed by its own op (state, ruleScopeARIs, name,
+    description, actor). The component/trigger tree is canonicalized: each
+    component's ``id`` is replaced by its position and parent links are
+    remapped through it, so a declared payload (id-less) and a reflected
+    one (server ids) compare equal when the structure and values match.
+    The trigger value's ``eventFilters`` are dropped too — the server
+    rewrites them to match the scope (measured live: it returns 201 and
+    silently forges filters from ``ruleScopeARIs``), so they are
+    server-owned, never stint's. The same for ``eventTypes`` (the echo
+    nulls it) and for the user condition's per-criteria ``type`` — the
+    server normalizes it per check kind (a sent "ID" for a group check
+    echoes back "GROUP_ID").
     """
     import copy
 
     body = {k: copy.deepcopy(v) for k, v in payload.items() if k not in _PAYLOAD_LEVEL_KEYS}
-    if is_guard:
-        body.pop("actor", None)
 
     def _canonical(node: Any, ids: dict[Any, Any]) -> Any:
         if isinstance(node, list):
@@ -190,10 +195,16 @@ def normalized_rule_payload(payload: dict[str, Any], *, is_guard: bool) -> dict[
             return node
         out: dict[str, Any] = {}
         for key, value in node.items():
-            if key == "eventFilters":
-                continue  # server-owned: rewritten from ruleScopeARIs
+            if key in ("eventFilters", "eventTypes"):
+                continue  # server-owned: rewritten from the scope / nulled
             if key == "schemaVersion":
                 continue  # server-owned: the echo nulls it out
+            if key == "criteria" and isinstance(value, list):
+                # The server normalizes each criterion's type per check kind
+                # (a sent "ID" echoes "GROUP_ID" for group checks) — the
+                # semantics ride the parent entry's "check" field.
+                out[key] = [{k: v for k, v in entry.items() if k != "type"} for entry in value]
+                continue
             if key in ("children", "conditions") and value is None:
                 out[key] = []  # the echo sends null where create sends []
                 continue
@@ -206,10 +217,13 @@ def normalized_rule_payload(payload: dict[str, Any], *, is_guard: bool) -> dict[
                 continue
             out[key] = _canonical(value, ids)
         if "component" in out:
-            # Component-like node: the echo omits children/conditions where
-            # create sends []; default both so the diff compares equal.
+            # Component-like node (triggers included): the echo omits or
+            # nulls children / conditions / parent links where create sends
+            # them (nulls or []); default all four so the diff compares equal.
             out.setdefault("children", [])
             out.setdefault("conditions", [])
+            out.setdefault("parentId", None)
+            out.setdefault("conditionParentId", None)
         return out
 
     def _canonical_components(components: list[Any]) -> list[Any]:
